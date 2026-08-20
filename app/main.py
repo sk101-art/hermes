@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import yaml
 from pathlib import Path
@@ -250,24 +250,29 @@ def run():
             print(f"  Semantic Failures:                {sem_stats['semantic_failures']:>5}", flush=True)
             print("=" * 60, flush=True)
 
-            # --- Claims, Evidence & Technology Assessment Processing ---
+            # --- Claims, Evidence & Longitudinal Assessment Processing ---
             all_clusters = db.get_all_clusters()
             for cl in all_clusters:
                 cl_events = db.get_cluster_events(cl.id)
                 if not cl_events:
                     continue
 
-                assessment = assess_technology_maturity(cl, cl_events)
-                db.save_technology_assessment(assessment)
+                # 1. Sequence releases
+                from app.evidence.reevaluate import reevaluate_claim, reevaluate_cluster_maturity, sequence_cluster_releases, update_technology_state
+                sequence_cluster_releases(cl.id, cl_events, db)
 
+                # 2. Extract and re-evaluate claims
                 claims_with_ev = extract_claims_for_cluster(cl, cl_events)
+                cluster_claims = []
                 for claim, ev_list in claims_with_ev:
-                    v_score, status = compute_verification(claim, ev_list)
-                    claim.verification_score = v_score
-                    claim.status = status
-                    db.save_claim(claim)
                     for ev in ev_list:
                         db.save_evidence(ev)
+                    updated_claim, rev, ch = reevaluate_claim(claim, ev_list, db)
+                    cluster_claims.append(updated_claim)
+
+                # 3. Assess maturity and update technology state snapshot
+                reevaluate_cluster_maturity(cl, cl_events, db)
+                update_technology_state(cl, cl_events, cluster_claims, db)
 
         except Exception as e:
             print(f"\n[Warning] Semantic clustering unavailable ({e}). Continuing with Event-level intelligence.", flush=True)
@@ -280,9 +285,14 @@ def run():
             sources_str = ", ".join(cluster.sources)
             assessment = db.get_technology_assessment(cluster.id)
             maturity_str = assessment.maturity_stage.upper() if assessment else "UNKNOWN"
-            claims = db.get_claims_by_cluster(cluster.id)
+            tech_state = db.get_technology_state(cluster.id)
+            claims = db.get_claims_by_cluster(cluster.id, current_only=True)
 
-            print(f"{idx:02d} [{cluster.cluster_score:.2f}] [Maturity: {maturity_str}]", flush=True)
+            risk_str = f"Risk: {tech_state.risk_score:.2f}" if tech_state else ""
+            trend_str = f"Trend: {tech_state.trend.upper()}" if tech_state else ""
+            indicators = " | ".join(p for p in [f"Maturity: {maturity_str}", trend_str, risk_str] if p)
+
+            print(f"{idx:02d} [{cluster.cluster_score:.2f}] [{indicators}]", flush=True)
             print(f"{cluster.canonical_title}\n", flush=True)
             print(f"  Sources: {sources_str} | Supporting Events: {len(cluster.event_ids)} | Claims: {len(claims)}", flush=True)
 

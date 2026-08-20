@@ -48,6 +48,7 @@ def build_release_claim(event: Event, cluster_id: str) -> Optional[Tuple[Claim, 
         id=cid,
         cluster_id=cluster_id,
         claim_type=claim_type,
+        assertion_level="artifact_fact",
         subject=subject,
         predicate=predicate,
         object=obj,
@@ -109,6 +110,7 @@ def build_repository_claim(event: Event, cluster_id: str) -> Optional[Tuple[Clai
         id=cid,
         cluster_id=cluster_id,
         claim_type=claim_type,
+        assertion_level="artifact_fact",
         subject=subject,
         predicate=predicate,
         object=obj,
@@ -158,6 +160,7 @@ def build_model_claim(event: Event, cluster_id: str) -> Optional[Tuple[Claim, Ev
         id=cid,
         cluster_id=cluster_id,
         claim_type=claim_type,
+        assertion_level="artifact_fact",
         subject=subject,
         predicate=predicate,
         object=obj,
@@ -207,6 +210,7 @@ def build_scholarly_identity_claim(event: Event, cluster_id: str) -> Optional[Tu
         id=cid,
         cluster_id=cluster_id,
         claim_type=claim_type,
+        assertion_level="artifact_fact",
         subject=subject,
         predicate=predicate,
         object=obj,
@@ -255,6 +259,10 @@ def build_performance_claim(event: Event, cluster_id: str) -> Optional[Tuple[Cla
     obj = metric_phrase
     claim_text = f"Project reports {metric_phrase} in self-described benchmark/workload."
 
+    # Parse numeric value if present
+    num_match = re.search(r"([0-9]+(?:\.[0-9]+)?)x", metric_phrase)
+    rep_val = float(num_match.group(1)) if num_match else None
+
     cid = compute_claim_fingerprint(cluster_id, claim_type, subject, predicate, obj)
     e_type, e_class, quality = classify_evidence(event)
 
@@ -262,6 +270,7 @@ def build_performance_claim(event: Event, cluster_id: str) -> Optional[Tuple[Cla
         id=cid,
         cluster_id=cluster_id,
         claim_type=claim_type,
+        assertion_level="performance_claim",
         subject=subject,
         predicate=predicate,
         object=obj,
@@ -269,7 +278,13 @@ def build_performance_claim(event: Event, cluster_id: str) -> Optional[Tuple[Cla
         status="unverified",
         confidence=0.90,
         self_reported=True,
-        metadata={"metric_phrase": metric_phrase},
+        metadata={
+            "metric_phrase": metric_phrase,
+            "metric": "throughput_or_speedup",
+            "reported_value": rep_val,
+            "baseline_value": 1.0 if rep_val else None,
+            "unit": "multiplier",
+        },
     )
 
     eid = compute_evidence_fingerprint(cid, event.id, "supports")
@@ -315,6 +330,7 @@ def build_research_result_claim(event: Event, cluster_id: str) -> Optional[Tuple
         id=cid,
         cluster_id=cluster_id,
         claim_type=claim_type,
+        assertion_level="research_claim",
         subject=subject,
         predicate=predicate,
         object=obj,

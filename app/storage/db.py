@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone, timedelta
@@ -13,11 +13,16 @@ from app.models.schemas import (
     Claim,
     Evidence,
     TechnologyAssessment,
+    ClaimRevision,
+    TechnologyAssessmentRevision,
+    TechnologyState,
+    RecheckQueueItem,
+    IntelligenceChange,
 )
 
 
 class Database:
-    """SQLite storage layer for events, embeddings, clusters, relationships, claims, and evidence."""
+    """SQLite storage layer for events, embeddings, clusters, relationships, claims, evidence, revisions, and longitudinal state."""
 
     def __init__(self, db_path: str = "data/tech_intel.db"):
         self.db_path = db_path
@@ -28,10 +33,14 @@ class Database:
         self.init_db()
 
     def init_db(self) -> None:
+        self._migrate_columns()
+
         schema_path = Path(__file__).parent / "schema.sql"
         if schema_path.exists():
             with open(schema_path, "r", encoding="utf-8") as f:
                 self.conn.executescript(f.read())
+
+        self._migrate_columns()
 
         # Check and initialize FTS5 if supported
         try:
@@ -41,6 +50,44 @@ class Database:
             self.has_fts5 = True
         except sqlite3.OperationalError:
             self.has_fts5 = False
+        self.conn.commit()
+
+    def _migrate_columns(self) -> None:
+        """Ensure columns added in Session 6 exist in previously created tables."""
+        claim_info = self.conn.execute("PRAGMA table_info(claims)").fetchall()
+        existing_claim_cols = {r["name"] for r in claim_info}
+        claim_additions = [
+            ("assertion_level", "TEXT NOT NULL DEFAULT 'artifact_fact'"),
+            ("is_current", "INTEGER DEFAULT 1"),
+            ("superseded_by", "TEXT"),
+            ("last_verified_at", "TEXT"),
+            ("staleness_score", "REAL DEFAULT 0.0"),
+            ("valid_from", "TEXT"),
+            ("valid_until", "TEXT"),
+        ]
+        for col_name, col_def in claim_additions:
+            if col_name not in existing_claim_cols:
+                try:
+                    self.conn.execute(f"ALTER TABLE claims ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
+
+        ev_info = self.conn.execute("PRAGMA table_info(evidence)").fetchall()
+        existing_ev_cols = {r["name"] for r in ev_info}
+        ev_additions = [
+            ("is_current", "INTEGER DEFAULT 1"),
+            ("superseded_by", "TEXT"),
+            ("observed_at", "TEXT"),
+            ("valid_from", "TEXT"),
+            ("valid_until", "TEXT"),
+        ]
+        for col_name, col_def in ev_additions:
+            if col_name not in existing_ev_cols:
+                try:
+                    self.conn.execute(f"ALTER TABLE evidence ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
+
         self.conn.commit()
 
     # --- Event Methods ---
@@ -314,6 +361,9 @@ class Database:
     def update_cluster(self, cluster: StoryCluster) -> bool:
         return self.create_cluster(cluster)
 
+    def save_cluster(self, cluster: StoryCluster) -> bool:
+        return self.create_cluster(cluster)
+
     def add_event_to_cluster(self, cluster_id: str, event_id: str, similarity_score: float = 1.0) -> bool:
         now_str = datetime.now(timezone.utc).isoformat()
         sql = """
@@ -490,10 +540,11 @@ class Database:
     def save_claim(self, claim: Claim) -> bool:
         sql = """
         INSERT OR REPLACE INTO claims (
-            id, cluster_id, claim_type, subject, predicate, object,
+            id, cluster_id, claim_type, assertion_level, subject, predicate, object,
             claim_text, status, confidence, verification_score, self_reported,
-            metadata_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            is_current, superseded_by, last_verified_at, staleness_score,
+            valid_from, valid_until, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -501,6 +552,7 @@ class Database:
                 claim.id,
                 claim.cluster_id,
                 claim.claim_type,
+                claim.assertion_level,
                 claim.subject,
                 claim.predicate,
                 claim.object,
@@ -509,6 +561,12 @@ class Database:
                 claim.confidence,
                 claim.verification_score,
                 1 if claim.self_reported else 0,
+                1 if claim.is_current else 0,
+                claim.superseded_by,
+                claim.last_verified_at.isoformat() if claim.last_verified_at else None,
+                claim.staleness_score,
+                claim.valid_from.isoformat() if claim.valid_from else None,
+                claim.valid_until.isoformat() if claim.valid_until else None,
                 json.dumps(claim.metadata),
                 claim.created_at.isoformat(),
                 claim.updated_at.isoformat(),
@@ -518,10 +576,12 @@ class Database:
         return True
 
     def _row_to_claim(self, r: sqlite3.Row) -> Claim:
+        keys = r.keys()
         return Claim(
             id=r["id"],
             cluster_id=r["cluster_id"],
             claim_type=r["claim_type"],
+            assertion_level=r["assertion_level"] if "assertion_level" in keys and r["assertion_level"] else "artifact_fact",
             subject=r["subject"],
             predicate=r["predicate"],
             object=r["object"],
@@ -530,6 +590,12 @@ class Database:
             confidence=r["confidence"] or 1.0,
             verification_score=r["verification_score"] or 0.0,
             self_reported=bool(r["self_reported"]),
+            is_current=bool(r["is_current"]) if "is_current" in keys and r["is_current"] is not None else True,
+            superseded_by=r["superseded_by"] if "superseded_by" in keys else None,
+            last_verified_at=datetime.fromisoformat(r["last_verified_at"]) if "last_verified_at" in keys and r["last_verified_at"] else None,
+            staleness_score=r["staleness_score"] if "staleness_score" in keys and r["staleness_score"] is not None else 0.0,
+            valid_from=datetime.fromisoformat(r["valid_from"]) if "valid_from" in keys and r["valid_from"] else None,
+            valid_until=datetime.fromisoformat(r["valid_until"]) if "valid_until" in keys and r["valid_until"] else None,
             metadata=json.loads(r["metadata_json"]) if r["metadata_json"] else {},
             created_at=datetime.fromisoformat(r["created_at"]),
             updated_at=datetime.fromisoformat(r["updated_at"]),
@@ -541,17 +607,26 @@ class Database:
         row = cursor.fetchone()
         return self._row_to_claim(row) if row else None
 
-    def get_claims_by_cluster(self, cluster_id: str) -> List[Claim]:
+    def get_claims_by_cluster(self, cluster_id: str, current_only: bool = False) -> List[Claim]:
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM claims WHERE cluster_id = ? ORDER BY verification_score DESC, created_at DESC",
-            (cluster_id,),
-        )
+        if current_only:
+            cursor.execute(
+                "SELECT * FROM claims WHERE cluster_id = ? AND is_current = 1 ORDER BY verification_score DESC, created_at DESC",
+                (cluster_id,),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM claims WHERE cluster_id = ? ORDER BY verification_score DESC, created_at DESC",
+                (cluster_id,),
+            )
         return [self._row_to_claim(r) for r in cursor.fetchall()]
 
-    def get_all_claims(self) -> List[Claim]:
+    def get_all_claims(self, current_only: bool = False) -> List[Claim]:
         cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM claims ORDER BY verification_score DESC, created_at DESC")
+        if current_only:
+            cursor.execute("SELECT * FROM claims WHERE is_current = 1 ORDER BY verification_score DESC, created_at DESC")
+        else:
+            cursor.execute("SELECT * FROM claims ORDER BY verification_score DESC, created_at DESC")
         return [self._row_to_claim(r) for r in cursor.fetchall()]
 
     def get_claims_by_status(self, status: str) -> List[Claim]:
@@ -571,8 +646,9 @@ class Database:
         INSERT OR REPLACE INTO evidence (
             id, claim_id, event_id, source, evidence_type, evidence_class,
             stance, excerpt, url, quality_score, independence_score,
-            reproducibility_score, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            reproducibility_score, is_current, superseded_by, observed_at,
+            valid_from, valid_until, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -589,6 +665,11 @@ class Database:
                 evidence.quality_score,
                 evidence.independence_score,
                 evidence.reproducibility_score,
+                1 if evidence.is_current else 0,
+                evidence.superseded_by,
+                evidence.observed_at.isoformat() if evidence.observed_at else None,
+                evidence.valid_from.isoformat() if evidence.valid_from else None,
+                evidence.valid_until.isoformat() if evidence.valid_until else None,
                 evidence.created_at.isoformat(),
             ),
         )
@@ -596,19 +677,25 @@ class Database:
         return True
 
     def _row_to_evidence(self, r: sqlite3.Row) -> Evidence:
+        keys = r.keys()
         return Evidence(
             id=r["id"],
             claim_id=r["claim_id"],
             event_id=r["event_id"],
             source=r["source"],
             evidence_type=r["evidence_type"],
-            evidence_class=r["evidence_class"] if "evidence_class" in r.keys() else "primary",
+            evidence_class=r["evidence_class"] if "evidence_class" in keys else "primary",
             stance=r["stance"],
             excerpt=r["excerpt"] or "",
             url=r["url"],
             quality_score=r["quality_score"] or 0.50,
             independence_score=r["independence_score"] or 0.50,
             reproducibility_score=r["reproducibility_score"] or 0.50,
+            is_current=bool(r["is_current"]) if "is_current" in keys and r["is_current"] is not None else True,
+            superseded_by=r["superseded_by"] if "superseded_by" in keys else None,
+            observed_at=datetime.fromisoformat(r["observed_at"]) if "observed_at" in keys and r["observed_at"] else None,
+            valid_from=datetime.fromisoformat(r["valid_from"]) if "valid_from" in keys and r["valid_from"] else None,
+            valid_until=datetime.fromisoformat(r["valid_until"]) if "valid_until" in keys and r["valid_until"] else None,
             created_at=datetime.fromisoformat(r["created_at"]),
         )
 
@@ -691,11 +778,395 @@ class Database:
             for row in cursor.fetchall()
         ]
 
+    # --- Session 6: Claim Revisions ---
+
+    def insert_claim_revision(self, rev: ClaimRevision) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO claim_revisions (
+            id, claim_id, previous_status, new_status,
+            previous_verification_score, new_verification_score,
+            reason, trigger_event_id, trigger_evidence_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                rev.id,
+                rev.claim_id,
+                rev.previous_status,
+                rev.new_status,
+                rev.previous_verification_score,
+                rev.new_verification_score,
+                rev.reason,
+                rev.trigger_event_id,
+                rev.trigger_evidence_id,
+                rev.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_claim_revisions(self, claim_id: str) -> List[ClaimRevision]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM claim_revisions WHERE claim_id = ? ORDER BY created_at ASC", (claim_id,))
+        return [
+            ClaimRevision(
+                id=r["id"],
+                claim_id=r["claim_id"],
+                previous_status=r["previous_status"],
+                new_status=r["new_status"],
+                previous_verification_score=r["previous_verification_score"],
+                new_verification_score=r["new_verification_score"],
+                reason=r["reason"],
+                trigger_event_id=r["trigger_event_id"],
+                trigger_evidence_id=r["trigger_evidence_id"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_all_claim_revisions(self) -> List[ClaimRevision]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM claim_revisions ORDER BY created_at DESC")
+        return [
+            ClaimRevision(
+                id=r["id"],
+                claim_id=r["claim_id"],
+                previous_status=r["previous_status"],
+                new_status=r["new_status"],
+                previous_verification_score=r["previous_verification_score"],
+                new_verification_score=r["new_verification_score"],
+                reason=r["reason"],
+                trigger_event_id=r["trigger_event_id"],
+                trigger_evidence_id=r["trigger_evidence_id"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_latest_claim_revision(self, claim_id: str) -> Optional[ClaimRevision]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM claim_revisions WHERE claim_id = ? ORDER BY created_at DESC LIMIT 1", (claim_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return ClaimRevision(
+            id=row["id"],
+            claim_id=row["claim_id"],
+            previous_status=row["previous_status"],
+            new_status=row["new_status"],
+            previous_verification_score=row["previous_verification_score"],
+            new_verification_score=row["new_verification_score"],
+            reason=row["reason"],
+            trigger_event_id=row["trigger_event_id"],
+            trigger_evidence_id=row["trigger_evidence_id"],
+            created_at=datetime.fromisoformat(r["created_at"]) if (r := row) else datetime.now(timezone.utc),
+        )
+
+    # --- Session 6: Technology Assessment Revisions ---
+
+    def insert_technology_assessment_revision(self, rev: TechnologyAssessmentRevision) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO technology_assessment_revisions (
+            id, cluster_id, previous_stage, new_stage, previous_score, new_score, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                rev.id,
+                rev.cluster_id,
+                rev.previous_stage,
+                rev.new_stage,
+                rev.previous_score,
+                rev.new_score,
+                rev.reason,
+                rev.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_technology_assessment_revisions(self, cluster_id: str) -> List[TechnologyAssessmentRevision]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM technology_assessment_revisions WHERE cluster_id = ? ORDER BY created_at ASC", (cluster_id,))
+        return [
+            TechnologyAssessmentRevision(
+                id=r["id"],
+                cluster_id=r["cluster_id"],
+                previous_stage=r["previous_stage"],
+                new_stage=r["new_stage"],
+                previous_score=r["previous_score"],
+                new_score=r["new_score"],
+                reason=r["reason"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_all_technology_assessment_revisions(self) -> List[TechnologyAssessmentRevision]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM technology_assessment_revisions ORDER BY created_at DESC")
+        return [
+            TechnologyAssessmentRevision(
+                id=r["id"],
+                cluster_id=r["cluster_id"],
+                previous_stage=r["previous_stage"],
+                new_stage=r["new_stage"],
+                previous_score=r["previous_score"],
+                new_score=r["new_score"],
+                reason=r["reason"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    # --- Session 6: Technology State ---
+
+    def save_technology_state(self, state: TechnologyState) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO technology_states (
+            cluster_id, current_status, latest_event_at, latest_release,
+            latest_claim_revision_at, active_claim_count, supported_claim_count,
+            contradicted_claim_count, superseded_claim_count, risk_score,
+            trend, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                state.cluster_id,
+                state.current_status,
+                state.latest_event_at.isoformat() if state.latest_event_at else None,
+                state.latest_release,
+                state.latest_claim_revision_at.isoformat() if state.latest_claim_revision_at else None,
+                state.active_claim_count,
+                state.supported_claim_count,
+                state.contradicted_claim_count,
+                state.superseded_claim_count,
+                state.risk_score,
+                state.trend,
+                state.updated_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_technology_state(self, cluster_id: str) -> Optional[TechnologyState]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM technology_states WHERE cluster_id = ? LIMIT 1", (cluster_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return TechnologyState(
+            cluster_id=row["cluster_id"],
+            current_status=row["current_status"],
+            latest_event_at=datetime.fromisoformat(row["latest_event_at"]) if row["latest_event_at"] else None,
+            latest_release=row["latest_release"],
+            latest_claim_revision_at=datetime.fromisoformat(row["latest_claim_revision_at"]) if row["latest_claim_revision_at"] else None,
+            active_claim_count=row["active_claim_count"] or 0,
+            supported_claim_count=row["supported_claim_count"] or 0,
+            contradicted_claim_count=row["contradicted_claim_count"] or 0,
+            superseded_claim_count=row["superseded_claim_count"] or 0,
+            risk_score=row["risk_score"] or 0.0,
+            trend=row["trend"],
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def get_all_technology_states(self) -> List[TechnologyState]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM technology_states ORDER BY risk_score DESC, updated_at DESC")
+        return [
+            TechnologyState(
+                cluster_id=row["cluster_id"],
+                current_status=row["current_status"],
+                latest_event_at=datetime.fromisoformat(row["latest_event_at"]) if row["latest_event_at"] else None,
+                latest_release=row["latest_release"],
+                latest_claim_revision_at=datetime.fromisoformat(row["latest_claim_revision_at"]) if row["latest_claim_revision_at"] else None,
+                active_claim_count=row["active_claim_count"] or 0,
+                supported_claim_count=row["supported_claim_count"] or 0,
+                contradicted_claim_count=row["contradicted_claim_count"] or 0,
+                superseded_claim_count=row["superseded_claim_count"] or 0,
+                risk_score=row["risk_score"] or 0.0,
+                trend=row["trend"],
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in cursor.fetchall()
+        ]
+
+    # --- Session 6: Recheck Queue ---
+
+    def insert_recheck_queue_item(self, item: RecheckQueueItem) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO recheck_queue (
+            id, entity_type, entity_id, reason, priority, not_before,
+            last_checked_at, next_check_at, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                item.id,
+                item.entity_type,
+                item.entity_id,
+                item.reason,
+                item.priority,
+                item.not_before.isoformat() if item.not_before else None,
+                item.last_checked_at.isoformat() if item.last_checked_at else None,
+                item.next_check_at.isoformat() if item.next_check_at else None,
+                item.status,
+                item.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_pending_recheck_items(self, limit: Optional[int] = None) -> List[RecheckQueueItem]:
+        cursor = self.conn.cursor()
+        sql = "SELECT * FROM recheck_queue WHERE status = 'pending' ORDER BY priority DESC, created_at ASC"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        cursor.execute(sql)
+        return [
+            RecheckQueueItem(
+                id=r["id"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                reason=r["reason"],
+                priority=r["priority"] or 0.50,
+                not_before=datetime.fromisoformat(r["not_before"]) if r["not_before"] else None,
+                last_checked_at=datetime.fromisoformat(r["last_checked_at"]) if r["last_checked_at"] else None,
+                next_check_at=datetime.fromisoformat(r["next_check_at"]) if r["next_check_at"] else None,
+                status=r["status"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_all_recheck_items(self) -> List[RecheckQueueItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM recheck_queue ORDER BY priority DESC, created_at ASC")
+        return [
+            RecheckQueueItem(
+                id=r["id"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                reason=r["reason"],
+                priority=r["priority"] or 0.50,
+                not_before=datetime.fromisoformat(r["not_before"]) if r["not_before"] else None,
+                last_checked_at=datetime.fromisoformat(r["last_checked_at"]) if r["last_checked_at"] else None,
+                next_check_at=datetime.fromisoformat(r["next_check_at"]) if r["next_check_at"] else None,
+                status=r["status"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def update_recheck_item_status(self, item_id: str, status: str, last_checked_at: Optional[datetime] = None) -> bool:
+        cursor = self.conn.cursor()
+        if last_checked_at:
+            cursor.execute(
+                "UPDATE recheck_queue SET status = ?, last_checked_at = ? WHERE id = ?",
+                (status, last_checked_at.isoformat(), item_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE recheck_queue SET status = ? WHERE id = ?",
+                (status, item_id),
+            )
+        self.conn.commit()
+        return True
+
+    def clear_recheck_queue(self) -> None:
+        self.conn.execute("DELETE FROM recheck_queue")
+        self.conn.commit()
+
+    # --- Session 6: Intelligence Changes ---
+
+    def insert_intelligence_change(self, change: IntelligenceChange) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO intelligence_changes (
+            id, entity_type, entity_id, change_type, old_value, new_value,
+            importance, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                change.id,
+                change.entity_type,
+                change.entity_id,
+                change.change_type,
+                change.old_value,
+                change.new_value,
+                change.importance,
+                change.reason,
+                change.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_recent_intelligence_changes(self, days: Optional[int] = None, limit: int = 100) -> List[IntelligenceChange]:
+        cursor = self.conn.cursor()
+        if days is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            cursor.execute(
+                "SELECT * FROM intelligence_changes WHERE created_at >= ? ORDER BY importance DESC, created_at DESC LIMIT ?",
+                (cutoff, limit),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM intelligence_changes ORDER BY importance DESC, created_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [
+            IntelligenceChange(
+                id=r["id"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                change_type=r["change_type"],
+                old_value=r["old_value"],
+                new_value=r["new_value"],
+                importance=r["importance"] or 0.50,
+                reason=r["reason"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_all_intelligence_changes(self) -> List[IntelligenceChange]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM intelligence_changes ORDER BY importance DESC, created_at DESC")
+        return [
+            IntelligenceChange(
+                id=r["id"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                change_type=r["change_type"],
+                old_value=r["old_value"],
+                new_value=r["new_value"],
+                importance=r["importance"] or 0.50,
+                reason=r["reason"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def clear_intelligence_changes(self) -> None:
+        self.conn.execute("DELETE FROM intelligence_changes")
+        self.conn.commit()
+
     def clear_claims_and_evidence(self) -> None:
         """Clear only claims, evidence, and technology_assessments tables."""
         self.conn.execute("DELETE FROM claims")
         self.conn.execute("DELETE FROM evidence")
         self.conn.execute("DELETE FROM technology_assessments")
+        self.conn.execute("DELETE FROM claim_revisions")
+        self.conn.execute("DELETE FROM technology_assessment_revisions")
+        self.conn.execute("DELETE FROM technology_states")
+        self.conn.execute("DELETE FROM recheck_queue")
+        self.conn.execute("DELETE FROM intelligence_changes")
         self.conn.commit()
 
     def close(self) -> None:

@@ -97,6 +97,7 @@ class Claim(BaseModel):
     id: str
     cluster_id: str
     claim_type: str = "general"
+    assertion_level: str = "artifact_fact"
     subject: str
     predicate: str
     object: str
@@ -105,6 +106,12 @@ class Claim(BaseModel):
     confidence: float = 1.0
     verification_score: float = 0.0
     self_reported: bool = True
+    is_current: bool = True
+    superseded_by: Optional[str] = None
+    last_verified_at: Optional[datetime] = None
+    staleness_score: float = 0.0
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -123,6 +130,11 @@ class Evidence(BaseModel):
     quality_score: float = 0.50
     independence_score: float = 0.50
     reproducibility_score: float = 0.50
+    is_current: bool = True
+    superseded_by: Optional[str] = None
+    observed_at: Optional[datetime] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -136,3 +148,67 @@ class TechnologyAssessment(BaseModel):
     community_score: float = 0.0
     assessment_score: float = 0.0
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ClaimRevision(BaseModel):
+    id: str
+    claim_id: str
+    previous_status: Optional[str] = None
+    new_status: str
+    previous_verification_score: Optional[float] = None
+    new_verification_score: float
+    reason: str
+    trigger_event_id: Optional[str] = None
+    trigger_evidence_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TechnologyAssessmentRevision(BaseModel):
+    id: str
+    cluster_id: str
+    previous_stage: Optional[str] = None
+    new_stage: str
+    previous_score: Optional[float] = None
+    new_score: float
+    reason: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TechnologyState(BaseModel):
+    cluster_id: str
+    current_status: str = "active"
+    latest_event_at: Optional[datetime] = None
+    latest_release: Optional[str] = None
+    latest_claim_revision_at: Optional[datetime] = None
+    active_claim_count: int = 0
+    supported_claim_count: int = 0
+    contradicted_claim_count: int = 0
+    superseded_claim_count: int = 0
+    risk_score: float = 0.0
+    trend: str = "stable"
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RecheckQueueItem(BaseModel):
+    id: str
+    entity_type: str = "claim"
+    entity_id: str
+    reason: str
+    priority: float = 0.50
+    not_before: Optional[datetime] = None
+    last_checked_at: Optional[datetime] = None
+    next_check_at: Optional[datetime] = None
+    status: str = "pending"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class IntelligenceChange(BaseModel):
+    id: str
+    entity_type: str = "claim"
+    entity_id: str
+    change_type: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    importance: float = 0.50
+    reason: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
