@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import sys
 import time
 from datetime import datetime, timezone
@@ -46,11 +46,11 @@ def run_longitudinal_backfill(rebuild: bool = False) -> None:
         # 2. Re-evaluate claims with assertion policies and staleness
         for claim in claims:
             evs = db.get_evidence_by_claim(claim.id)
-            updated_claim, rev, change = reevaluate_claim(claim, evs, db)
+            updated_claim, rev, change = reevaluate_claim(claim, evs, db, origin="backfill_initialization")
             claims_initialized += 1
 
         # 3. Assess maturity and revisions
-        reevaluate_cluster_maturity(cluster, events, db)
+        reevaluate_cluster_maturity(cluster, events, db, origin="backfill_initialization")
 
         # 4. Update TechnologyState snapshot
         update_technology_state(cluster, events, claims, db)

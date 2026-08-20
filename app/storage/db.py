@@ -97,6 +97,14 @@ class Database:
                 except Exception:
                     pass
 
+        ic_info = self.conn.execute("PRAGMA table_info(intelligence_changes)").fetchall()
+        existing_ic_cols = {r["name"] for r in ic_info}
+        if "origin" not in existing_ic_cols:
+            try:
+                self.conn.execute("ALTER TABLE intelligence_changes ADD COLUMN origin TEXT NOT NULL DEFAULT 'live_update'")
+            except Exception:
+                pass
+
         self.conn.commit()
 
     # --- Event Methods ---
@@ -1126,8 +1134,8 @@ class Database:
         sql = """
         INSERT OR REPLACE INTO intelligence_changes (
             id, entity_type, entity_id, change_type, old_value, new_value,
-            importance, reason, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            importance, reason, origin, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -1140,6 +1148,7 @@ class Database:
                 change.new_value,
                 change.importance,
                 change.reason,
+                getattr(change, "origin", "live_update") or "live_update",
                 change.created_at.isoformat(),
             ),
         )
@@ -1148,6 +1157,20 @@ class Database:
 
     def save_intelligence_change(self, change: IntelligenceChange) -> bool:
         return self.insert_intelligence_change(change)
+
+    def _row_to_intelligence_change(self, r: sqlite3.Row) -> IntelligenceChange:
+        return IntelligenceChange(
+            id=r["id"],
+            entity_type=r["entity_type"],
+            entity_id=r["entity_id"],
+            change_type=r["change_type"],
+            old_value=r["old_value"],
+            new_value=r["new_value"],
+            importance=r["importance"] or 0.50,
+            reason=r["reason"],
+            origin=r["origin"] if "origin" in r.keys() and r["origin"] else "live_update",
+            created_at=datetime.fromisoformat(r["created_at"]),
+        )
 
     def get_recent_intelligence_changes(self, days: Optional[int] = None, limit: int = 100) -> List[IntelligenceChange]:
         cursor = self.conn.cursor()
@@ -1162,38 +1185,12 @@ class Database:
                 "SELECT * FROM intelligence_changes ORDER BY importance DESC, created_at DESC LIMIT ?",
                 (limit,),
             )
-        return [
-            IntelligenceChange(
-                id=r["id"],
-                entity_type=r["entity_type"],
-                entity_id=r["entity_id"],
-                change_type=r["change_type"],
-                old_value=r["old_value"],
-                new_value=r["new_value"],
-                importance=r["importance"] or 0.50,
-                reason=r["reason"],
-                created_at=datetime.fromisoformat(r["created_at"]),
-            )
-            for r in cursor.fetchall()
-        ]
+        return [self._row_to_intelligence_change(r) for r in cursor.fetchall()]
 
     def get_all_intelligence_changes(self) -> List[IntelligenceChange]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM intelligence_changes ORDER BY importance DESC, created_at DESC")
-        return [
-            IntelligenceChange(
-                id=r["id"],
-                entity_type=r["entity_type"],
-                entity_id=r["entity_id"],
-                change_type=r["change_type"],
-                old_value=r["old_value"],
-                new_value=r["new_value"],
-                importance=r["importance"] or 0.50,
-                reason=r["reason"],
-                created_at=datetime.fromisoformat(r["created_at"]),
-            )
-            for r in cursor.fetchall()
-        ]
+        return [self._row_to_intelligence_change(r) for r in cursor.fetchall()]
 
     # --- Session 7: Reference / Context Projects ---
 
@@ -1603,12 +1600,19 @@ class Database:
         row = cursor.fetchone()
         return self._row_to_inbox_item(row) if row else None
 
-    def get_active_inbox_items(self, include_expired: bool = False, limit: int = 100) -> List[InboxItem]:
+    def get_active_inbox_items(
+        self,
+        include_expired: bool = False,
+        include_suppressed: bool = False,
+        limit: int = 100,
+    ) -> List[InboxItem]:
         cursor = self.conn.cursor()
         if include_expired:
             cursor.execute("SELECT * FROM inbox_items ORDER BY inbox_score DESC LIMIT ?", (limit,))
+        elif include_suppressed:
+            cursor.execute("SELECT * FROM inbox_items WHERE state NOT IN ('expired', 'archived') ORDER BY inbox_score DESC LIMIT ?", (limit,))
         else:
-            cursor.execute("SELECT * FROM inbox_items WHERE state != 'expired' ORDER BY inbox_score DESC LIMIT ?", (limit,))
+            cursor.execute("SELECT * FROM inbox_items WHERE state IN ('unseen', 'seen', 'opened', 'starred') ORDER BY inbox_score DESC LIMIT ?", (limit,))
         return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
 
     def get_inbox_items_by_state(self, state: str) -> List[InboxItem]:

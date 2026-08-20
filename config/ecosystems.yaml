@@ -1,0 +1,68 @@
+﻿# HERMES Ecosystem & Package Identity Mapping
+# Used for deterministic direct dependency matching and preventing broad technology overlap false positives
+
+ecosystems:
+  torch:
+    canonical_repos: ["pytorch/pytorch"]
+    aliases: ["torch", "pytorch"]
+    package_names: ["torch", "pytorch"]
+  pytorch:
+    canonical_repos: ["pytorch/pytorch"]
+    aliases: ["torch", "pytorch"]
+    package_names: ["torch", "pytorch"]
+  vllm:
+    canonical_repos: ["vllm-project/vllm"]
+    aliases: ["vllm"]
+    package_names: ["vllm"]
+  transformers:
+    canonical_repos: ["huggingface/transformers"]
+    aliases: ["transformers", "huggingface/transformers"]
+    package_names: ["transformers"]
+  sentence-transformers:
+    canonical_repos: ["UKPLab/sentence-transformers"]
+    aliases: ["sentence-transformers", "sentence_transformers"]
+    package_names: ["sentence-transformers", "sentence_transformers"]
+  qdrant-client:
+    canonical_repos: ["qdrant/qdrant", "qdrant/qdrant-client"]
+    aliases: ["qdrant", "qdrant-client"]
+    package_names: ["qdrant-client", "qdrant"]
+  chromadb:
+    canonical_repos: ["chroma-core/chroma"]
+    aliases: ["chromadb", "chroma"]
+    package_names: ["chromadb"]
+  llama-cpp-python:
+    canonical_repos: ["ggml-org/llama.cpp", "abetlen/llama-cpp-python"]
+    aliases: ["llama-cpp-python", "llama.cpp"]
+    package_names: ["llama-cpp-python", "llama_cpp"]
+  fastapi:
+    canonical_repos: ["fastapi/fastapi", "tiangolo/fastapi"]
+    aliases: ["fastapi"]
+    package_names: ["fastapi"]
+  uvicorn:
+    canonical_repos: ["encode/uvicorn"]
+    aliases: ["uvicorn"]
+    package_names: ["uvicorn"]
+  llvm:
+    canonical_repos: ["llvm/llvm-project"]
+    aliases: ["llvm", "llvm-project", "clang"]
+    package_names: ["llvm-project", "llvm"]
+  triton:
+    canonical_repos: ["triton-lang/triton", "openai/triton"]
+    aliases: ["triton"]
+    package_names: ["triton"]
+  sglang:
+    canonical_repos: ["sgl-project/sglang"]
+    aliases: ["sglang"]
+    package_names: ["sglang"]
+  milvus:
+    canonical_repos: ["milvus-io/milvus", "milvus-io/pymilvus"]
+    aliases: ["milvus", "pymilvus"]
+    package_names: ["pymilvus", "milvus"]
+  numpy:
+    canonical_repos: ["numpy/numpy"]
+    aliases: ["numpy"]
+    package_names: ["numpy"]
+  scipy:
+    canonical_repos: ["scipy/scipy"]
+    aliases: ["scipy"]
+    package_names: ["scipy"]

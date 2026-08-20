@@ -1,8 +1,24 @@
 ﻿inbox:
   ttl_hours: 24
   discovery_lookback_hours: 36
-  max_daily_items: 40
+  change_lookback_hours: 36
+  initial_history_max_days: 7
+  max_daily_items: 30
+  min_inbox_score: 0.45
   max_must_know: 5
-  max_project_items_per_project: 8
-  max_section_items: 10
-  min_inbox_score: 0.40
+  max_project_items_per_project: 6
+  max_section_items: 6
+
+briefing:
+  target_items: 15
+  max_items: 20
+  min_briefing_score: 0.55
+  max_must_know: 5
+  max_project_relevant: 6
+  max_research: 4
+  max_systems: 4
+  max_storage: 4
+  max_ai_ml: 5
+  max_developer_tooling: 3
+  max_corrections: 4
+  max_watch: 4

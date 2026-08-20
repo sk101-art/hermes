@@ -211,6 +211,7 @@ class IntelligenceChange(BaseModel):
     new_value: Optional[str] = None
     importance: float = 0.50
     reason: str
+    origin: str = "live_update"  # live_update, source_refresh, backfill_initialization, migration, recompute, manual_rebuild, new_evidence, new_release, actual_revision
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -48,6 +48,7 @@ def reevaluate_claim(
     trigger_event: Optional[Event] = None,
     trigger_evidence: Optional[Evidence] = None,
     dry_run: bool = False,
+    origin: str = "live_update",
 ) -> Tuple[Claim, Optional[ClaimRevision], Optional[IntelligenceChange]]:
     """
     Re-evaluates a single claim against all associated evidence.
@@ -126,6 +127,7 @@ def reevaluate_claim(
             new_value=f"{new_status} ({new_score:.4f})",
             importance=imp,
             reason=reason,
+            origin=origin,
             created_at=now,
         )
 
@@ -198,6 +200,7 @@ def reevaluate_cluster_maturity(
     events: List[Event],
     db: Database,
     dry_run: bool = False,
+    origin: str = "live_update",
 ) -> Tuple[TechnologyAssessment, Optional[TechnologyAssessmentRevision], Optional[IntelligenceChange]]:
     """
     Re-evaluates technology maturity, records stage progressions and regressions.
@@ -252,6 +255,7 @@ def reevaluate_cluster_maturity(
             new_value=f"{new_assessment.maturity_stage} ({new_assessment.assessment_score:.4f})",
             importance=imp,
             reason=reason,
+            origin=origin,
             created_at=now,
         )
 

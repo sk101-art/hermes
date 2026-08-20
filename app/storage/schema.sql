@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS intelligence_changes (
     new_value TEXT,
     importance REAL DEFAULT 0.50,
     reason TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'live_update',
     created_at TEXT NOT NULL
 );
 

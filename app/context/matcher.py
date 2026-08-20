@@ -36,6 +36,31 @@ def compute_token_set(text: str) -> Set[str]:
     return set(re.findall(r"[a-zA-Z0-9_-]{2,}", text.lower()))
 
 
+import yaml
+from pathlib import Path
+
+# Broad technology terms that must NEVER be treated as direct dependencies
+BROAD_TECHNOLOGY_TERMS: Set[str] = {
+    "cuda", "gpu", "rag", "llm", "vector", "database", "c++", "cpp", "c",
+    "python", "rust", "go", "java", "inference", "quantization", "compiler",
+    "kernel", "ai", "ml", "embeddings", "agent", "agents", "docker", "storage",
+    "kv-cache", "attention", "transformer", "models"
+}
+
+
+def load_ecosystem_config() -> Dict[str, Any]:
+    cfg_path = Path("config/ecosystems.yaml")
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                if isinstance(data, dict) and "ecosystems" in data:
+                    return data["ecosystems"]
+        except Exception:
+            pass
+    return {}
+
+
 def match_project_with_cluster(
     project: Project,
     profile: ProjectTechnologyProfile,
@@ -51,6 +76,8 @@ def match_project_with_cluster(
     Computes deterministic relevance, impact, match type, and recommendation
     between a project profile and a StoryCluster intelligence entity.
     """
+    ecosystem_map = load_ecosystem_config()
+
     # 1. Dependency & Technology Overlap
     project_deps = {k.lower().replace("_", "-"): v for k, v in profile.dependencies.items()}
     project_frameworks = {f.lower() for f in profile.frameworks}
@@ -60,26 +87,60 @@ def match_project_with_cluster(
     cluster_text = f"{cluster.canonical_title} " + " ".join(e.title + " " + (e.text or "") for e in cluster_events)
     cluster_tokens = compute_token_set(cluster_text)
 
-    # Check for direct dependency matches
+    # Check for direct dependency matches strictly requiring concrete identity
     matched_deps = []
     for dep in project_deps:
-        # Check exact token match or alias (e.g. torch <-> pytorch)
-        aliases = [dep]
-        if dep in ("torch", "pytorch"):
-            aliases = ["torch", "pytorch"]
-        elif dep in ("transformers", "huggingface"):
-            aliases = ["transformers", "huggingface"]
+        # Ignore broad terms from direct dependency matching
+        if dep in BROAD_TECHNOLOGY_TERMS:
+            continue
 
-        for alias in aliases:
-            if alias in cluster_tokens or any(alias in (e.id + " " + e.title).lower() for e in cluster_events):
+        eco_info = ecosystem_map.get(dep)
+        if eco_info:
+            canonical_repos = [r.lower() for r in eco_info.get("canonical_repos", [])]
+            aliases = [a.lower() for a in eco_info.get("aliases", [dep])]
+            package_names = [p.lower() for p in eco_info.get("package_names", [dep])]
+
+            # Direct match if cluster has event matching canonical repo
+            repo_match = False
+            for e in cluster_events:
+                e_url = (e.url or "").lower()
+                e_id = e.id.lower()
+                for repo in canonical_repos:
+                    if repo in e_url or repo in e_id:
+                        repo_match = True
+                        break
+                if repo_match:
+                    break
+
+            # Or official release matching alias/package name
+            claim_match = False
+            for c in cluster_claims:
+                if c.claim_type == "release" and (c.subject.lower() in aliases or c.object.lower() in aliases):
+                    claim_match = True
+                    break
+
+            if repo_match or claim_match:
                 matched_deps.append(dep)
-                break
+        else:
+            # For dependencies not explicitly in ecosystem map, require exact repo or release event
+            for e in cluster_events:
+                if e.source == "github" and (f"/{dep}" in (e.url or "").lower() or f":{dep}:" in e.id.lower()):
+                    matched_deps.append(dep)
+                    break
 
     # Check for technology / framework overlap
     matched_techs = []
     for fw in project_frameworks:
-        if fw in cluster_tokens:
+        fw_lower = fw.lower()
+        if fw_lower in cluster_tokens or any(fw_lower in (e.title + " " + (e.text or "")).lower() for e in cluster_events):
             matched_techs.append(fw)
+
+    # Also capture broad dependencies (like cuda) into technology overlap
+    for dep in project_deps:
+        if dep in BROAD_TECHNOLOGY_TERMS:
+            if dep in cluster_tokens or any(dep in (e.title + " " + (e.text or "")).lower() for e in cluster_events):
+                if dep not in [t.lower() for t in matched_techs]:
+                    matched_techs.append(dep)
 
     # Check for language overlap
     matched_langs = []
@@ -90,7 +151,8 @@ def match_project_with_cluster(
     # Check for topic overlap
     matched_topics = []
     for top in project_topics:
-        if top in cluster_tokens or any(top in (e.title + " " + (e.text or "")).lower() for e in cluster_events):
+        top_lower = top.lower()
+        if top_lower in cluster_tokens or any(top_lower in (e.title + " " + (e.text or "")).lower() for e in cluster_events):
             matched_topics.append(top)
 
     # 2. Semantic Similarity
@@ -108,28 +170,38 @@ def match_project_with_cluster(
             semantic_sim = max(event_sims)
 
     # 3. Component overlap scores [0.0 - 1.0]
-    dep_overlap_score = 1.0 if matched_deps else (0.5 if any(d in cluster_text.lower() for d in project_deps) else 0.0)
+    dep_overlap_score = 1.0 if matched_deps else 0.0
     tech_overlap_score = min(1.0, len(matched_techs) / 2.0)
     lang_overlap_score = 1.0 if matched_langs else 0.0
     topic_overlap_score = min(1.0, len(matched_topics) / 2.0)
 
     # 4. Transparent Relevance Formula
-    relevance = (
-        0.45 * semantic_sim
-        + 0.20 * dep_overlap_score
-        + 0.15 * tech_overlap_score
-        + 0.10 * lang_overlap_score
-        + 0.10 * topic_overlap_score
-    )
+    if semantic_sim > 0.0:
+        relevance = (
+            0.45 * semantic_sim
+            + 0.20 * dep_overlap_score
+            + 0.15 * tech_overlap_score
+            + 0.10 * lang_overlap_score
+            + 0.10 * topic_overlap_score
+        )
+    else:
+        relevance = (
+            0.35 * dep_overlap_score
+            + 0.30 * tech_overlap_score
+            + 0.20 * topic_overlap_score
+            + 0.15 * lang_overlap_score
+        )
 
-    # High direct dependency match override / boost
+    # Direct dependency or explicit technology/topic match override
     if matched_deps:
         relevance = max(relevance, 0.75 + (0.20 * semantic_sim))
+    elif matched_techs or matched_topics:
+        relevance = max(relevance, 0.40)
 
     relevance = round(min(1.0, max(0.0, relevance)), 4)
 
-    # Filter out weak/irrelevant matches (< 0.35) unless direct dependency match exists
-    if relevance < 0.35 and not matched_deps:
+    # Filter out weak/irrelevant matches (< 0.25) unless matched dependencies/techs/topics exist
+    if relevance < 0.25 and not (matched_deps or matched_techs or matched_topics):
         return None
 
     # 5. Verification & Maturity Factors
@@ -144,19 +216,25 @@ def match_project_with_cluster(
     # 6. Match Type Classification
     has_release = any(e.source == "github" and e.event_type == "release" for e in cluster_events)
     has_perf_claim = any(c.claim_type == "performance" for c in cluster_claims)
-    has_storage = any("database" in top or "storage" in top or "vector" in top for top in matched_topics)
+    has_storage = any("database" in top.lower() or "storage" in top.lower() or "vector" in top.lower() for top in matched_topics)
 
     if matched_deps:
         match_type = "direct_dependency"
+    elif project.name.lower() in cluster.canonical_title.lower():
+        match_type = "same_project"
     elif has_perf_claim and relevance >= 0.50:
         match_type = "optimization_opportunity"
     elif has_storage:
         match_type = "storage_relevant"
     elif any(c.status in ("contradicted", "mixed") for c in cluster_claims) or risk_score >= 0.60:
         match_type = "risk_relevant"
-    elif any("compiler" in top or "kernel" in top or "cuda" in top for top in matched_topics):
+    elif any("compiler" in top.lower() or "kernel" in top.lower() or "cuda" in top.lower() for top in matched_topics):
         match_type = "architecture_relevant"
+    elif any(e.source in ("arxiv", "openalex", "crossref") for e in cluster_events) or any("research" in top.lower() for top in matched_topics):
+        match_type = "research_relevant"
     elif matched_techs:
+        match_type = "technology_overlap"
+    elif matched_topics:
         match_type = "compatible_tool"
     else:
         match_type = "general_related"
