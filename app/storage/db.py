@@ -122,6 +122,11 @@ class Database:
         row = cursor.fetchone()
         return self._row_to_event(row) if row else None
 
+    def get_all_events(self) -> List[Event]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM events ORDER BY final_score DESC, discovered_at DESC")
+        return [self._row_to_event(r) for r in cursor.fetchall()]
+
     def get_events_by_ids(self, event_ids: List[str]) -> List[Event]:
         if not event_ids:
             return []
@@ -142,7 +147,7 @@ class Database:
         )
         return [self._row_to_event(r) for r in cursor.fetchall()]
 
-    def get_recent_events(self, days: int = 30, limit: int = 200) -> List[Event]:
+    def get_recent_events(self, days: int = 30, limit: int = 300) -> List[Event]:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         cursor = self.conn.cursor()
         cursor.execute(
@@ -161,6 +166,54 @@ class Database:
         cursor.execute("SELECT COUNT(*) FROM events")
         row = cursor.fetchone()
         return row[0] if row else 0
+
+    def get_event_counts_by_source(self) -> Dict[str, int]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT source, COUNT(*) FROM events GROUP BY source")
+        return {r[0]: r[1] for r in cursor.fetchall()}
+
+    def get_unembedded_events(self, model_name: str) -> List[Event]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT e.* FROM events e
+            LEFT JOIN event_embeddings ee ON e.id = ee.event_id AND ee.model_name = ?
+            WHERE ee.event_id IS NULL
+            ORDER BY e.final_score DESC
+            """,
+            (model_name,),
+        )
+        return [self._row_to_event(r) for r in cursor.fetchall()]
+
+    def get_unclustered_events(self) -> List[Event]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT e.* FROM events e
+            LEFT JOIN cluster_events ce ON e.id = ce.event_id
+            WHERE ce.event_id IS NULL
+            ORDER BY e.final_score DESC
+            """
+        )
+        return [self._row_to_event(r) for r in cursor.fetchall()]
+
+    def get_fts_candidates(self, query_tokens: List[str], limit: int = 50) -> List[str]:
+        if not self.has_fts5 or not query_tokens:
+            return []
+        # Construct safe match string
+        clean_tokens = [t.replace('"', '""') for t in query_tokens if len(t) >= 3]
+        if not clean_tokens:
+            return []
+        match_query = " OR ".join([f'"{t}"' for t in clean_tokens[:10]])
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id FROM events_fts WHERE events_fts MATCH ? LIMIT ?",
+                (match_query, limit),
+            )
+            return [r[0] for r in cursor.fetchall()]
+        except Exception:
+            return []
 
     # --- Embedding Storage Methods ---
 
@@ -203,6 +256,17 @@ class Database:
         cursor.execute(
             f"SELECT event_id, embedding, dimension FROM event_embeddings WHERE model_name = ? AND event_id IN ({placeholders})",
             (model_name, *event_ids),
+        )
+        result = {}
+        for r in cursor.fetchall():
+            result[r["event_id"]] = np.frombuffer(r["embedding"], dtype=np.float32)
+        return result
+
+    def get_all_embeddings(self, model_name: str) -> Dict[str, np.ndarray]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT event_id, embedding FROM event_embeddings WHERE model_name = ?",
+            (model_name,),
         )
         result = {}
         for r in cursor.fetchall():
@@ -332,6 +396,13 @@ class Database:
         )
         return [self._row_to_event(r) for r in cursor.fetchall()]
 
+    def clear_clusters_and_relationships(self) -> None:
+        """Clear only story_clusters, cluster_events, and event_relationships. NEVER touches events or event_embeddings."""
+        self.conn.execute("DELETE FROM story_clusters")
+        self.conn.execute("DELETE FROM cluster_events")
+        self.conn.execute("DELETE FROM event_relationships")
+        self.conn.commit()
+
     # --- Relationship Storage Methods ---
 
     def save_relationship(self, rel: EventRelationship) -> bool:
@@ -363,6 +434,21 @@ class Database:
             """,
             (event_id, event_id),
         )
+        return [
+            EventRelationship(
+                id=r["id"],
+                source_event_id=r["source_event_id"],
+                target_event_id=r["target_event_id"],
+                relationship_type=r["relationship_type"],
+                confidence=r["confidence"] or 1.0,
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_all_relationships(self) -> List[EventRelationship]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM event_relationships ORDER BY confidence DESC")
         return [
             EventRelationship(
                 id=r["id"],

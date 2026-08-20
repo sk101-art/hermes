@@ -21,27 +21,51 @@ def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
 
 
 def extract_github_repo(url: Optional[str]) -> Optional[str]:
-    """Extract canonical github:owner/repo identifier from any GitHub URL."""
+    """Extract canonical github:owner/repo identifier from any GitHub URL or text."""
     if not url:
         return None
-    match = re.search(r"github\.com/([a-zA-Z0-9_\-\.]+)/([a-zA-Z0-9_\-\.]+)", url)
+
+    match = re.search(r"github\.com[:/]([a-zA-Z0-9_\-\.]+)/([a-zA-Z0-9_\-\.]+)", url, re.IGNORECASE)
     if match:
-        owner = match.group(1).lower()
-        repo = match.group(2).lower().rstrip(".git")
-        # Ignore common non-repo paths
-        if owner in {"topics", "orgs", "collections", "search", "trending"}:
+        owner = match.group(1).lower().strip()
+        repo = match.group(2).lower().strip()
+
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+
+        repo = re.sub(r"[/#\?].*$", "", repo)
+
+        ignored_owners = {
+            "topics", "orgs", "collections", "search", "trending",
+            "settings", "marketplace", "explore", "features", "about",
+            "pricing", "security", "customer-stories", "login", "signup"
+        }
+        if owner in ignored_owners or not repo:
             return None
+
         return f"github:{owner}/{repo}"
+
     return None
 
 
 def extract_arxiv_id(url: Optional[str]) -> Optional[str]:
-    """Extract canonical arxiv:id identifier from any arXiv URL."""
+    """Extract canonical arxiv:id identifier from any arXiv URL or text."""
     if not url:
         return None
-    match = re.search(r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5})", url)
+
+    match = re.search(
+        r"arxiv\.org/(?:abs|pdf|html|ps)/([0-9]{4}\.[0-9]{4,5}|[a-zA-Z\-]+/[0-9]{7})(?:v[0-9]+)?(?:\.pdf)?",
+        url,
+        re.IGNORECASE,
+    )
     if match:
-        return f"arxiv:{match.group(1)}"
+        base_id = match.group(1).lower().strip()
+        return f"arxiv:{base_id}"
+
+    direct_match = re.search(r"arxiv:([0-9]{4}\.[0-9]{4,5}|[a-zA-Z\-]+/[0-9]{7})", url, re.IGNORECASE)
+    if direct_match:
+        return f"arxiv:{direct_match.group(1).lower().strip()}"
+
     return None
 
 
@@ -50,9 +74,17 @@ def extract_identifiers(event: Event) -> List[str]:
     identifiers = set()
 
     # From Event.id
-    if event.id.startswith("github:") or event.id.startswith("arxiv:"):
-        base_id = event.id.split("v")[0] if "v" in event.id and event.id.startswith("arxiv:") else event.id
-        identifiers.add(base_id.lower())
+    if event.id.startswith("github:"):
+        gh_id = extract_github_repo(event.id.replace("github:", "https://github.com/"))
+        if gh_id:
+            identifiers.add(gh_id)
+        else:
+            clean_gh = re.sub(r"\.git$", "", event.id.lower().strip())
+            identifiers.add(clean_gh)
+
+    elif event.id.startswith("arxiv:"):
+        clean_ax = re.sub(r"v[0-9]+$", "", event.id.lower().strip())
+        identifiers.add(clean_ax)
 
     # From Event.url
     gh_id = extract_github_repo(event.url)
@@ -72,7 +104,18 @@ def extract_identifiers(event: Event) -> List[str]:
         if ax_ext:
             identifiers.add(ax_ext)
 
-    return list(identifiers)
+    # From title / text if they mention explicit links
+    text_content = f"{event.title} {event.text}"
+    gh_in_text = extract_github_repo(text_content)
+    if gh_in_text:
+        identifiers.add(gh_in_text)
+    ax_in_text = extract_arxiv_id(text_content)
+    if ax_in_text:
+        identifiers.add(ax_in_text)
+
+    # Filter out empty or broken short strings
+    valid_identifiers = {i for i in identifiers if len(i) >= 6 and (i.startswith("github:") or i.startswith("arxiv:"))}
+    return list(valid_identifiers)
 
 
 def match_direct_identifiers(event1: Event, event2: Event) -> Optional[Tuple[str, float]]:

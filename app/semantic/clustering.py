@@ -1,4 +1,5 @@
 ﻿import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -6,7 +7,7 @@ import numpy as np
 
 from app.models.schemas import Event, StoryCluster, EventRelationship
 from app.semantic.embeddings import EmbeddingService, prepare_event_text
-from app.semantic.similarity import cosine_similarity, match_direct_identifiers, extract_identifiers
+from app.semantic.similarity import cosine_similarity, match_direct_identifiers, extract_identifiers, extract_github_repo, extract_arxiv_id
 from app.storage.db import Database
 
 STOP_WORDS = {
@@ -14,17 +15,61 @@ STOP_WORDS = {
     "models", "paper", "using", "based", "framework", "tool", "tools",
     "ai", "machine", "learning", "with", "for", "in", "on", "of", "to",
     "is", "by", "from", "at", "as", "into", "through", "about", "via",
-    "this", "we", "our", "are", "that", "it", "an", "all", "its"
+    "this", "we", "our", "are", "that", "it", "all", "its", "can",
+    "how", "what", "why", "when", "where", "which", "who", "your", "you",
+    "more", "over", "between", "under", "after", "before", "during", "without",
+    "project", "implementation", "approach", "method", "methods", "analysis"
+}
+
+SYNONYM_MAP = {
+    "llm": {"large language model", "language model", "llms"},
+    "rag": {"retrieval augmented generation", "retrieval-augmented generation"},
+    "vlm": {"vision language model", "vision-language model"},
+    "moe": {"mixture of experts", "mixture-of-experts"},
+    "db": {"database", "databases"},
+    "gpu": {"cuda", "graphics processing unit"},
 }
 
 
 def extract_distinctive_tokens(text: str) -> Set[str]:
-    """Extract informative keywords/tokens ignoring common stop words."""
+    """Extract informative keywords/tokens preserving technical project names."""
     if not text:
         return set()
-    cleaned = re.sub(r"[^\w\-\.]+", " ", text.lower())
-    tokens = {w.strip(".-") for w in cleaned.split() if len(w.strip(".-")) >= 3}
-    return tokens - STOP_WORDS
+
+    # Extract alphanumeric words and special symbols like llama.cpp, c++, flash-attention
+    raw_tokens = re.findall(r"[a-zA-Z0-9_\-\.\+]+", text.lower())
+    tokens = set()
+
+    for t in raw_tokens:
+        clean = t.strip(".-")
+        if len(clean) >= 2 and clean not in STOP_WORDS:
+            tokens.add(clean)
+            base = re.sub(r"[^\w]", "", clean)
+            if len(base) >= 2 and base not in STOP_WORDS:
+                tokens.add(base)
+
+    lower_text = text.lower()
+    for abbrev, full_forms in SYNONYM_MAP.items():
+        if abbrev in tokens:
+            for ff in full_forms:
+                for word in ff.split():
+                    if word not in STOP_WORDS:
+                        tokens.add(word)
+        for ff in full_forms:
+            if ff in lower_text:
+                tokens.add(abbrev)
+
+    return tokens
+
+
+def extract_owner_or_project(event: Event) -> Optional[str]:
+    """Extract GitHub owner or distinctive project prefix if present."""
+    gh_id = extract_github_repo(event.url) or extract_github_repo(event.id)
+    if gh_id:
+        parts = gh_id.replace("github:", "").split("/")
+        if len(parts) == 2:
+            return parts[0]  # owner
+    return None
 
 
 def calculate_source_diversity(sources: List[str]) -> float:
@@ -64,29 +109,67 @@ def calculate_cluster_score(max_event_score: float, sources: List[str], num_even
 def select_candidates(
     target_event: Event,
     candidate_events: List[Event],
+    db: Optional[Database] = None,
     max_candidates: int = 50,
 ) -> List[Event]:
-    """Cheap deterministic candidate selection before semantic vector comparison."""
+    """Deterministic candidate selection combining direct identifiers, lexical overlap, and FTS5."""
     target_tokens = extract_distinctive_tokens(f"{target_event.title} {' '.join(target_event.topics)}")
     target_ids = set(extract_identifiers(target_event))
+    target_owner = extract_owner_or_project(target_event)
+
+    fts_id_set = set()
+    if db and db.has_fts5 and target_tokens:
+        fts_ids = db.get_fts_candidates(list(target_tokens), limit=max_candidates)
+        fts_id_set = set(fts_ids)
+
+    candidate_map = {c.id: c for c in candidate_events if c.id != target_event.id}
+
+    if db and fts_id_set:
+        missing_ids = [fid for fid in fts_id_set if fid not in candidate_map and fid != target_event.id]
+        if missing_ids:
+            for ev in db.get_events_by_ids(missing_ids):
+                candidate_map[ev.id] = ev
 
     scored_candidates: List[Tuple[float, Event]] = []
-    for cand in candidate_events:
-        if cand.id == target_event.id:
-            continue
-
+    for cand_id, cand in candidate_map.items():
         cand_ids = set(extract_identifiers(cand))
         cand_tokens = extract_distinctive_tokens(f"{cand.title} {' '.join(cand.topics)}")
+        cand_owner = extract_owner_or_project(cand)
 
         shared_ids = len(target_ids.intersection(cand_ids))
         shared_tokens = len(target_tokens.intersection(cand_tokens))
+        same_owner = 1.0 if (target_owner and cand_owner and target_owner == cand_owner) else 0.0
 
-        score = (shared_ids * 10.0) + (shared_tokens * 1.0)
+        fts_bonus = 15.0 if cand_id in fts_id_set else 0.0
+        score = (shared_ids * 100.0) + (same_owner * 30.0) + (shared_tokens * 2.0) + fts_bonus
+
         if score > 0:
             scored_candidates.append((score, cand))
 
     scored_candidates.sort(key=lambda x: x[0], reverse=True)
     return [c[1] for c in scored_candidates[:max_candidates]]
+
+
+def compute_cluster_centroid(
+    cluster_events: List[Event],
+    db: Database,
+    model_name: str,
+) -> Optional[np.ndarray]:
+    """Compute normalized mean centroid vector for a cluster."""
+    if not cluster_events:
+        return None
+    vectors = []
+    for ev in cluster_events:
+        vec = db.get_embedding(ev.id, model_name)
+        if vec is not None:
+            vectors.append(vec)
+    if not vectors:
+        return None
+    mean_vec = np.mean(vectors, axis=0)
+    norm = np.linalg.norm(mean_vec)
+    if norm == 0.0:
+        return mean_vec.astype(np.float32)
+    return (mean_vec / norm).astype(np.float32)
 
 
 class ClusterManager:
@@ -110,6 +193,7 @@ class ClusterManager:
         db: Database,
         embedding_service: EmbeddingService,
     ) -> Dict[str, Any]:
+        start_time = time.time()
         stats = {
             "accepted_events": len(accepted_events),
             "embeddings_generated": 0,
@@ -118,6 +202,11 @@ class ClusterManager:
             "events_attached": 0,
             "relationships_created": 0,
             "semantic_failures": 0,
+            "candidate_comparisons": 0,
+            "semantic_comparisons": 0,
+            "avg_candidates_per_event": 0.0,
+            "max_candidates_for_event": 0,
+            "duration_seconds": 0.0,
         }
 
         if not accepted_events:
@@ -146,20 +235,25 @@ class ClusterManager:
                 print(f"[Warning] Batch embedding generation error: {e}", flush=True)
                 stats["semantic_failures"] += len(uncached_events)
 
-        # 2. Retrieve recent events pool for candidate generation
-        recent_events = db.get_recent_events(days=self.candidate_days, limit=300)
+        # 2. Retrieve pool of candidate events
+        recent_events = db.get_recent_events(days=self.candidate_days, limit=400)
         events_by_id = {e.id: e for e in recent_events}
         for ev in accepted_events:
             events_by_id[ev.id] = ev
 
-        # 3. Process each accepted event into clusters
+        candidate_counts = []
+
+        # 3. Process each event into StoryClusters
         for ev in accepted_events:
-            # Check if event is already part of an existing cluster in DB
             existing_cluster_id = db.get_event_cluster(ev.id)
             if existing_cluster_id:
                 continue
 
-            candidates = select_candidates(ev, list(events_by_id.values()), max_candidates=self.max_candidates)
+            candidates = select_candidates(
+                ev, list(events_by_id.values()), db=db, max_candidates=self.max_candidates
+            )
+            candidate_counts.append(len(candidates))
+            stats["candidate_comparisons"] += len(candidates)
 
             best_cluster_id: Optional[str] = None
             best_similarity: float = 0.0
@@ -167,7 +261,7 @@ class ClusterManager:
             direct_rel_type: Optional[str] = None
             direct_confidence: float = 0.0
 
-            # First: Direct deterministic identifier linking against existing clustered candidates
+            # Step 3a: Direct deterministic identifier linking
             for cand in candidates:
                 direct_match = match_direct_identifiers(ev, cand)
                 if direct_match:
@@ -185,29 +279,53 @@ class ClusterManager:
                         direct_rel_type = rel_type
                         direct_confidence = conf
 
-            # Second: Semantic similarity with candidates belonging to existing clusters
+            # Step 3b: Semantic similarity with candidates belonging to clusters
             if not best_cluster_id:
                 ev_vec = db.get_embedding(ev.id, model_name)
                 if ev_vec is not None:
+                    target_tokens = extract_distinctive_tokens(ev.title)
+                    target_owner = extract_owner_or_project(ev)
+
                     for cand in candidates:
                         cand_cid = db.get_event_cluster(cand.id)
                         cand_vec = db.get_embedding(cand.id, model_name)
                         if cand_vec is not None:
+                            stats["semantic_comparisons"] += 1
                             sim = cosine_similarity(ev_vec, cand_vec)
-                            if cand_cid and sim >= self.similarity_threshold and sim > best_similarity:
-                                best_similarity = sim
-                                best_matched_event = cand
-                                best_cluster_id = cand_cid
-                            elif not best_cluster_id and sim >= self.similarity_threshold and sim > best_similarity:
-                                best_matched_event = cand
-                                direct_confidence = sim
 
-            # 4. Attach to existing cluster or create new cluster
-            if best_cluster_id and best_similarity >= self.similarity_threshold:
+                            cand_tokens = extract_distinctive_tokens(cand.title)
+                            cand_owner = extract_owner_or_project(cand)
+                            shared_toks = len(target_tokens.intersection(cand_tokens))
+                            same_owner = bool(target_owner and cand_owner and target_owner == cand_owner)
+
+                            # If same owner or strong lexical overlap (>= 3 distinctive tokens), allow supported threshold (0.75)
+                            has_strong_support = same_owner or (shared_toks >= 3)
+                            effective_threshold = 0.75 if has_strong_support else self.similarity_threshold
+
+                            if cand_cid:
+                                # When attaching to an existing cluster, verify agreement with canonical cluster representative
+                                cluster_evs = db.get_cluster_events(cand_cid)
+                                rep_ev = max(cluster_evs, key=lambda x: x.final_score) if cluster_evs else cand
+                                rep_vec = db.get_embedding(rep_ev.id, model_name)
+                                rep_sim = cosine_similarity(ev_vec, rep_vec) if rep_vec is not None else sim
+
+                                match_score = min(sim, rep_sim) if rep_sim > 0 else sim
+
+                                if match_score >= effective_threshold and match_score > best_similarity:
+                                    best_similarity = match_score
+                                    best_matched_event = cand
+                                    best_cluster_id = cand_cid
+                            else:
+                                if sim >= effective_threshold and sim > best_similarity:
+                                    best_matched_event = cand
+                                    direct_confidence = sim
+
+            # Step 4: Attach to existing cluster or create new cluster
+            if best_cluster_id and (direct_rel_type or best_similarity >= 0.75):
                 db.add_event_to_cluster(best_cluster_id, ev.id, similarity_score=round(best_similarity, 4))
                 stats["events_attached"] += 1
 
-                # Update cluster metadata and ranking
+                # Update cluster metadata
                 cluster = db.get_cluster(best_cluster_id)
                 if cluster:
                     cluster_events = db.get_cluster_events(best_cluster_id)
@@ -222,14 +340,14 @@ class ClusterManager:
                     cluster.updated_at = datetime.now(timezone.utc)
                     db.update_cluster(cluster)
 
-                # Persist relationship if matched with an event
                 if best_matched_event:
                     rel_id = f"rel:{uuid.uuid4().hex[:12]}"
+                    rel_type = direct_rel_type or ("same_story" if best_similarity >= 0.85 else "related")
                     rel = EventRelationship(
                         id=rel_id,
                         source_event_id=ev.id,
                         target_event_id=best_matched_event.id,
-                        relationship_type=direct_rel_type or "same_story",
+                        relationship_type=rel_type,
                         confidence=direct_confidence or round(best_similarity, 4),
                         created_at=datetime.now(timezone.utc),
                     )
@@ -237,7 +355,6 @@ class ClusterManager:
                     stats["relationships_created"] += 1
 
             else:
-                # Create a new StoryCluster
                 new_cluster_id = f"cluster:{uuid.uuid4().hex[:12]}"
                 new_cluster = StoryCluster(
                     id=new_cluster_id,
@@ -254,7 +371,7 @@ class ClusterManager:
                 db.add_event_to_cluster(new_cluster_id, ev.id, similarity_score=1.0)
                 stats["clusters_created"] += 1
 
-                if best_matched_event and (direct_rel_type or direct_confidence >= self.similarity_threshold):
+                if best_matched_event and (direct_rel_type or direct_confidence >= 0.75):
                     rel_id = f"rel:{uuid.uuid4().hex[:12]}"
                     rel = EventRelationship(
                         id=rel_id,
@@ -267,4 +384,7 @@ class ClusterManager:
                     db.save_relationship(rel)
                     stats["relationships_created"] += 1
 
+        stats["avg_candidates_per_event"] = round(float(np.mean(candidate_counts)), 2) if candidate_counts else 0.0
+        stats["max_candidates_for_event"] = max(candidate_counts) if candidate_counts else 0
+        stats["duration_seconds"] = round(time.time() - start_time, 2)
         return stats
