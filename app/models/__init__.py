@@ -1,3 +1,3 @@
-﻿from app.models.schemas import Event
+﻿from app.models.schemas import Event, StoryCluster, EventRelationship
 
-__all__ = ["Event"]
+__all__ = ["Event", "StoryCluster", "EventRelationship"]

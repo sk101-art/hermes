@@ -1,0 +1,15 @@
+﻿semantic:
+  enabled: true
+
+  model:
+    name: "sentence-transformers/all-MiniLM-L6-v2"
+    device: "cpu"
+    batch_size: 16
+
+  text:
+    max_characters: 2500
+
+  clustering:
+    similarity_threshold: 0.78
+    candidate_days: 30
+    max_candidates: 50
