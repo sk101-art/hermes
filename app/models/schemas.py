@@ -3,6 +3,23 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+class SourceProfile(BaseModel):
+    name: str
+    enabled: bool = True
+    source_type: str = "code_repository"
+    trust_prior: float = 0.70
+    priority: float = 1.0
+    polling_class: str = "batch"
+    max_results: int = 50
+    supports_search: bool = True
+    supports_comments: bool = False
+    supports_releases: bool = False
+    supports_citations: bool = False
+    supports_metadata: bool = True
+    dedup_strategy: str = "id_and_url"
+    retention_class: str = "standard"
+
+
 class Event(BaseModel):
     id: str
     source: str = "github"
@@ -13,6 +30,8 @@ class Event(BaseModel):
     text: str = ""
     url: str
 
+    doi: Optional[str] = None
+    cited_by_count: Optional[int] = None
     authors: List[str] = Field(default_factory=list)
 
     published_at: Optional[datetime] = None

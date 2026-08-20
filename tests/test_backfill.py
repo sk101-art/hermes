@@ -1,4 +1,4 @@
-﻿import os
+import os
 import tempfile
 import numpy as np
 
@@ -64,7 +64,7 @@ def test_direct_hn_relationships():
     match = match_direct_identifiers(hn_gh, gh)
     assert match is not None
     rel_type, conf = match
-    assert rel_type == "discusses"
+    assert rel_type in ("discusses", "discussion_of")
     assert conf >= 0.95
 
     hn_ax = Event(

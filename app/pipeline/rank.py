@@ -19,9 +19,14 @@ def calculate_relevance(event: Event, interests: Dict[str, list]) -> float:
 
 
 def calculate_trust(event: Event) -> float:
-    if event.source == "arxiv":
+    src = event.source.lower()
+    if src == "crossref":
+        return 0.95
+    elif src in ("arxiv", "openalex"):
         return 0.90
-    elif event.source == "github":
+    elif src == "github":
+        if event.event_type == "release":
+            return 0.85
         base_trust = 0.75
         stars = event.metadata.get("stars", 0)
         if stars > 5000:
@@ -29,7 +34,11 @@ def calculate_trust(event: Event) -> float:
         elif stars > 500:
             base_trust += 0.10
         return min(1.0, base_trust)
-    elif event.source == "hackernews":
+    elif src == "huggingface":
+        return 0.70
+    elif src == "rss":
+        return 0.70
+    elif src in ("hackernews", "stackexchange"):
         return 0.65
     return 0.50
 
@@ -57,16 +66,39 @@ def calculate_novelty(event: Event) -> float:
 
 
 def calculate_popularity(event: Event) -> float:
-    if event.source == "github":
+    src = event.source.lower()
+    if src == "github":
         stars = event.metadata.get("stars", 0)
         if stars <= 0:
             return 0.0
         return min(1.0, math.log10(stars + 1) / 4.0)
-    elif event.source == "hackernews":
+    elif src == "hackernews":
         score = event.metadata.get("score", 0)
         if score <= 0:
             return 0.0
         return min(1.0, math.log10(score + 1) / 3.0)
+    elif src == "huggingface":
+        downloads = event.metadata.get("downloads", 0)
+        likes = event.metadata.get("likes", 0)
+        dl_score = math.log10(downloads + 1) / 5.0 if downloads > 0 else 0.0
+        like_score = math.log10(likes + 1) / 3.0 if likes > 0 else 0.0
+        return min(1.0, (dl_score * 0.7) + (like_score * 0.3))
+    elif src == "openalex":
+        citations = event.cited_by_count or event.metadata.get("cited_by_count", 0)
+        if citations <= 0:
+            return 0.0
+        return min(1.0, math.log10(citations + 1) / 3.0)
+    elif src == "crossref":
+        refs = event.metadata.get("references_count", 0)
+        if refs <= 0:
+            return 0.0
+        return min(1.0, math.log10(refs + 1) / 3.0)
+    elif src == "stackexchange":
+        score = event.metadata.get("score", 0)
+        answers = event.metadata.get("answer_count", 0)
+        sc_score = math.log10(max(0, score) + 1) / 3.0
+        ans_score = math.log10(max(0, answers) + 1) / 2.0
+        return min(1.0, (sc_score * 0.6) + (ans_score * 0.4))
     return 0.0
 
 

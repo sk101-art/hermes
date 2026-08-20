@@ -12,8 +12,14 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 from app.adapters.arxiv import ArxivAdapter
+from app.adapters.crossref import CrossrefAdapter
 from app.adapters.github import GitHubAdapter
+from app.adapters.github_releases import GitHubReleasesAdapter
 from app.adapters.hackernews import HackerNewsAdapter
+from app.adapters.huggingface import HuggingFaceAdapter
+from app.adapters.openalex import OpenAlexAdapter
+from app.adapters.rss import RssAdapter
+from app.adapters.stackexchange import StackExchangeAdapter
 from app.pipeline.dedup import is_duplicate_event
 from app.pipeline.filter import filter_event
 from app.pipeline.rank import score_event
@@ -39,15 +45,23 @@ def run():
     # Initialize Database
     db = Database(db_path="data/tech_intel.db")
 
-    # Build active adapters
+    # Build active adapters dynamically based on configuration
     adapters = []
 
     gh_cfg = sources_cfg.get("github", {})
     if gh_cfg.get("enabled", True):
         adapters.append((
-            "GitHub",
+            "GitHub Repositories",
             GitHubAdapter(queries=gh_cfg.get("queries")),
             gh_cfg.get("max_results", 100),
+        ))
+
+    gh_rel_cfg = sources_cfg.get("github_releases", {})
+    if gh_rel_cfg.get("enabled", True):
+        adapters.append((
+            "GitHub Releases",
+            GitHubReleasesAdapter(watch_repositories=gh_rel_cfg.get("watch_repositories")),
+            gh_rel_cfg.get("max_results", 30),
         ))
 
     arxiv_cfg = sources_cfg.get("arxiv", {})
@@ -64,6 +78,50 @@ def run():
             "Hacker News",
             HackerNewsAdapter(),
             hn_cfg.get("max_results", 50),
+        ))
+
+    hf_cfg = sources_cfg.get("huggingface", {})
+    if hf_cfg.get("enabled", True):
+        adapters.append((
+            "Hugging Face",
+            HuggingFaceAdapter(
+                queries=hf_cfg.get("queries"),
+                fetch_models=hf_cfg.get("models", True),
+                fetch_datasets=hf_cfg.get("datasets", True),
+            ),
+            hf_cfg.get("max_results", 50),
+        ))
+
+    alex_cfg = sources_cfg.get("openalex", {})
+    if alex_cfg.get("enabled", True):
+        adapters.append((
+            "OpenAlex",
+            OpenAlexAdapter(queries=alex_cfg.get("queries")),
+            alex_cfg.get("max_results", 40),
+        ))
+
+    cr_cfg = sources_cfg.get("crossref", {})
+    if cr_cfg.get("enabled", True):
+        adapters.append((
+            "Crossref",
+            CrossrefAdapter(queries=cr_cfg.get("queries")),
+            cr_cfg.get("max_results", 25),
+        ))
+
+    se_cfg = sources_cfg.get("stackexchange", {})
+    if se_cfg.get("enabled", True):
+        adapters.append((
+            "Stack Exchange",
+            StackExchangeAdapter(sites=se_cfg.get("sites"), tags=se_cfg.get("tags")),
+            se_cfg.get("max_results", 30),
+        ))
+
+    rss_cfg = sources_cfg.get("rss", {})
+    if rss_cfg.get("enabled", True):
+        adapters.append((
+            "RSS Feeds",
+            RssAdapter(feeds=rss_cfg.get("feeds")),
+            rss_cfg.get("max_results", 25),
         ))
 
     source_stats = {}
@@ -150,7 +208,7 @@ def run():
     print(f"  Accepted:      {total_accepted:>5}", flush=True)
     print("=" * 60, flush=True)
 
-    # --- Session 3: Semantic Story Clustering ---
+    # --- Semantic Story Clustering ---
     semantic_enabled = semantic_cfg.get("enabled", True)
     clustering_successful = False
 
@@ -209,7 +267,6 @@ def run():
             print("-" * 60, flush=True)
 
     else:
-        # Fallback / Direct Top Developments
         print("\nTOP DEVELOPMENTS\n", flush=True)
         top_events = db.get_top_events(limit=20)
         if not top_events:

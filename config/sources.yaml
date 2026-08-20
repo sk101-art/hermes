@@ -14,6 +14,19 @@
       - "RAG"
       - "AI agent"
 
+  github_releases:
+    enabled: true
+    priority: 1.0
+    max_results: 30
+    watch_repositories:
+      - "vllm-project/vllm"
+      - "ggerganov/llama.cpp"
+      - "sgl-project/sglang"
+      - "llvm/llvm-project"
+      - "triton-lang/triton"
+      - "pytorch/pytorch"
+      - "facebook/rocksdb"
+
   arxiv:
     enabled: true
     priority: 1.0
@@ -34,3 +47,73 @@
     enabled: true
     priority: 0.9
     max_results: 50
+
+  huggingface:
+    enabled: true
+    priority: 0.95
+    max_results: 50
+    models: true
+    datasets: true
+    queries:
+      - "inference"
+      - "quantization"
+      - "rag"
+      - "agent"
+      - "embeddings"
+      - "compiler optimization"
+      - "vllm"
+      - "gguf"
+
+  openalex:
+    enabled: true
+    priority: 0.95
+    max_results: 40
+    queries:
+      - "LLM inference"
+      - "compiler optimization"
+      - "retrieval augmented generation"
+      - "vector database"
+      - "machine learning systems"
+      - "AI agents"
+
+  crossref:
+    enabled: true
+    priority: 0.90
+    max_results: 25
+    queries:
+      - "LLM inference optimization"
+      - "compiler optimization LLVM"
+      - "vector database ANN search"
+      - "retrieval augmented generation"
+
+  stackexchange:
+    enabled: true
+    priority: 0.85
+    max_results: 30
+    sites:
+      - "stackoverflow"
+      - "dba"
+    tags:
+      - "llm"
+      - "cuda"
+      - "compiler-optimization"
+      - "vector-database"
+      - "rag"
+
+  rss:
+    enabled: true
+    priority: 0.85
+    max_results: 25
+    feeds:
+      - name: "Hugging Face Blog"
+        url: "https://huggingface.co/blog/feed.xml"
+        category: "AI/ML"
+      - name: "PyTorch Blog"
+        url: "https://pytorch.org/blog/feed.xml"
+        category: "ML Systems"
+      - name: "Simon Willison Weblog"
+        url: "https://simonwillison.net/atom/entries/"
+        category: "AI Engineering"
+      - name: "Berkeley AI Research"
+        url: "https://bair.berkeley.edu/blog/feed.xml"
+        category: "AI Research"

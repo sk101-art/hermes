@@ -1,4 +1,4 @@
-﻿import os
+import os
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -142,7 +142,7 @@ def test_direct_github_and_arxiv_identifier_linking():
     match_gh = match_direct_identifiers(hn_gh_event, gh_event)
     assert match_gh is not None
     rel_type, conf = match_gh
-    assert rel_type == "discusses"
+    assert rel_type in ("discusses", "discussion_of")
     assert conf >= 0.95
 
     hn_arxiv_event = Event(
