@@ -1,0 +1,73 @@
+﻿runtime:
+  timezone: "local"
+  min_free_disk_mb: 1024
+  max_parallel_sources: 2
+  semantic_batch_size: 16
+  log_level: "INFO"
+  log_file: "logs/hermes.log"
+  heartbeat_file: "data/runtime_heartbeat.json"
+  lock_file: "data/hermes.lock"
+
+  jobs:
+    ingestion:
+      interval_minutes: 60
+      timeout_minutes: 15
+    semantic:
+      interval_minutes: 60
+      timeout_minutes: 15
+    claims:
+      interval_minutes: 60
+      timeout_minutes: 15
+    recheck:
+      interval_minutes: 120
+      timeout_minutes: 15
+    context_scan:
+      interval_minutes: 120
+      timeout_minutes: 10
+    context_match:
+      interval_minutes: 60
+      timeout_minutes: 10
+    inbox_refresh:
+      interval_minutes: 60
+      timeout_minutes: 10
+    inbox_cleanup:
+      interval_minutes: 60
+      timeout_minutes: 5
+    morning_brief:
+      time: "07:30"
+      timeout_minutes: 30
+    health_check:
+      interval_minutes: 15
+      timeout_minutes: 2
+    backup:
+      time: "03:00"
+      retention_days: 7
+
+  sources:
+    github:
+      interval_minutes: 60
+      max_consecutive_failures: 5
+    github_releases:
+      interval_minutes: 60
+      max_consecutive_failures: 5
+    arxiv:
+      interval_minutes: 120
+      max_consecutive_failures: 5
+    hackernews:
+      interval_minutes: 60
+      max_consecutive_failures: 5
+    huggingface:
+      interval_minutes: 60
+      max_consecutive_failures: 5
+    openalex:
+      interval_minutes: 180
+      max_consecutive_failures: 5
+    crossref:
+      interval_minutes: 360
+      max_consecutive_failures: 5
+    stackexchange:
+      interval_minutes: 120
+      max_consecutive_failures: 5
+    rss:
+      interval_minutes: 60
+      max_consecutive_failures: 5

@@ -360,3 +360,40 @@ class DailyBriefingItem(BaseModel):
     section: str
 
 
+class SourceCheckpoint(BaseModel):
+    source: str
+    last_success_at: Optional[datetime] = None
+    last_attempt_at: Optional[datetime] = None
+    last_cursor: Optional[str] = None
+    last_event_time: Optional[datetime] = None
+    last_error: Optional[str] = None
+    consecutive_failures: int = 0
+    next_retry_at: Optional[datetime] = None
+    health_status: str = "unknown"  # healthy, degraded, rate_limited, offline, disabled, unknown
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RuntimeJob(BaseModel):
+    job_name: str
+    last_started_at: Optional[datetime] = None
+    last_completed_at: Optional[datetime] = None
+    last_status: str = "pending"  # pending, running, completed, failed, interrupted, skipped
+    last_error: Optional[str] = None
+    duration_seconds: float = 0.0
+    run_count: int = 0
+    failure_count: int = 0
+    next_run_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RuntimeJobRun(BaseModel):
+    id: str
+    job_name: str
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
+    status: str = "running"  # running, completed, failed, interrupted, skipped
+    items_processed: int = 0
+    error_summary: Optional[str] = None
+    duration_seconds: float = 0.0
+
+

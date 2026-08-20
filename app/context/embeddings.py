@@ -40,7 +40,14 @@ def get_or_create_project_embedding(
     if existing_emb is not None:
         return existing_emb, False
 
-    # 3. Generate locally using sentence-transformers
     emb = embedder.embed(profile_text)
     db.save_project_embedding(project_id, model_name, emb, profile_hash)
     return emb, True
+
+
+def unload_embedder() -> None:
+    """Releases the global embedder instance and cleans up memory."""
+    global _global_embedder
+    if _global_embedder is not None:
+        _global_embedder.unload()
+        _global_embedder = None

@@ -27,6 +27,9 @@ from app.models.schemas import (
     UserFeedback,
     DailyBriefing,
     DailyBriefingItem,
+    SourceCheckpoint,
+    RuntimeJob,
+    RuntimeJobRun,
 )
 
 
@@ -1906,6 +1909,193 @@ class Database:
             )
             for r in cursor.fetchall()
         ]
+
+    # --- Session 9: Autonomous Runtime, Checkpoints, and Recovery ---
+
+    def save_source_checkpoint(self, cp: SourceCheckpoint) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO source_checkpoints (
+            source, last_success_at, last_attempt_at, last_cursor, last_event_time,
+            last_error, consecutive_failures, next_retry_at, health_status, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                cp.source,
+                cp.last_success_at.isoformat() if cp.last_success_at else None,
+                cp.last_attempt_at.isoformat() if cp.last_attempt_at else None,
+                cp.last_cursor,
+                cp.last_event_time.isoformat() if cp.last_event_time else None,
+                cp.last_error,
+                cp.consecutive_failures,
+                cp.next_retry_at.isoformat() if cp.next_retry_at else None,
+                cp.health_status,
+                cp.updated_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def _row_to_source_checkpoint(self, r: sqlite3.Row) -> SourceCheckpoint:
+        return SourceCheckpoint(
+            source=r["source"],
+            last_success_at=datetime.fromisoformat(r["last_success_at"]) if r["last_success_at"] else None,
+            last_attempt_at=datetime.fromisoformat(r["last_attempt_at"]) if r["last_attempt_at"] else None,
+            last_cursor=r["last_cursor"],
+            last_event_time=datetime.fromisoformat(r["last_event_time"]) if r["last_event_time"] else None,
+            last_error=r["last_error"],
+            consecutive_failures=r["consecutive_failures"] or 0,
+            next_retry_at=datetime.fromisoformat(r["next_retry_at"]) if r["next_retry_at"] else None,
+            health_status=r["health_status"] or "unknown",
+            updated_at=datetime.fromisoformat(r["updated_at"]),
+        )
+
+    def get_source_checkpoint(self, source: str) -> Optional[SourceCheckpoint]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM source_checkpoints WHERE source = ?", (source,))
+        row = cursor.fetchone()
+        return self._row_to_source_checkpoint(row) if row else None
+
+    def get_all_source_checkpoints(self) -> List[SourceCheckpoint]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM source_checkpoints ORDER BY source ASC")
+        return [self._row_to_source_checkpoint(r) for r in cursor.fetchall()]
+
+    def save_runtime_job(self, job: RuntimeJob) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO runtime_jobs (
+            job_name, last_started_at, last_completed_at, last_status, last_error,
+            duration_seconds, run_count, failure_count, next_run_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                job.job_name,
+                job.last_started_at.isoformat() if job.last_started_at else None,
+                job.last_completed_at.isoformat() if job.last_completed_at else None,
+                job.last_status,
+                job.last_error,
+                job.duration_seconds,
+                job.run_count,
+                job.failure_count,
+                job.next_run_at.isoformat() if job.next_run_at else None,
+                job.updated_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def _row_to_runtime_job(self, r: sqlite3.Row) -> RuntimeJob:
+        return RuntimeJob(
+            job_name=r["job_name"],
+            last_started_at=datetime.fromisoformat(r["last_started_at"]) if r["last_started_at"] else None,
+            last_completed_at=datetime.fromisoformat(r["last_completed_at"]) if r["last_completed_at"] else None,
+            last_status=r["last_status"] or "pending",
+            last_error=r["last_error"],
+            duration_seconds=r["duration_seconds"] or 0.0,
+            run_count=r["run_count"] or 0,
+            failure_count=r["failure_count"] or 0,
+            next_run_at=datetime.fromisoformat(r["next_run_at"]) if r["next_run_at"] else None,
+            updated_at=datetime.fromisoformat(r["updated_at"]),
+        )
+
+    def get_runtime_job(self, job_name: str) -> Optional[RuntimeJob]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM runtime_jobs WHERE job_name = ?", (job_name,))
+        row = cursor.fetchone()
+        return self._row_to_runtime_job(row) if row else None
+
+    def get_all_runtime_jobs(self) -> List[RuntimeJob]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM runtime_jobs ORDER BY job_name ASC")
+        return [self._row_to_runtime_job(r) for r in cursor.fetchall()]
+
+    def save_runtime_job_run(self, run: RuntimeJobRun) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO runtime_job_runs (
+            id, job_name, started_at, completed_at, status, items_processed, error_summary, duration_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                run.id,
+                run.job_name,
+                run.started_at.isoformat(),
+                run.completed_at.isoformat() if run.completed_at else None,
+                run.status,
+                run.items_processed,
+                run.error_summary,
+                run.duration_seconds,
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def _row_to_runtime_job_run(self, r: sqlite3.Row) -> RuntimeJobRun:
+        return RuntimeJobRun(
+            id=r["id"],
+            job_name=r["job_name"],
+            started_at=datetime.fromisoformat(r["started_at"]),
+            completed_at=datetime.fromisoformat(r["completed_at"]) if r["completed_at"] else None,
+            status=r["status"] or "running",
+            items_processed=r["items_processed"] or 0,
+            error_summary=r["error_summary"],
+            duration_seconds=r["duration_seconds"] or 0.0,
+        )
+
+    def get_recent_runtime_job_runs(self, limit: int = 50, job_name: Optional[str] = None) -> List[RuntimeJobRun]:
+        cursor = self.conn.cursor()
+        if job_name:
+            cursor.execute(
+                "SELECT * FROM runtime_job_runs WHERE job_name = ? ORDER BY started_at DESC LIMIT ?",
+                (job_name, limit),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM runtime_job_runs ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [self._row_to_runtime_job_run(r) for r in cursor.fetchall()]
+
+    def get_running_job_runs(self) -> List[RuntimeJobRun]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM runtime_job_runs WHERE status = 'running'")
+        return [self._row_to_runtime_job_run(r) for r in cursor.fetchall()]
+
+    def increment_runtime_metric(self, key: str, delta: int = 1) -> int:
+        now_str = datetime.now(timezone.utc).isoformat()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO runtime_metrics (metric_key, metric_value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(metric_key) DO UPDATE SET
+                metric_value = metric_value + excluded.metric_value,
+                updated_at = excluded.updated_at
+            """,
+            (key, delta, now_str),
+        )
+        self.conn.commit()
+        cursor.execute("SELECT metric_value FROM runtime_metrics WHERE metric_key = ?", (key,))
+        row = cursor.fetchone()
+        return row["metric_value"] if row else delta
+
+    def get_runtime_metrics(self) -> Dict[str, int]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT metric_key, metric_value FROM runtime_metrics")
+        return {r["metric_key"]: r["metric_value"] for r in cursor.fetchall()}
+
+    def backup_database(self, backup_path: str) -> bool:
+        """Performs safe online SQLite backup to backup_path."""
+        os.makedirs(os.path.dirname(os.path.abspath(backup_path)), exist_ok=True)
+        backup_conn = sqlite3.connect(backup_path)
+        with backup_conn:
+            self.conn.backup(backup_conn, pages=100, sleep=0.01)
+        backup_conn.close()
+        return True
 
     def close(self) -> None:
         self.conn.close()

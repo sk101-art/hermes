@@ -1,4 +1,4 @@
-﻿import re
+import re
 from typing import List, Optional
 import numpy as np
 
@@ -70,3 +70,10 @@ class EmbeddingService:
             show_progress_bar=False,
         )
         return np.asarray(vecs, dtype=np.float32)
+
+    def unload(self) -> None:
+        """Releases the underlying model from memory and forces garbage collection."""
+        if self._model is not None:
+            self._model = None
+            import gc
+            gc.collect()

@@ -410,4 +410,58 @@ CREATE TABLE IF NOT EXISTS daily_briefing_items (
 
 CREATE INDEX IF NOT EXISTS idx_briefing_items_brief ON daily_briefing_items(briefing_id);
 
+-- Session 9: Autonomous Always-On Runtime, Scheduling, Checkpoints, and Recovery
+CREATE TABLE IF NOT EXISTS source_checkpoints (
+    source TEXT PRIMARY KEY,
+    last_success_at TEXT,
+    last_attempt_at TEXT,
+    last_cursor TEXT,
+    last_event_time TEXT,
+    last_error TEXT,
+    consecutive_failures INTEGER DEFAULT 0,
+    next_retry_at TEXT,
+    health_status TEXT NOT NULL DEFAULT 'unknown',
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_checkpoints_health ON source_checkpoints(health_status);
+CREATE INDEX IF NOT EXISTS idx_source_checkpoints_next_retry ON source_checkpoints(next_retry_at);
+
+CREATE TABLE IF NOT EXISTS runtime_jobs (
+    job_name TEXT PRIMARY KEY,
+    last_started_at TEXT,
+    last_completed_at TEXT,
+    last_status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    duration_seconds REAL DEFAULT 0.0,
+    run_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    next_run_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_jobs_status ON runtime_jobs(last_status);
+CREATE INDEX IF NOT EXISTS idx_runtime_jobs_next_run ON runtime_jobs(next_run_at);
+
+CREATE TABLE IF NOT EXISTS runtime_job_runs (
+    id TEXT PRIMARY KEY,
+    job_name TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    items_processed INTEGER DEFAULT 0,
+    error_summary TEXT,
+    duration_seconds REAL DEFAULT 0.0
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_runs_name ON runtime_job_runs(job_name);
+CREATE INDEX IF NOT EXISTS idx_job_runs_started ON runtime_job_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_job_runs_status ON runtime_job_runs(status);
+
+CREATE TABLE IF NOT EXISTS runtime_metrics (
+    metric_key TEXT PRIMARY KEY,
+    metric_value INTEGER DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 
