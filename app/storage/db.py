@@ -22,6 +22,11 @@ from app.models.schemas import (
     ProjectFile,
     ProjectTechnologyProfile,
     ProjectMatch,
+    InboxItem,
+    SavedItem,
+    UserFeedback,
+    DailyBriefing,
+    DailyBriefingItem,
 )
 
 
@@ -153,6 +158,9 @@ class Database:
 
         self.conn.commit()
         return True
+
+    def save_event(self, event: Event) -> bool:
+        return self.insert_event(event)
 
     def _row_to_event(self, r: sqlite3.Row) -> Event:
         disc_at = datetime.fromisoformat(r["discovered_at"]) if "discovered_at" in r.keys() and r["discovered_at"] else datetime.now(timezone.utc)
@@ -829,6 +837,33 @@ class Database:
             for r in cursor.fetchall()
         ]
 
+    def get_claim_revisions_by_cluster(self, cluster_id: str) -> List[ClaimRevision]:
+        claims = self.get_claims_by_cluster(cluster_id)
+        if not claims:
+            return []
+        claim_ids = [c.id for c in claims]
+        placeholders = ",".join("?" for _ in claim_ids)
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"SELECT * FROM claim_revisions WHERE claim_id IN ({placeholders}) ORDER BY created_at ASC",
+            claim_ids,
+        )
+        return [
+            ClaimRevision(
+                id=r["id"],
+                claim_id=r["claim_id"],
+                previous_status=r["previous_status"],
+                new_status=r["new_status"],
+                previous_verification_score=r["previous_verification_score"],
+                new_verification_score=r["new_verification_score"],
+                reason=r["reason"],
+                trigger_event_id=r["trigger_event_id"],
+                trigger_evidence_id=r["trigger_evidence_id"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
     def get_all_claim_revisions(self) -> List[ClaimRevision]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM claim_revisions ORDER BY created_at DESC")
@@ -1110,6 +1145,9 @@ class Database:
         )
         self.conn.commit()
         return True
+
+    def save_intelligence_change(self, change: IntelligenceChange) -> bool:
+        return self.insert_intelligence_change(change)
 
     def get_recent_intelligence_changes(self, days: Optional[int] = None, limit: int = 100) -> List[IntelligenceChange]:
         cursor = self.conn.cursor()
@@ -1486,6 +1524,384 @@ class Database:
         self.conn.execute("DELETE FROM recheck_queue")
         self.conn.execute("DELETE FROM intelligence_changes")
         self.conn.commit()
+
+    # --- Session 8: Inbox, Saved Items, User Feedback, and Daily Briefings ---
+
+    def _row_to_inbox_item(self, r: sqlite3.Row) -> InboxItem:
+        return InboxItem(
+            id=r["id"],
+            entity_type=r["entity_type"],
+            entity_id=r["entity_id"],
+            story_cluster_id=r["story_cluster_id"],
+            title=r["title"],
+            section=r["section"],
+            inbox_score=r["inbox_score"] or 0.50,
+            rank_score=r["rank_score"] or 0.50,
+            project_impact_score=r["project_impact_score"] or 0.0,
+            state=r["state"],
+            item_type=r["item_type"],
+            created_at=datetime.fromisoformat(r["created_at"]),
+            first_seen_at=datetime.fromisoformat(r["first_seen_at"]) if r["first_seen_at"] else None,
+            last_seen_at=datetime.fromisoformat(r["last_seen_at"]) if r["last_seen_at"] else None,
+            expires_at=datetime.fromisoformat(r["expires_at"]),
+            seen_at=datetime.fromisoformat(r["seen_at"]) if r["seen_at"] else None,
+            opened_at=datetime.fromisoformat(r["opened_at"]) if r["opened_at"] else None,
+            is_starred=bool(r["is_starred"]),
+            saved_item_id=r["saved_item_id"],
+            matched_project_ids=json.loads(r["matched_project_ids_json"]) if r["matched_project_ids_json"] else [],
+            reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
+        )
+
+    def save_inbox_item(self, item: InboxItem) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO inbox_items (
+            id, entity_type, entity_id, story_cluster_id, title, section,
+            inbox_score, rank_score, project_impact_score, state, item_type,
+            created_at, first_seen_at, last_seen_at, expires_at, seen_at,
+            opened_at, is_starred, saved_item_id, matched_project_ids_json,
+            reason_codes_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                item.id,
+                item.entity_type,
+                item.entity_id,
+                item.story_cluster_id,
+                item.title,
+                item.section,
+                item.inbox_score,
+                item.rank_score,
+                item.project_impact_score,
+                item.state,
+                item.item_type,
+                item.created_at.isoformat(),
+                item.first_seen_at.isoformat() if item.first_seen_at else None,
+                item.last_seen_at.isoformat() if item.last_seen_at else None,
+                item.expires_at.isoformat(),
+                item.seen_at.isoformat() if item.seen_at else None,
+                item.opened_at.isoformat() if item.opened_at else None,
+                1 if item.is_starred else 0,
+                item.saved_item_id,
+                json.dumps(item.matched_project_ids),
+                json.dumps(item.reason_codes),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_inbox_item(self, inbox_id: str) -> Optional[InboxItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM inbox_items WHERE id = ?", (inbox_id,))
+        row = cursor.fetchone()
+        return self._row_to_inbox_item(row) if row else None
+
+    def get_inbox_item_by_cluster(self, cluster_id: str) -> Optional[InboxItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM inbox_items WHERE story_cluster_id = ? ORDER BY created_at DESC LIMIT 1", (cluster_id,))
+        row = cursor.fetchone()
+        return self._row_to_inbox_item(row) if row else None
+
+    def get_active_inbox_items(self, include_expired: bool = False, limit: int = 100) -> List[InboxItem]:
+        cursor = self.conn.cursor()
+        if include_expired:
+            cursor.execute("SELECT * FROM inbox_items ORDER BY inbox_score DESC LIMIT ?", (limit,))
+        else:
+            cursor.execute("SELECT * FROM inbox_items WHERE state != 'expired' ORDER BY inbox_score DESC LIMIT ?", (limit,))
+        return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
+
+    def get_inbox_items_by_state(self, state: str) -> List[InboxItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM inbox_items WHERE state = ? ORDER BY inbox_score DESC", (state,))
+        return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
+
+    def get_all_inbox_items(self, limit: int = 200) -> List[InboxItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM inbox_items ORDER BY created_at DESC, inbox_score DESC LIMIT ?", (limit,))
+        return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
+
+    def update_inbox_item_state(
+        self,
+        inbox_id: str,
+        state: str,
+        seen_at: Optional[datetime] = None,
+        opened_at: Optional[datetime] = None,
+        is_starred: Optional[bool] = None,
+        saved_item_id: Optional[str] = None,
+    ) -> bool:
+        item = self.get_inbox_item(inbox_id)
+        if not item:
+            return False
+        item.state = state
+        if seen_at:
+            item.seen_at = seen_at
+        if opened_at:
+            item.opened_at = opened_at
+        if is_starred is not None:
+            item.is_starred = is_starred
+        if saved_item_id is not None:
+            item.saved_item_id = saved_item_id
+        return self.save_inbox_item(item)
+
+    def expire_old_inbox_items(self, now: Optional[datetime] = None) -> int:
+        if now is None:
+            now = datetime.now(timezone.utc)
+        now_str = now.isoformat()
+        cursor = self.conn.cursor()
+        # Expire non-starred items whose expires_at is in the past and state != 'expired'
+        cursor.execute(
+            """
+            UPDATE inbox_items
+            SET state = 'expired'
+            WHERE expires_at <= ? AND is_starred = 0 AND state != 'expired'
+            """,
+            (now_str,),
+        )
+        expired_count = cursor.rowcount
+        self.conn.commit()
+        return expired_count
+
+    def clear_inbox_items(self) -> None:
+        self.conn.execute("DELETE FROM inbox_items")
+        self.conn.commit()
+
+    # --- SavedItem Methods ---
+
+    def _row_to_saved_item(self, r: sqlite3.Row) -> SavedItem:
+        return SavedItem(
+            id=r["id"],
+            entity_type=r["entity_type"],
+            entity_id=r["entity_id"],
+            story_cluster_id=r["story_cluster_id"],
+            inbox_item_id=r["inbox_item_id"],
+            title_snapshot=r["title_snapshot"],
+            saved_at=datetime.fromisoformat(r["saved_at"]),
+            verification_snapshot=r["verification_snapshot"] or 0.50,
+            maturity_snapshot=r["maturity_snapshot"] or "concept",
+            risk_snapshot=r["risk_snapshot"] or 0.25,
+            user_note=r["user_note"],
+            tags=json.loads(r["tags_json"]) if r["tags_json"] else [],
+            project_ids=json.loads(r["project_ids_json"]) if r["project_ids_json"] else [],
+            is_active=bool(r["is_active"]),
+            link_status=r["link_status"] or "resolved",
+            event_ids_snapshot=json.loads(r["event_ids_snapshot_json"]) if r["event_ids_snapshot_json"] else [],
+        )
+
+    def save_saved_item(self, item: SavedItem) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO saved_items (
+            id, entity_type, entity_id, story_cluster_id, inbox_item_id,
+            title_snapshot, saved_at, verification_snapshot, maturity_snapshot,
+            risk_snapshot, user_note, tags_json, project_ids_json, is_active,
+            link_status, event_ids_snapshot_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                item.id,
+                item.entity_type,
+                item.entity_id,
+                item.story_cluster_id,
+                item.inbox_item_id,
+                item.title_snapshot,
+                item.saved_at.isoformat(),
+                item.verification_snapshot,
+                item.maturity_snapshot,
+                item.risk_snapshot,
+                item.user_note,
+                json.dumps(item.tags),
+                json.dumps(item.project_ids),
+                1 if item.is_active else 0,
+                item.link_status,
+                json.dumps(item.event_ids_snapshot),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_saved_item(self, saved_id: str) -> Optional[SavedItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM saved_items WHERE id = ?", (saved_id,))
+        row = cursor.fetchone()
+        return self._row_to_saved_item(row) if row else None
+
+    def get_saved_item_by_cluster(self, cluster_id: str) -> Optional[SavedItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM saved_items WHERE story_cluster_id = ? ORDER BY saved_at DESC LIMIT 1", (cluster_id,))
+        row = cursor.fetchone()
+        return self._row_to_saved_item(row) if row else None
+
+    def get_all_saved_items(self, active_only: bool = True) -> List[SavedItem]:
+        cursor = self.conn.cursor()
+        if active_only:
+            cursor.execute("SELECT * FROM saved_items WHERE is_active = 1 ORDER BY saved_at DESC")
+        else:
+            cursor.execute("SELECT * FROM saved_items ORDER BY saved_at DESC")
+        return [self._row_to_saved_item(r) for r in cursor.fetchall()]
+
+    def update_saved_item_note(self, saved_id: str, user_note: str) -> bool:
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE saved_items SET user_note = ? WHERE id = ?", (user_note, saved_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def add_saved_item_tag(self, saved_id: str, tag: str) -> bool:
+        item = self.get_saved_item(saved_id)
+        if not item:
+            return False
+        clean_tag = tag.strip().lower()
+        if clean_tag and clean_tag not in item.tags:
+            item.tags.append(clean_tag)
+            return self.save_saved_item(item)
+        return True
+
+    def deactivate_saved_item(self, saved_id: str) -> bool:
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE saved_items SET is_active = 0 WHERE id = ?", (saved_id,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def clear_saved_items(self) -> None:
+        self.conn.execute("DELETE FROM saved_items")
+        self.conn.commit()
+
+    # --- UserFeedback Methods ---
+
+    def save_user_feedback(self, feedback: UserFeedback) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO user_feedback (
+            id, entity_type, entity_id, action, value, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                feedback.id,
+                feedback.entity_type,
+                feedback.entity_id,
+                feedback.action,
+                feedback.value,
+                feedback.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_user_feedback(self, limit: int = 100) -> List[UserFeedback]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM user_feedback ORDER BY created_at DESC LIMIT ?", (limit,))
+        return [
+            UserFeedback(
+                id=r["id"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                action=r["action"],
+                value=r["value"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_feedback_counts(self) -> Dict[str, int]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT action, COUNT(*) as count FROM user_feedback GROUP BY action")
+        counts = {"star": 0, "unstar": 0, "open": 0, "dismiss": 0, "useful": 0, "not_useful": 0}
+        for row in cursor.fetchall():
+            counts[row["action"]] = row["count"]
+        return counts
+
+    # --- DailyBriefing Methods ---
+
+    def save_daily_briefing(self, briefing: DailyBriefing) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO daily_briefings (
+            id, briefing_date, generated_at, total_items, high_priority_count,
+            project_relevant_count, content_hash, summary_text, sections_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                briefing.id,
+                briefing.briefing_date,
+                briefing.generated_at.isoformat(),
+                briefing.total_items,
+                briefing.high_priority_count,
+                briefing.project_relevant_count,
+                briefing.content_hash,
+                briefing.summary_text,
+                json.dumps(briefing.sections),
+                briefing.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_daily_briefing(self, briefing_date: str) -> Optional[DailyBriefing]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM daily_briefings WHERE briefing_date = ?", (briefing_date,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return DailyBriefing(
+            id=row["id"],
+            briefing_date=row["briefing_date"],
+            generated_at=datetime.fromisoformat(row["generated_at"]),
+            total_items=row["total_items"],
+            high_priority_count=row["high_priority_count"],
+            project_relevant_count=row["project_relevant_count"],
+            content_hash=row["content_hash"],
+            summary_text=row["summary_text"],
+            sections=json.loads(row["sections_json"]) if row["sections_json"] else {},
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def get_latest_daily_briefing(self) -> Optional[DailyBriefing]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM daily_briefings ORDER BY briefing_date DESC LIMIT 1")
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return DailyBriefing(
+            id=row["id"],
+            briefing_date=row["briefing_date"],
+            generated_at=datetime.fromisoformat(row["generated_at"]),
+            total_items=row["total_items"],
+            high_priority_count=row["high_priority_count"],
+            project_relevant_count=row["project_relevant_count"],
+            content_hash=row["content_hash"],
+            summary_text=row["summary_text"],
+            sections=json.loads(row["sections_json"]) if row["sections_json"] else {},
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def save_daily_briefing_items(self, items: List[DailyBriefingItem]) -> bool:
+        if not items:
+            return True
+        briefing_id = items[0].briefing_id
+        self.conn.execute("DELETE FROM daily_briefing_items WHERE briefing_id = ?", (briefing_id,))
+        for it in items:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO daily_briefing_items (briefing_id, inbox_item_id, position, section) VALUES (?, ?, ?, ?)",
+                (it.briefing_id, it.inbox_item_id, it.position, it.section),
+            )
+        self.conn.commit()
+        return True
+
+    def get_daily_briefing_items(self, briefing_id: str) -> List[DailyBriefingItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM daily_briefing_items WHERE briefing_id = ? ORDER BY position ASC", (briefing_id,))
+        return [
+            DailyBriefingItem(
+                briefing_id=r["briefing_id"],
+                inbox_item_id=r["inbox_item_id"],
+                position=r["position"],
+                section=r["section"],
+            )
+            for r in cursor.fetchall()
+        ]
 
     def close(self) -> None:
         self.conn.close()

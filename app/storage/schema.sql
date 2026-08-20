@@ -317,3 +317,96 @@ CREATE INDEX IF NOT EXISTS idx_proj_matches_relevance ON project_matches(relevan
 CREATE INDEX IF NOT EXISTS idx_proj_matches_impact ON project_matches(impact_score DESC);
 CREATE INDEX IF NOT EXISTS idx_proj_matches_rec ON project_matches(recommendation);
 
+-- Session 8: Daily Inbox, Stars, Saved Library, Retention, and Morning Briefing
+CREATE TABLE IF NOT EXISTS inbox_items (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL DEFAULT 'cluster',
+    entity_id TEXT NOT NULL,
+    story_cluster_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    section TEXT NOT NULL DEFAULT 'ai_ml',
+    inbox_score REAL DEFAULT 0.50,
+    rank_score REAL DEFAULT 0.50,
+    project_impact_score REAL DEFAULT 0.0,
+    state TEXT NOT NULL DEFAULT 'unseen',
+    item_type TEXT NOT NULL DEFAULT 'new_story',
+    created_at TEXT NOT NULL,
+    first_seen_at TEXT,
+    last_seen_at TEXT,
+    expires_at TEXT NOT NULL,
+    seen_at TEXT,
+    opened_at TEXT,
+    is_starred INTEGER DEFAULT 0,
+    saved_item_id TEXT,
+    matched_project_ids_json TEXT,
+    reason_codes_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbox_state ON inbox_items(state);
+CREATE INDEX IF NOT EXISTS idx_inbox_expires ON inbox_items(expires_at);
+CREATE INDEX IF NOT EXISTS idx_inbox_score ON inbox_items(inbox_score DESC);
+CREATE INDEX IF NOT EXISTS idx_inbox_cluster ON inbox_items(story_cluster_id);
+CREATE INDEX IF NOT EXISTS idx_inbox_created ON inbox_items(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS saved_items (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL DEFAULT 'cluster',
+    entity_id TEXT NOT NULL,
+    story_cluster_id TEXT NOT NULL,
+    inbox_item_id TEXT,
+    title_snapshot TEXT NOT NULL,
+    saved_at TEXT NOT NULL,
+    verification_snapshot REAL DEFAULT 0.50,
+    maturity_snapshot TEXT DEFAULT 'concept',
+    risk_snapshot REAL DEFAULT 0.25,
+    user_note TEXT,
+    tags_json TEXT,
+    project_ids_json TEXT,
+    is_active INTEGER DEFAULT 1,
+    link_status TEXT DEFAULT 'resolved',
+    event_ids_snapshot_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_cluster ON saved_items(story_cluster_id);
+CREATE INDEX IF NOT EXISTS idx_saved_is_active ON saved_items(is_active);
+CREATE INDEX IF NOT EXISTS idx_saved_saved_at ON saved_items(saved_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_feedback (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL DEFAULT 'inbox_item',
+    entity_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    value TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_entity ON user_feedback(entity_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_action ON user_feedback(action);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON user_feedback(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS daily_briefings (
+    id TEXT PRIMARY KEY,
+    briefing_date TEXT UNIQUE NOT NULL,
+    generated_at TEXT NOT NULL,
+    total_items INTEGER DEFAULT 0,
+    high_priority_count INTEGER DEFAULT 0,
+    project_relevant_count INTEGER DEFAULT 0,
+    content_hash TEXT NOT NULL DEFAULT '',
+    summary_text TEXT,
+    sections_json TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_briefings_date ON daily_briefings(briefing_date);
+
+CREATE TABLE IF NOT EXISTS daily_briefing_items (
+    briefing_id TEXT NOT NULL,
+    inbox_item_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    section TEXT NOT NULL,
+    PRIMARY KEY (briefing_id, inbox_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_briefing_items_brief ON daily_briefing_items(briefing_id);
+
+

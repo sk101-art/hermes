@@ -283,3 +283,79 @@ class ProjectMatch(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+
+# --- Session 8: Daily Inbox, Stars, Saved Library, Retention, and Morning Briefing Models ---
+
+
+class InboxItem(BaseModel):
+    id: str
+    entity_type: str = "cluster"  # cluster, claim, change
+    entity_id: str
+    story_cluster_id: str
+    title: str
+    section: str = "ai_ml"  # must_know, project_relevant, ai_ml, systems_compilers, storage_databases, developer_tooling, research, corrections_updates, watchlist
+    inbox_score: float = 0.50
+    rank_score: float = 0.50
+    project_impact_score: float = 0.0
+    state: str = "unseen"  # unseen, seen, opened, starred, expired, archived
+    item_type: str = "new_story"  # new_story, story_update, claim_strengthened, claim_weakened, new_release, new_risk, maturity_change, correction
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    first_seen_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    expires_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    seen_at: Optional[datetime] = None
+    opened_at: Optional[datetime] = None
+    is_starred: bool = False
+    saved_item_id: Optional[str] = None
+    matched_project_ids: List[str] = Field(default_factory=list)
+    reason_codes: List[str] = Field(default_factory=list)
+
+
+class SavedItem(BaseModel):
+    id: str
+    entity_type: str = "cluster"
+    entity_id: str
+    story_cluster_id: str
+    inbox_item_id: Optional[str] = None
+    title_snapshot: str
+    saved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    verification_snapshot: float = 0.50
+    maturity_snapshot: str = "concept"
+    risk_snapshot: float = 0.25
+    user_note: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    project_ids: List[str] = Field(default_factory=list)
+    is_active: bool = True
+    link_status: str = "resolved"  # resolved, unresolved
+    event_ids_snapshot: List[str] = Field(default_factory=list)
+
+
+class UserFeedback(BaseModel):
+    id: str
+    entity_type: str = "inbox_item"  # inbox_item, cluster, claim
+    entity_id: str
+    action: str  # star, unstar, open, dismiss, useful, not_useful, note, tag
+    value: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class DailyBriefing(BaseModel):
+    id: str
+    briefing_date: str  # YYYY-MM-DD
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    total_items: int = 0
+    high_priority_count: int = 0
+    project_relevant_count: int = 0
+    content_hash: str = ""
+    summary_text: Optional[str] = None
+    sections: Dict[str, List[str]] = Field(default_factory=dict)  # section_name -> list of inbox_item_ids
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class DailyBriefingItem(BaseModel):
+    briefing_id: str
+    inbox_item_id: str
+    position: int
+    section: str
+
+
