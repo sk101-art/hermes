@@ -584,13 +584,16 @@ def get_morning_brief(
     for bi in briefing_items:
         inbox_item = db.get_inbox_item(bi.inbox_item_id)
         if inbox_item:
+            cluster = db.get_cluster(inbox_item.story_cluster_id) if inbox_item.story_cluster_id else None
+            summary = cluster.canonical_title if cluster else inbox_item.title
+            verification_score = cluster.cluster_score if cluster else 0.0
             item_data = {
                 "inbox_item_id": inbox_item.id,
-                "cluster_id": inbox_item.cluster_id,
+                "cluster_id": inbox_item.story_cluster_id,
                 "title": inbox_item.title,
-                "summary": inbox_item.summary,
-                "priority": round(inbox_item.final_priority, 4),
-                "verification_score": round(inbox_item.verification_score, 4),
+                "summary": summary,
+                "priority": round(inbox_item.rank_score, 4),
+                "verification_score": round(verification_score, 4),
                 "position": bi.position,
             }
             items_by_section.setdefault(bi.section, []).append(item_data)

@@ -24,3 +24,5 @@ logs/
 *.swp
 reference/*
 !reference/README.md
+*.zip
+
