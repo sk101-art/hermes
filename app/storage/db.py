@@ -3,7 +3,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 
 from app.models.schemas import (
@@ -40,11 +40,17 @@ class Database:
         self.db_path = db_path
         self.has_fts5 = False
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.init_db()
 
     def init_db(self) -> None:
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
+        except Exception:
+            pass
+
         self._migrate_columns()
 
         schema_path = Path(__file__).parent / "schema.sql"
@@ -300,6 +306,74 @@ class Database:
         except Exception:
             return []
 
+    def search_events_fts(self, query: str, limit: int = 100) -> List[Tuple[str, float]]:
+        """
+        Safely searches events_fts with BM25 ranking or falls back to LIKE queries.
+        Returns: list of (event_id, lexical_score)
+        """
+        if not query or not query.strip():
+            return []
+
+        import re
+        tokens = [t.lower() for t in re.findall(r"[a-zA-Z0-9_\-\.]{2,}", query)]
+        if not tokens:
+            return []
+
+        results = []
+        if self.has_fts5:
+            # Build safe match query (each token quoted, joined by OR)
+            clean_tokens = [t.replace('"', '""') for t in tokens[:10]]
+            match_query = " OR ".join([f'"{t}"' for t in clean_tokens])
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "SELECT id, rank FROM events_fts WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
+                    (match_query, limit),
+                )
+                rows = cursor.fetchall()
+                for r in rows:
+                    # SQLite FTS5 rank is negative (lower = better), convert to positive normalized score
+                    raw_rank = abs(float(r[1])) if len(r) > 1 and r[1] is not None else 1.0
+                    lex_score = 1.0 / (1.0 + raw_rank * 0.1)
+                    results.append((r[0], lex_score))
+            except Exception:
+                pass
+
+        if not results and tokens:
+            # Fallback to parameterized LIKE queries
+            like_pat = f"%{tokens[0]}%"
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id FROM events WHERE title LIKE ? OR text LIKE ? LIMIT ?",
+                (like_pat, like_pat, limit),
+            )
+            for r in cursor.fetchall():
+                results.append((r[0], 0.5))
+
+        return results
+
+    def search_clusters_lexical(self, query: str, limit: int = 50) -> List[StoryCluster]:
+        """Performs lexical candidate search across StoryClusters."""
+        if not query or not query.strip():
+            return []
+        import re
+        tokens = [t.lower() for t in re.findall(r"[a-zA-Z0-9_\-\.]{2,}", query)]
+        if not tokens:
+            return []
+
+        cursor = self.conn.cursor()
+        like_pat = f"%{tokens[0]}%"
+        cursor.execute(
+            "SELECT id FROM story_clusters WHERE canonical_title LIKE ? ORDER BY cluster_score DESC LIMIT ?",
+            (like_pat, limit),
+        )
+        clusters = []
+        for r in cursor.fetchall():
+            cl = self.get_cluster(r["id"])
+            if cl:
+                clusters.append(cl)
+        return clusters
+
     # --- Embedding Storage Methods ---
 
     def save_embedding(self, event_id: str, model_name: str, embedding: np.ndarray) -> bool:
@@ -323,7 +397,9 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return None
-        return np.frombuffer(row["embedding"], dtype=np.float32)
+        vec_bytes = row["embedding"]
+        dim = row["dimension"]
+        return np.frombuffer(vec_bytes, dtype=np.float32).reshape((dim,))
 
     def embedding_exists(self, event_id: str, model_name: str) -> bool:
         cursor = self.conn.cursor()
@@ -344,21 +420,21 @@ class Database:
         )
         result = {}
         for r in cursor.fetchall():
-            result[r["event_id"]] = np.frombuffer(r["embedding"], dtype=np.float32)
+            result[r["event_id"]] = np.frombuffer(r["embedding"], dtype=np.float32).reshape((r["dimension"],))
         return result
 
     def get_all_embeddings(self, model_name: str) -> Dict[str, np.ndarray]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT event_id, embedding FROM event_embeddings WHERE model_name = ?",
+            "SELECT event_id, embedding, dimension FROM event_embeddings WHERE model_name = ?",
             (model_name,),
         )
-        result = {}
-        for r in cursor.fetchall():
-            result[r["event_id"]] = np.frombuffer(r["embedding"], dtype=np.float32)
-        return result
+        embeddings = {}
+        for row in cursor.fetchall():
+            embeddings[row["event_id"]] = np.frombuffer(row["embedding"], dtype=np.float32).reshape((row["dimension"],))
+        return embeddings
 
-    # --- Story Cluster Methods ---
+    # --- Story Clustering Storage Methods ---
 
     def create_cluster(self, cluster: StoryCluster) -> bool:
         sql = """
@@ -378,6 +454,8 @@ class Database:
                 cluster.updated_at.isoformat(),
             ),
         )
+        for eid in cluster.event_ids:
+            self.add_event_to_cluster(cluster.id, eid)
         self.conn.commit()
         return True
 

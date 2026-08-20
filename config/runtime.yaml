@@ -1,4 +1,4 @@
-﻿runtime:
+runtime:
   timezone: "local"
   min_free_disk_mb: 1024
   max_parallel_sources: 2
@@ -71,3 +71,9 @@
     rss:
       interval_minutes: 60
       max_consecutive_failures: 5
+
+api:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8765
+  allow_external: false
