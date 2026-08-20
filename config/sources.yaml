@@ -1,0 +1,36 @@
+﻿sources:
+  github:
+    enabled: true
+    priority: 1.0
+    max_results: 100
+    queries:
+      - "LLM inference"
+      - "CUDA inference"
+      - "LLVM optimization"
+      - "compiler optimization"
+      - "machine learning systems"
+      - "vector database"
+      - "distributed systems"
+      - "RAG"
+      - "AI agent"
+
+  arxiv:
+    enabled: true
+    priority: 1.0
+    max_results: 50
+    queries:
+      - "large language models"
+      - "inference optimization"
+      - "CUDA"
+      - "compiler optimization"
+      - "LLVM"
+      - "machine learning systems"
+      - "distributed systems"
+      - "retrieval augmented generation"
+      - "AI agents"
+      - "vector databases"
+
+  hackernews:
+    enabled: true
+    priority: 0.9
+    max_results: 50

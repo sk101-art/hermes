@@ -1,0 +1,20 @@
+﻿interests:
+  high:
+    - LLM inference
+    - CUDA
+    - compiler optimization
+    - LLVM
+    - ML systems
+    - vector databases
+    - storage engines
+    - distributed systems
+
+  medium:
+    - AI agents
+    - RAG
+    - databases
+    - developer tooling
+
+  low:
+    - generic AI product launches
+    - funding news
