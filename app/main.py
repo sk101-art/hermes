@@ -301,6 +301,15 @@ def run():
                 print(f"  Strongest Claim: \"{strongest.claim_text}\"", flush=True)
                 print(f"  Verification:    {strongest.verification_score:.2f} — {strongest.status.upper()}", flush=True)
 
+            # Check if cluster matches any local project
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT project_id, impact_score, recommendation FROM project_matches WHERE entity_id = ? ORDER BY impact_score DESC LIMIT 1", (cluster.id,))
+            pm_row = cursor.fetchone()
+            if pm_row:
+                proj = db.get_project(pm_row["project_id"])
+                p_name = proj.name if proj else pm_row["project_id"]
+                print(f"  Project Match:   {p_name} (Impact: {pm_row['impact_score']:.2f} — {pm_row['recommendation'].upper()})", flush=True)
+
             cluster_events = db.get_cluster_events(cluster.id)[:2]
             for ev in cluster_events:
                 print(f"    [{ev.source}] {ev.title}", flush=True)

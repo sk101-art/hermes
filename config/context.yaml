@@ -1,0 +1,19 @@
+﻿reference_dir: "reference"
+max_file_size_kb: 512
+max_total_project_mb: 25
+max_match_candidates: 100
+recency_days: 90
+
+relevance_weights:
+  semantic_similarity: 0.45
+  dependency_overlap: 0.20
+  technology_overlap: 0.15
+  language_overlap: 0.10
+  topic_overlap: 0.10
+
+impact_weights:
+  relevance: 0.35
+  verification: 0.20
+  maturity: 0.15
+  novelty: 0.15
+  dependency_directness: 0.15

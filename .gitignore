@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *.class
 .venv/
@@ -16,3 +16,5 @@ data/*.db-shm
 .vscode/
 .idea/
 *.swp
+reference/*
+!reference/README.md

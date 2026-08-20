@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
@@ -212,3 +212,74 @@ class IntelligenceChange(BaseModel):
     importance: float = 0.50
     reason: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# --- Session 7: Reference / Context Folder Personalization Models ---
+
+
+class Project(BaseModel):
+    id: str
+    name: str
+    path: str
+    description: Optional[str] = None
+    languages: List[str] = Field(default_factory=list)
+    frameworks: List[str] = Field(default_factory=list)
+    libraries: List[str] = Field(default_factory=list)
+    databases: List[str] = Field(default_factory=list)
+    infrastructure: List[str] = Field(default_factory=list)
+    models: List[str] = Field(default_factory=list)
+    tools: List[str] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    is_active: bool = True
+    context_hash: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_indexed_at: Optional[datetime] = None
+
+
+class ProjectFile(BaseModel):
+    id: str
+    project_id: str
+    relative_path: str
+    file_type: str
+    size_bytes: int
+    content_hash: str
+    extracted_text: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    indexed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ProjectTechnologyProfile(BaseModel):
+    project_id: str
+    languages: List[str] = Field(default_factory=list)
+    frameworks: List[str] = Field(default_factory=list)
+    libraries: List[str] = Field(default_factory=list)
+    dependencies: Dict[str, str] = Field(default_factory=dict)
+    databases: List[str] = Field(default_factory=list)
+    storage: List[str] = Field(default_factory=list)
+    infrastructure: List[str] = Field(default_factory=list)
+    ml_stack: List[str] = Field(default_factory=list)
+    deployment: List[str] = Field(default_factory=list)
+    observability: List[str] = Field(default_factory=list)
+    testing: List[str] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+    profile_text: str = ""
+    profile_hash: str = ""
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ProjectMatch(BaseModel):
+    id: str
+    project_id: str
+    entity_type: str = "cluster"  # cluster, claim, event
+    entity_id: str
+    match_type: str = "general_related"
+    relevance_score: float = 0.0
+    impact_score: float = 0.0
+    recommendation: str = "watch"
+    reason_codes: List[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+

@@ -18,6 +18,10 @@ from app.models.schemas import (
     TechnologyState,
     RecheckQueueItem,
     IntelligenceChange,
+    Project,
+    ProjectFile,
+    ProjectTechnologyProfile,
+    ProjectMatch,
 )
 
 
@@ -1153,9 +1157,323 @@ class Database:
             for r in cursor.fetchall()
         ]
 
-    def clear_intelligence_changes(self) -> None:
-        self.conn.execute("DELETE FROM intelligence_changes")
+    # --- Session 7: Reference / Context Projects ---
+
+    def save_project(self, project: Project) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO projects (
+            id, name, path, description, languages_json, frameworks_json,
+            libraries_json, databases_json, infrastructure_json, models_json,
+            tools_json, topics_json, keywords_json, is_active, context_hash,
+            created_at, updated_at, last_indexed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                project.id,
+                project.name,
+                project.path,
+                project.description,
+                json.dumps(project.languages),
+                json.dumps(project.frameworks),
+                json.dumps(project.libraries),
+                json.dumps(project.databases),
+                json.dumps(project.infrastructure),
+                json.dumps(project.models),
+                json.dumps(project.tools),
+                json.dumps(project.topics),
+                json.dumps(project.keywords),
+                1 if project.is_active else 0,
+                project.context_hash,
+                project.created_at.isoformat(),
+                project.updated_at.isoformat(),
+                project.last_indexed_at.isoformat() if project.last_indexed_at else None,
+            ),
+        )
         self.conn.commit()
+        return True
+
+    def _row_to_project(self, r: sqlite3.Row) -> Project:
+        return Project(
+            id=r["id"],
+            name=r["name"],
+            path=r["path"],
+            description=r["description"],
+            languages=json.loads(r["languages_json"]) if r["languages_json"] else [],
+            frameworks=json.loads(r["frameworks_json"]) if r["frameworks_json"] else [],
+            libraries=json.loads(r["libraries_json"]) if r["libraries_json"] else [],
+            databases=json.loads(r["databases_json"]) if r["databases_json"] else [],
+            infrastructure=json.loads(r["infrastructure_json"]) if r["infrastructure_json"] else [],
+            models=json.loads(r["models_json"]) if r["models_json"] else [],
+            tools=json.loads(r["tools_json"]) if r["tools_json"] else [],
+            topics=json.loads(r["topics_json"]) if r["topics_json"] else [],
+            keywords=json.loads(r["keywords_json"]) if r["keywords_json"] else [],
+            is_active=bool(r["is_active"]),
+            context_hash=r["context_hash"] or "",
+            created_at=datetime.fromisoformat(r["created_at"]),
+            updated_at=datetime.fromisoformat(r["updated_at"]),
+            last_indexed_at=datetime.fromisoformat(r["last_indexed_at"]) if r["last_indexed_at"] else None,
+        )
+
+    def get_project(self, project_id: str) -> Optional[Project]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM projects WHERE id = ? LIMIT 1", (project_id,))
+        row = cursor.fetchone()
+        return self._row_to_project(row) if row else None
+
+    def get_project_by_name(self, name: str) -> Optional[Project]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM projects WHERE name = ? OR id = ? LIMIT 1", (name, name))
+        row = cursor.fetchone()
+        return self._row_to_project(row) if row else None
+
+    def get_all_projects(self, active_only: bool = True) -> List[Project]:
+        cursor = self.conn.cursor()
+        if active_only:
+            cursor.execute("SELECT * FROM projects WHERE is_active = 1 ORDER BY name ASC")
+        else:
+            cursor.execute("SELECT * FROM projects ORDER BY name ASC")
+        return [self._row_to_project(r) for r in cursor.fetchall()]
+
+    def deactivate_project(self, project_id: str) -> bool:
+        self.conn.execute("UPDATE projects SET is_active = 0 WHERE id = ?", (project_id,))
+        self.conn.commit()
+        return True
+
+    # --- Project Files ---
+
+    def save_project_file(self, pfile: ProjectFile) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO project_files (
+            id, project_id, relative_path, file_type, size_bytes, content_hash,
+            extracted_text, created_at, updated_at, indexed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                pfile.id,
+                pfile.project_id,
+                pfile.relative_path,
+                pfile.file_type,
+                pfile.size_bytes,
+                pfile.content_hash,
+                pfile.extracted_text,
+                pfile.created_at.isoformat(),
+                pfile.updated_at.isoformat(),
+                pfile.indexed_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_project_files(self, project_id: str) -> List[ProjectFile]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM project_files WHERE project_id = ? ORDER BY relative_path ASC", (project_id,))
+        return [
+            ProjectFile(
+                id=r["id"],
+                project_id=r["project_id"],
+                relative_path=r["relative_path"],
+                file_type=r["file_type"],
+                size_bytes=r["size_bytes"] or 0,
+                content_hash=r["content_hash"],
+                extracted_text=r["extracted_text"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+                updated_at=datetime.fromisoformat(r["updated_at"]),
+                indexed_at=datetime.fromisoformat(r["indexed_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def delete_project_file(self, pfile_id: str) -> bool:
+        self.conn.execute("DELETE FROM project_files WHERE id = ?", (pfile_id,))
+        self.conn.commit()
+        return True
+
+    def delete_project_files(self, project_id: str) -> bool:
+        self.conn.execute("DELETE FROM project_files WHERE project_id = ?", (project_id,))
+        self.conn.commit()
+        return True
+
+    # --- Project Technology Profiles ---
+
+    def save_project_profile(self, profile: ProjectTechnologyProfile) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO project_technology_profiles (
+            project_id, languages_json, frameworks_json, libraries_json,
+            dependencies_json, databases_json, storage_json, infrastructure_json,
+            ml_stack_json, deployment_json, observability_json, testing_json,
+            topics_json, profile_text, profile_hash, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                profile.project_id,
+                json.dumps(profile.languages),
+                json.dumps(profile.frameworks),
+                json.dumps(profile.libraries),
+                json.dumps(profile.dependencies),
+                json.dumps(profile.databases),
+                json.dumps(profile.storage),
+                json.dumps(profile.infrastructure),
+                json.dumps(profile.ml_stack),
+                json.dumps(profile.deployment),
+                json.dumps(profile.observability),
+                json.dumps(profile.testing),
+                json.dumps(profile.topics),
+                profile.profile_text,
+                profile.profile_hash,
+                profile.updated_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_project_profile(self, project_id: str) -> Optional[ProjectTechnologyProfile]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM project_technology_profiles WHERE project_id = ? LIMIT 1", (project_id,))
+        r = cursor.fetchone()
+        if not r:
+            return None
+        return ProjectTechnologyProfile(
+            project_id=r["project_id"],
+            languages=json.loads(r["languages_json"]) if r["languages_json"] else [],
+            frameworks=json.loads(r["frameworks_json"]) if r["frameworks_json"] else [],
+            libraries=json.loads(r["libraries_json"]) if r["libraries_json"] else [],
+            dependencies=json.loads(r["dependencies_json"]) if r["dependencies_json"] else {},
+            databases=json.loads(r["databases_json"]) if r["databases_json"] else [],
+            storage=json.loads(r["storage_json"]) if r["storage_json"] else [],
+            infrastructure=json.loads(r["infrastructure_json"]) if r["infrastructure_json"] else [],
+            ml_stack=json.loads(r["ml_stack_json"]) if r["ml_stack_json"] else [],
+            deployment=json.loads(r["deployment_json"]) if r["deployment_json"] else [],
+            observability=json.loads(r["observability_json"]) if r["observability_json"] else [],
+            testing=json.loads(r["testing_json"]) if r["testing_json"] else [],
+            topics=json.loads(r["topics_json"]) if r["topics_json"] else [],
+            profile_text=r["profile_text"] or "",
+            profile_hash=r["profile_hash"] or "",
+            updated_at=datetime.fromisoformat(r["updated_at"]),
+        )
+
+    # --- Project Embeddings ---
+
+    def save_project_embedding(self, project_id: str, model_name: str, embedding: np.ndarray, content_hash: str) -> bool:
+        emb_bytes = embedding.astype(np.float32).tobytes()
+        dim = int(embedding.shape[0])
+        now_str = datetime.now(timezone.utc).isoformat()
+        sql = """
+        INSERT OR REPLACE INTO project_embeddings (project_id, model_name, embedding, dimension, content_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(sql, (project_id, model_name, emb_bytes, dim, content_hash, now_str))
+        self.conn.commit()
+        return True
+
+    def get_project_embedding(self, project_id: str, model_name: str) -> Optional[np.ndarray]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT embedding, dimension FROM project_embeddings WHERE project_id = ? AND model_name = ? LIMIT 1",
+            (project_id, model_name),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        emb = np.frombuffer(row["embedding"], dtype=np.float32)
+        return emb
+
+    def get_cached_project_embedding(self, content_hash: str, model_name: str) -> Optional[np.ndarray]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT embedding, dimension FROM project_embeddings WHERE content_hash = ? AND model_name = ? LIMIT 1",
+            (content_hash, model_name),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        emb = np.frombuffer(row["embedding"], dtype=np.float32)
+        return emb
+
+    # --- Project Matches ---
+
+    def save_project_match(self, match: ProjectMatch) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO project_matches (
+            id, project_id, entity_type, entity_id, match_type,
+            relevance_score, impact_score, recommendation, reason_codes_json,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                match.id,
+                match.project_id,
+                match.entity_type,
+                match.entity_id,
+                match.match_type,
+                match.relevance_score,
+                match.impact_score,
+                match.recommendation,
+                json.dumps(match.reason_codes),
+                match.created_at.isoformat(),
+                match.updated_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_project_matches(self, project_id: str) -> List[ProjectMatch]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM project_matches WHERE project_id = ? ORDER BY impact_score DESC, relevance_score DESC",
+            (project_id,),
+        )
+        return [
+            ProjectMatch(
+                id=r["id"],
+                project_id=r["project_id"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                match_type=r["match_type"],
+                relevance_score=r["relevance_score"] or 0.0,
+                impact_score=r["impact_score"] or 0.0,
+                recommendation=r["recommendation"],
+                reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
+                created_at=datetime.fromisoformat(r["created_at"]),
+                updated_at=datetime.fromisoformat(r["updated_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def get_all_project_matches(self) -> List[ProjectMatch]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM project_matches ORDER BY impact_score DESC, relevance_score DESC")
+        return [
+            ProjectMatch(
+                id=r["id"],
+                project_id=r["project_id"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                match_type=r["match_type"],
+                relevance_score=r["relevance_score"] or 0.0,
+                impact_score=r["impact_score"] or 0.0,
+                recommendation=r["recommendation"],
+                reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
+                created_at=datetime.fromisoformat(r["created_at"]),
+                updated_at=datetime.fromisoformat(r["updated_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def clear_project_matches(self, project_id: Optional[str] = None) -> bool:
+        if project_id:
+            self.conn.execute("DELETE FROM project_matches WHERE project_id = ?", (project_id,))
+        else:
+            self.conn.execute("DELETE FROM project_matches")
+        self.conn.commit()
+        return True
 
     def clear_claims_and_evidence(self) -> None:
         """Clear only claims, evidence, and technology_assessments tables."""
@@ -1171,3 +1489,4 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
