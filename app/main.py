@@ -20,6 +20,9 @@ from app.adapters.huggingface import HuggingFaceAdapter
 from app.adapters.openalex import OpenAlexAdapter
 from app.adapters.rss import RssAdapter
 from app.adapters.stackexchange import StackExchangeAdapter
+from app.evidence.claims import extract_claims_for_cluster
+from app.evidence.maturity import assess_technology_maturity
+from app.evidence.verification import compute_verification
 from app.pipeline.dedup import is_duplicate_event
 from app.pipeline.filter import filter_event
 from app.pipeline.rank import score_event
@@ -247,6 +250,25 @@ def run():
             print(f"  Semantic Failures:                {sem_stats['semantic_failures']:>5}", flush=True)
             print("=" * 60, flush=True)
 
+            # --- Claims, Evidence & Technology Assessment Processing ---
+            all_clusters = db.get_all_clusters()
+            for cl in all_clusters:
+                cl_events = db.get_cluster_events(cl.id)
+                if not cl_events:
+                    continue
+
+                assessment = assess_technology_maturity(cl, cl_events)
+                db.save_technology_assessment(assessment)
+
+                claims_with_ev = extract_claims_for_cluster(cl, cl_events)
+                for claim, ev_list in claims_with_ev:
+                    v_score, status = compute_verification(claim, ev_list)
+                    claim.verification_score = v_score
+                    claim.status = status
+                    db.save_claim(claim)
+                    for ev in ev_list:
+                        db.save_evidence(ev)
+
         except Exception as e:
             print(f"\n[Warning] Semantic clustering unavailable ({e}). Continuing with Event-level intelligence.", flush=True)
 
@@ -256,11 +278,20 @@ def run():
         print("\nTOP INTELLIGENCE STORIES\n", flush=True)
         for idx, cluster in enumerate(top_clusters, 1):
             sources_str = ", ".join(cluster.sources)
-            print(f"{idx:02d} [{cluster.cluster_score:.2f}]", flush=True)
-            print(f"{cluster.canonical_title}\n", flush=True)
-            print(f"  Sources: {sources_str} | Supporting Events: {len(cluster.event_ids)}", flush=True)
+            assessment = db.get_technology_assessment(cluster.id)
+            maturity_str = assessment.maturity_stage.upper() if assessment else "UNKNOWN"
+            claims = db.get_claims_by_cluster(cluster.id)
 
-            cluster_events = db.get_cluster_events(cluster.id)[:3]
+            print(f"{idx:02d} [{cluster.cluster_score:.2f}] [Maturity: {maturity_str}]", flush=True)
+            print(f"{cluster.canonical_title}\n", flush=True)
+            print(f"  Sources: {sources_str} | Supporting Events: {len(cluster.event_ids)} | Claims: {len(claims)}", flush=True)
+
+            if claims:
+                strongest = claims[0]
+                print(f"  Strongest Claim: \"{strongest.claim_text}\"", flush=True)
+                print(f"  Verification:    {strongest.verification_score:.2f} — {strongest.status.upper()}", flush=True)
+
+            cluster_events = db.get_cluster_events(cluster.id)[:2]
             for ev in cluster_events:
                 print(f"    [{ev.source}] {ev.title}", flush=True)
                 print(f"    {ev.url}", flush=True)

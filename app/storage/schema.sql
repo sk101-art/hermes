@@ -69,3 +69,62 @@ CREATE TABLE IF NOT EXISTS event_relationships (
 
 CREATE INDEX IF NOT EXISTS idx_rel_source ON event_relationships(source_event_id);
 CREATE INDEX IF NOT EXISTS idx_rel_target ON event_relationships(target_event_id);
+
+-- Session 5: Claims, Evidence Graph, and Technology Assessments
+CREATE TABLE IF NOT EXISTS claims (
+    id TEXT PRIMARY KEY,
+    cluster_id TEXT NOT NULL,
+    claim_type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    claim_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unverified',
+    confidence REAL DEFAULT 1.0,
+    verification_score REAL DEFAULT 0.0,
+    self_reported INTEGER DEFAULT 1,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_claims_cluster_id ON claims(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
+CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
+CREATE INDEX IF NOT EXISTS idx_claims_verification_score ON claims(verification_score DESC);
+
+CREATE TABLE IF NOT EXISTS evidence (
+    id TEXT PRIMARY KEY,
+    claim_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    evidence_type TEXT NOT NULL,
+    evidence_class TEXT NOT NULL DEFAULT 'primary',
+    stance TEXT NOT NULL DEFAULT 'supports',
+    excerpt TEXT,
+    url TEXT,
+    quality_score REAL DEFAULT 0.50,
+    independence_score REAL DEFAULT 0.50,
+    reproducibility_score REAL DEFAULT 0.50,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_claim_id ON evidence(claim_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_event_id ON evidence(event_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_type ON evidence(evidence_type);
+CREATE INDEX IF NOT EXISTS idx_evidence_stance ON evidence(stance);
+
+CREATE TABLE IF NOT EXISTS technology_assessments (
+    cluster_id TEXT PRIMARY KEY,
+    maturity_stage TEXT NOT NULL DEFAULT 'concept',
+    research_score REAL DEFAULT 0.0,
+    implementation_score REAL DEFAULT 0.0,
+    adoption_score REAL DEFAULT 0.0,
+    reproducibility_score REAL DEFAULT 0.0,
+    community_score REAL DEFAULT 0.0,
+    assessment_score REAL DEFAULT 0.0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tech_maturity_stage ON technology_assessments(maturity_stage);
+CREATE INDEX IF NOT EXISTS idx_tech_assessment_score ON technology_assessments(assessment_score DESC);

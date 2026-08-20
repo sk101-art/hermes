@@ -1,6 +1,6 @@
 ﻿# HERMES
 
-A local-first autonomous technology intelligence engine.
+A local-first autonomous technology intelligence and verification engine.
 
 ---
 
@@ -25,6 +25,17 @@ A local-first autonomous technology intelligence engine.
                              ▼                               ▼
                                      Story Clusters
                                             │
+                                            ├──→ Claims Extraction & Fingerprinting
+                                            │          │
+                                            │          ▼
+                                            │    Evidence Classification & Provenance
+                                            │          │
+                                            │          ▼
+                                            │    Independence & Verification Scoring
+                                            │          │
+                                            │          ▼
+                                            │    Technology Maturity Assessment
+                                            │
                                             ▼
                                       SQLite + FTS5
                                             │
@@ -34,7 +45,7 @@ A local-first autonomous technology intelligence engine.
 
 ---
 
-## Ingested Source Ecosystems (Session 4)
+## Ingested Source Ecosystems
 
 | Source | Adapter | Source Type | Default Trust | Popularity Metric |
 | :--- | :--- | :--- | :--- | :--- |
@@ -50,22 +61,24 @@ A local-first autonomous technology intelligence engine.
 
 ---
 
-## What It Does
+## Verification & Technology Maturity Engine (Session 5)
 
-1. **Broad Multi-Source Ingestion:** Ingests research, repositories, official releases, models, datasets, scholarly citations, developer discussions, and technical blogs across 9 source streams.
-2. **Unified Event Normalization:** Normalizes all sources into a single consistent `Event` model with normalized DOIs, citation counts, and rich provenance metadata.
-3. **Deterministic Deduplication & Cross-Linking:**
-   - Precedence given to deterministic artifact identities (DOI, arXiv ID, GitHub repo, HF repo, Stack Exchange question ID).
-   - Cross-links preprints $\leftrightarrow$ peer-reviewed DOI publications $\leftrightarrow$ open-source code repositories $\leftrightarrow$ models $\leftrightarrow$ discussions.
-4. **Interest Filtering:** Evaluates content against `config/interests.yaml` tiers (high, medium, low) with deterministic synonym expansion.
-5. **Calibrated Ranking:** Source-specific trust priors and logarithmic popularity scoring.
-6. **Local Semantic Clustering:**
-   - Bounded candidate generation avoiding $O(N^2)$ comparisons.
-   - Local CPU embeddings using `sentence-transformers/all-MiniLM-L6-v2`.
-   - Embeddings stored as float32 binary BLOBs in SQLite with caching.
-   - Cross-source story clustering and cluster ranking.
-7. **SQLite Storage:** Persists events, embeddings, clusters, and relationships in `data/tech_intel.db` with SQLite FTS5 support.
-8. **Terminal Intelligence Radar:** Displays source summaries, semantic clustering statistics, and top ranked cross-source intelligence stories with supporting events.
+1. **Deterministic Claim Model:**
+   - Extracts structured claims (`Claim`) with stable fingerprint hashes.
+   - Distinct claim types: `release`, `architecture`, `availability`, `scholarly_identity`, `research_result`, `performance`.
+   - Distinguishes artifact facts from self-reported assertions (`self_reported=True/False`).
+   - Strict rule: **Claims require $\ge 1$ supporting Evidence row to be saved**.
+2. **Evidence Graph & Provenance:**
+   - Classifies evidence into deterministic classes (`peer_reviewed_research`, `preprint`, `official_release`, `source_code`, `registry_metadata`, `community_discussion`, `developer_experience`, `technical_blog`, etc.).
+   - Full provenance tracking (`Claim` $\to$ `Evidence` $\to$ `Event` $\to$ Source URL).
+3. **Independence Scoring & Echo Penalty:**
+   - Detects correlated sources, shared authors, duplicate URLs, and syndicated announcements to prevent echo amplification.
+4. **Transparent Verification Scoring:**
+   - Computes transparent multi-factor score: Evidence Quality (35%), Independence (25%), Reproducibility (20%), Source Diversity (10%), Saturating Quantity (10%) minus Contradiction Penalties.
+   - Maps to conservative claim statuses: `unverified`, `weakly_supported`, `supported`, `strongly_supported`, `mixed`, `contradicted`.
+5. **Technology Maturity Model:**
+   - Multidimensional assessment across Implementation, Adoption, Research, Reproducibility, and Community signals.
+   - Maturity Stages: `concept`, `research`, `prototype`, `experimental`, `early_adoption`, `production_candidate`, `established`.
 
 ---
 
@@ -75,13 +88,22 @@ A local-first autonomous technology intelligence engine.
 # 1. Main Ingestion & Intelligence Radar
 python -m app.main
 
-# 2. Source Ingestion Status & Stored Event Matrix
+# 2. Claims & Evidence Graph Backfill
+python -m app.claims_backfill [--rebuild]
+
+# 3. Claims, Evidence & Verification Audit
+python -m app.claims_audit
+
+# 4. Explain Claim & Trace Evidence Provenance
+python -m app.explain_claim <claim_id>
+
+# 5. Source Ingestion Status & Stored Event Matrix
 python -m app.source_status
 
-# 3. Semantic Embedding Backfill & Cluster Rebuilding
+# 6. Semantic Embedding Backfill & Cluster Rebuilding
 python -m app.semantic_backfill
 
-# 4. Semantic Diagnostic & Similarity Recall Audit
+# 7. Semantic Diagnostic & Similarity Recall Audit
 python -m app.semantic.audit
 ```
 
@@ -103,21 +125,7 @@ python -m app.semantic.audit
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment (Optional)
-
-Copy `.env.example` to `.env`:
-
-```bash
-cp .env.example .env
-```
-
-Add your optional GitHub token:
-
-```ini
-GITHUB_TOKEN=ghp_your_token_here
-```
-
-### 3. Run Test Suite
+### 2. Run Full Test Suite
 
 ```bash
 pytest

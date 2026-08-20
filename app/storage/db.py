@@ -6,11 +6,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import numpy as np
 
-from app.models.schemas import Event, StoryCluster, EventRelationship
+from app.models.schemas import (
+    Event,
+    StoryCluster,
+    Relationship,
+    Claim,
+    Evidence,
+    TechnologyAssessment,
+)
 
 
 class Database:
-    """SQLite storage layer for events, embeddings, clusters, and relationships."""
+    """SQLite storage layer for events, embeddings, clusters, relationships, claims, and evidence."""
 
     def __init__(self, db_path: str = "data/tech_intel.db"):
         self.db_path = db_path
@@ -61,6 +68,7 @@ class Database:
             novelty_score, final_score
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
+        disc_at = event.discovered_at if hasattr(event, "discovered_at") else datetime.now(timezone.utc)
         params = (
             event.id,
             event.source,
@@ -74,7 +82,7 @@ class Database:
             json.dumps(event.metadata),
             json.dumps(event.raw_payload),
             event.published_at.isoformat() if event.published_at else None,
-            event.discovered_at.isoformat(),
+            disc_at.isoformat(),
             event.trust_score,
             event.relevance_score,
             event.novelty_score,
@@ -96,6 +104,13 @@ class Database:
         return True
 
     def _row_to_event(self, r: sqlite3.Row) -> Event:
+        disc_at = datetime.fromisoformat(r["discovered_at"]) if "discovered_at" in r.keys() and r["discovered_at"] else datetime.now(timezone.utc)
+        doi_val = None
+        m = json.loads(r["metadata_json"]) if r["metadata_json"] else {}
+        if "doi" in m:
+            doi_val = m.get("doi")
+        cited_val = m.get("cited_by_count")
+
         return Event(
             id=r["id"],
             source=r["source"],
@@ -104,12 +119,13 @@ class Database:
             title=r["title"],
             text=r["text"] or "",
             url=r["url"],
+            doi=doi_val,
+            cited_by_count=cited_val,
             authors=json.loads(r["authors_json"]) if r["authors_json"] else [],
             topics=json.loads(r["topics_json"]) if r["topics_json"] else [],
-            metadata=json.loads(r["metadata_json"]) if r["metadata_json"] else {},
+            metadata=m,
             raw_payload=json.loads(r["raw_payload_json"]) if r["raw_payload_json"] else {},
             published_at=datetime.fromisoformat(r["published_at"]) if r["published_at"] else None,
-            discovered_at=datetime.fromisoformat(r["discovered_at"]),
             trust_score=r["trust_score"] or 0.0,
             relevance_score=r["relevance_score"] or 0.0,
             novelty_score=r["novelty_score"] or 0.0,
@@ -124,7 +140,7 @@ class Database:
 
     def get_all_events(self) -> List[Event]:
         cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM events ORDER BY final_score DESC, discovered_at DESC")
+        cursor.execute("SELECT * FROM events ORDER BY final_score DESC, published_at DESC")
         return [self._row_to_event(r) for r in cursor.fetchall()]
 
     def get_events_by_ids(self, event_ids: List[str]) -> List[Event]:
@@ -153,8 +169,8 @@ class Database:
         cursor.execute(
             """
             SELECT * FROM events
-            WHERE discovered_at >= ? OR published_at >= ?
-            ORDER BY discovered_at DESC
+            WHERE published_at >= ? OR created_at >= ?
+            ORDER BY final_score DESC
             LIMIT ?
             """,
             (cutoff, cutoff, limit),
@@ -200,7 +216,6 @@ class Database:
     def get_fts_candidates(self, query_tokens: List[str], limit: int = 50) -> List[str]:
         if not self.has_fts5 or not query_tokens:
             return []
-        # Construct safe match string
         clean_tokens = [t.replace('"', '""') for t in query_tokens if len(t) >= 3]
         if not clean_tokens:
             return []
@@ -316,11 +331,9 @@ class Database:
         if not row:
             return None
 
-        # Fetch member events
         cursor.execute("SELECT event_id FROM cluster_events WHERE cluster_id = ?", (cluster_id,))
         event_ids = [r["event_id"] for r in cursor.fetchall()]
 
-        # Fetch sources for events
         sources = []
         if event_ids:
             ph = ",".join(["?"] * len(event_ids))
@@ -338,6 +351,12 @@ class Database:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
+
+    def get_all_clusters(self) -> List[StoryCluster]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM story_clusters ORDER BY cluster_score DESC")
+        cluster_ids = [r["id"] for r in cursor.fetchall()]
+        return [self.get_cluster(cid) for cid in cluster_ids if cid]
 
     def get_top_clusters(self, limit: int = 20) -> List[StoryCluster]:
         cursor = self.conn.cursor()
@@ -397,7 +416,7 @@ class Database:
         return [self._row_to_event(r) for r in cursor.fetchall()]
 
     def clear_clusters_and_relationships(self) -> None:
-        """Clear only story_clusters, cluster_events, and event_relationships. NEVER touches events or event_embeddings."""
+        """Clear story_clusters, cluster_events, and event_relationships."""
         self.conn.execute("DELETE FROM story_clusters")
         self.conn.execute("DELETE FROM cluster_events")
         self.conn.execute("DELETE FROM event_relationships")
@@ -405,7 +424,7 @@ class Database:
 
     # --- Relationship Storage Methods ---
 
-    def save_relationship(self, rel: EventRelationship) -> bool:
+    def save_relationship(self, rel: Relationship) -> bool:
         sql = """
         INSERT OR REPLACE INTO event_relationships (id, source_event_id, target_event_id, relationship_type, confidence, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -424,7 +443,7 @@ class Database:
         self.conn.commit()
         return True
 
-    def get_relationships(self, event_id: str) -> List[EventRelationship]:
+    def get_relationships(self, event_id: str) -> List[Relationship]:
         cursor = self.conn.cursor()
         cursor.execute(
             """
@@ -435,7 +454,7 @@ class Database:
             (event_id, event_id),
         )
         return [
-            EventRelationship(
+            Relationship(
                 id=r["id"],
                 source_event_id=r["source_event_id"],
                 target_event_id=r["target_event_id"],
@@ -446,11 +465,11 @@ class Database:
             for r in cursor.fetchall()
         ]
 
-    def get_all_relationships(self) -> List[EventRelationship]:
+    def get_all_relationships(self) -> List[Relationship]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM event_relationships ORDER BY confidence DESC")
         return [
-            EventRelationship(
+            Relationship(
                 id=r["id"],
                 source_event_id=r["source_event_id"],
                 target_event_id=r["target_event_id"],
@@ -460,6 +479,224 @@ class Database:
             )
             for r in cursor.fetchall()
         ]
+
+    # --- Claim Storage Methods ---
+
+    def claim_exists(self, claim_id: str) -> bool:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM claims WHERE id = ? LIMIT 1", (claim_id,))
+        return cursor.fetchone() is not None
+
+    def save_claim(self, claim: Claim) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO claims (
+            id, cluster_id, claim_type, subject, predicate, object,
+            claim_text, status, confidence, verification_score, self_reported,
+            metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                claim.id,
+                claim.cluster_id,
+                claim.claim_type,
+                claim.subject,
+                claim.predicate,
+                claim.object,
+                claim.claim_text,
+                claim.status,
+                claim.confidence,
+                claim.verification_score,
+                1 if claim.self_reported else 0,
+                json.dumps(claim.metadata),
+                claim.created_at.isoformat(),
+                claim.updated_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def _row_to_claim(self, r: sqlite3.Row) -> Claim:
+        return Claim(
+            id=r["id"],
+            cluster_id=r["cluster_id"],
+            claim_type=r["claim_type"],
+            subject=r["subject"],
+            predicate=r["predicate"],
+            object=r["object"],
+            claim_text=r["claim_text"],
+            status=r["status"],
+            confidence=r["confidence"] or 1.0,
+            verification_score=r["verification_score"] or 0.0,
+            self_reported=bool(r["self_reported"]),
+            metadata=json.loads(r["metadata_json"]) if r["metadata_json"] else {},
+            created_at=datetime.fromisoformat(r["created_at"]),
+            updated_at=datetime.fromisoformat(r["updated_at"]),
+        )
+
+    def get_claim(self, claim_id: str) -> Optional[Claim]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM claims WHERE id = ? LIMIT 1", (claim_id,))
+        row = cursor.fetchone()
+        return self._row_to_claim(row) if row else None
+
+    def get_claims_by_cluster(self, cluster_id: str) -> List[Claim]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM claims WHERE cluster_id = ? ORDER BY verification_score DESC, created_at DESC",
+            (cluster_id,),
+        )
+        return [self._row_to_claim(r) for r in cursor.fetchall()]
+
+    def get_all_claims(self) -> List[Claim]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM claims ORDER BY verification_score DESC, created_at DESC")
+        return [self._row_to_claim(r) for r in cursor.fetchall()]
+
+    def get_claims_by_status(self, status: str) -> List[Claim]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM claims WHERE status = ? ORDER BY verification_score DESC", (status,))
+        return [self._row_to_claim(r) for r in cursor.fetchall()]
+
+    # --- Evidence Storage Methods ---
+
+    def evidence_exists(self, evidence_id: str) -> bool:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM evidence WHERE id = ? LIMIT 1", (evidence_id,))
+        return cursor.fetchone() is not None
+
+    def save_evidence(self, evidence: Evidence) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO evidence (
+            id, claim_id, event_id, source, evidence_type, evidence_class,
+            stance, excerpt, url, quality_score, independence_score,
+            reproducibility_score, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                evidence.id,
+                evidence.claim_id,
+                evidence.event_id,
+                evidence.source,
+                evidence.evidence_type,
+                evidence.evidence_class,
+                evidence.stance,
+                evidence.excerpt,
+                evidence.url,
+                evidence.quality_score,
+                evidence.independence_score,
+                evidence.reproducibility_score,
+                evidence.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def _row_to_evidence(self, r: sqlite3.Row) -> Evidence:
+        return Evidence(
+            id=r["id"],
+            claim_id=r["claim_id"],
+            event_id=r["event_id"],
+            source=r["source"],
+            evidence_type=r["evidence_type"],
+            evidence_class=r["evidence_class"] if "evidence_class" in r.keys() else "primary",
+            stance=r["stance"],
+            excerpt=r["excerpt"] or "",
+            url=r["url"],
+            quality_score=r["quality_score"] or 0.50,
+            independence_score=r["independence_score"] or 0.50,
+            reproducibility_score=r["reproducibility_score"] or 0.50,
+            created_at=datetime.fromisoformat(r["created_at"]),
+        )
+
+    def get_evidence(self, evidence_id: str) -> Optional[Evidence]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM evidence WHERE id = ? LIMIT 1", (evidence_id,))
+        row = cursor.fetchone()
+        return self._row_to_evidence(row) if row else None
+
+    def get_evidence_by_claim(self, claim_id: str) -> List[Evidence]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM evidence WHERE claim_id = ? ORDER BY quality_score DESC", (claim_id,))
+        return [self._row_to_evidence(r) for r in cursor.fetchall()]
+
+    def get_all_evidence(self) -> List[Evidence]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM evidence ORDER BY quality_score DESC")
+        return [self._row_to_evidence(r) for r in cursor.fetchall()]
+
+    # --- Technology Assessment Storage Methods ---
+
+    def save_technology_assessment(self, assessment: TechnologyAssessment) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO technology_assessments (
+            cluster_id, maturity_stage, research_score, implementation_score,
+            adoption_score, reproducibility_score, community_score,
+            assessment_score, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                assessment.cluster_id,
+                assessment.maturity_stage,
+                assessment.research_score,
+                assessment.implementation_score,
+                assessment.adoption_score,
+                assessment.reproducibility_score,
+                assessment.community_score,
+                assessment.assessment_score,
+                assessment.updated_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def get_technology_assessment(self, cluster_id: str) -> Optional[TechnologyAssessment]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM technology_assessments WHERE cluster_id = ? LIMIT 1", (cluster_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return TechnologyAssessment(
+            cluster_id=row["cluster_id"],
+            maturity_stage=row["maturity_stage"],
+            research_score=row["research_score"] or 0.0,
+            implementation_score=row["implementation_score"] or 0.0,
+            adoption_score=row["adoption_score"] or 0.0,
+            reproducibility_score=row["reproducibility_score"] or 0.0,
+            community_score=row["community_score"] or 0.0,
+            assessment_score=row["assessment_score"] or 0.0,
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def get_all_technology_assessments(self) -> List[TechnologyAssessment]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM technology_assessments ORDER BY assessment_score DESC")
+        return [
+            TechnologyAssessment(
+                cluster_id=row["cluster_id"],
+                maturity_stage=row["maturity_stage"],
+                research_score=row["research_score"] or 0.0,
+                implementation_score=row["implementation_score"] or 0.0,
+                adoption_score=row["adoption_score"] or 0.0,
+                reproducibility_score=row["reproducibility_score"] or 0.0,
+                community_score=row["community_score"] or 0.0,
+                assessment_score=row["assessment_score"] or 0.0,
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in cursor.fetchall()
+        ]
+
+    def clear_claims_and_evidence(self) -> None:
+        """Clear only claims, evidence, and technology_assessments tables."""
+        self.conn.execute("DELETE FROM claims")
+        self.conn.execute("DELETE FROM evidence")
+        self.conn.execute("DELETE FROM technology_assessments")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
