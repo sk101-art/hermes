@@ -1,0 +1,206 @@
+/* ==========================================================================
+   HERMES - Semantic State Badges & Indicators
+   ========================================================================== */
+
+/* Base Semantic Badge */
+.semantic-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-tight);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.semantic-badge-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* 1. Verification State Badges */
+.badge-verification-supported {
+  color: var(--verif-supported-text);
+  background-color: var(--verif-supported-bg);
+  border-color: var(--verif-supported-border);
+}
+
+.badge-verification-weakly_supported {
+  color: var(--verif-weak-text);
+  background-color: var(--verif-weak-bg);
+  border-color: var(--verif-weak-border);
+}
+
+.badge-verification-unverified {
+  color: var(--verif-unverified-text);
+  background-color: var(--verif-unverified-bg);
+  border-color: var(--verif-unverified-border);
+}
+
+.badge-verification-contradicted {
+  color: var(--verif-contradicted-text);
+  background-color: var(--verif-contradicted-bg);
+  border-color: var(--verif-contradicted-border);
+}
+
+.badge-verification-not_assessed {
+  color: var(--ink-faint);
+  background-color: var(--bg-panel-subtle);
+  border-color: var(--border-subtle);
+  font-style: italic;
+}
+
+/* 2. Maturity Stage Badges */
+.badge-maturity-proposal {
+  color: var(--mat-proposal-text);
+  background-color: var(--mat-proposal-bg);
+  border-color: var(--mat-proposal-border);
+}
+
+.badge-maturity-prototype {
+  color: var(--mat-prototype-text);
+  background-color: var(--mat-prototype-bg);
+  border-color: var(--mat-prototype-border);
+}
+
+.badge-maturity-experimental {
+  color: var(--mat-experimental-text);
+  background-color: var(--mat-experimental-bg);
+  border-color: var(--mat-experimental-border);
+}
+
+.badge-maturity-early_adoption {
+  color: var(--mat-early-text);
+  background-color: var(--mat-early-bg);
+  border-color: var(--mat-early-border);
+}
+
+.badge-maturity-mature {
+  color: var(--mat-mature-text);
+  background-color: var(--mat-mature-bg);
+  border-color: var(--mat-mature-border);
+  font-weight: var(--font-weight-semibold);
+}
+
+.badge-maturity-legacy {
+  color: var(--mat-legacy-text);
+  background-color: var(--mat-legacy-bg);
+  border-color: var(--mat-legacy-border);
+}
+
+.badge-maturity-deprecated {
+  color: var(--mat-deprecated-text);
+  background-color: var(--mat-deprecated-bg);
+  border-color: var(--mat-deprecated-border);
+  text-decoration: line-through;
+}
+
+.badge-maturity-not_assessed {
+  color: var(--ink-faint);
+  background-color: var(--bg-panel-subtle);
+  border-color: var(--border-subtle);
+  font-style: italic;
+}
+
+/* 3. Risk State Badges */
+.badge-risk-low {
+  color: var(--risk-low-text);
+  background-color: var(--risk-low-bg);
+  border-color: var(--risk-low-border);
+}
+
+.badge-risk-medium {
+  color: var(--risk-medium-text);
+  background-color: var(--risk-medium-bg);
+  border-color: var(--risk-medium-border);
+}
+
+.badge-risk-high {
+  color: var(--risk-high-text);
+  background-color: var(--risk-high-bg);
+  border-color: var(--risk-high-border);
+  font-weight: var(--font-weight-semibold);
+}
+
+.badge-risk-not_assessed {
+  color: var(--risk-unassessed-text);
+  background-color: var(--risk-unassessed-bg);
+  border-color: var(--risk-unassessed-border);
+  font-style: italic;
+}
+
+.badge-risk-insufficient_data {
+  color: var(--risk-insufficient-text);
+  background-color: var(--risk-insufficient-bg);
+  border-color: var(--risk-insufficient-border);
+  border-style: dashed;
+}
+
+/* 4. Evidence Stance Badges */
+.badge-stance-supports {
+  color: var(--stance-supports-text);
+  background-color: var(--stance-supports-bg);
+  border-color: var(--stance-supports-border);
+}
+
+.badge-stance-contradicts {
+  color: var(--stance-contradicts-text);
+  background-color: var(--stance-contradicts-bg);
+  border-color: var(--stance-contradicts-border);
+}
+
+.badge-stance-context {
+  color: var(--stance-context-text);
+  background-color: var(--stance-context-bg);
+  border-color: var(--stance-context-border);
+}
+
+.badge-stance-mentions {
+  color: var(--stance-mentions-text);
+  background-color: var(--stance-mentions-bg);
+  border-color: var(--stance-mentions-border);
+}
+
+/* 5. Relevance / Ranking Badge (Distinct from Verification) */
+.badge-rank {
+  color: var(--rank-text);
+  background-color: var(--rank-bg);
+  border-color: var(--rank-border);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* 6. Provenance & Source Pills */
+.source-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  background-color: var(--bg-panel-subtle);
+  color: var(--ink-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Project Context Relevance Pill */
+.project-match-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  background-color: #f5f3ff; /* Violet 50 */
+  color: #6d28d9;            /* Violet 700 */
+  border: 1px solid #ddd6fe; /* Violet 200 */
+}

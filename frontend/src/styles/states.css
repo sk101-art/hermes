@@ -1,0 +1,140 @@
+/* ==========================================================================
+   HERMES - UI State Presentations (Loading, Empty, Error, Offline, Degraded)
+   ========================================================================== */
+
+/* State Container */
+.state-container {
+  padding: var(--space-12) var(--space-6);
+  border-radius: var(--radius-lg);
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 240px;
+}
+
+.state-icon-wrapper {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--space-4);
+  color: var(--ink-muted);
+  background-color: var(--bg-panel-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.state-title {
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-primary);
+  margin-bottom: var(--space-2);
+}
+
+.state-description {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  max-width: 480px;
+  margin-bottom: var(--space-4);
+  line-height: var(--leading-relaxed);
+}
+
+.state-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+/* Specific UI State Variants */
+
+/* 1. Loading State */
+.state-loading .state-icon-wrapper {
+  background-color: var(--accent-primary-subtle);
+  border-color: var(--accent-primary-border);
+  color: var(--accent-primary);
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2.5px solid var(--accent-primary-border);
+  border-top-color: var(--accent-primary);
+  border-radius: var(--radius-full);
+  animation: hermes-spin 0.8s linear infinite;
+}
+
+@keyframes hermes-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 2. Empty State (Never implies error) */
+.state-empty .state-icon-wrapper {
+  color: var(--ink-faint);
+  background-color: var(--bg-panel-subtle);
+}
+
+/* 3. Offline State (Distinguishes network loss from backend health) */
+.state-offline {
+  border-color: #fecaca;
+  background-color: #fffafb;
+}
+
+.state-offline .state-icon-wrapper {
+  background-color: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+/* 4. Degraded / Backend Unhealthy State */
+.state-degraded {
+  border-color: #fde68a;
+  background-color: #fffdf5;
+}
+
+.state-degraded .state-icon-wrapper {
+  background-color: #fef3c7;
+  border-color: #fcd34d;
+  color: #d97706;
+}
+
+/* 5. API Error State */
+.state-error {
+  border-color: #fecaca;
+  background-color: #fffafb;
+}
+
+.state-error .state-icon-wrapper {
+  background-color: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+/* Top Banner Notification (Offline / Degraded Alerts) */
+.global-banner {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-bottom: 1px solid transparent;
+}
+
+.global-banner-offline {
+  background-color: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+
+.global-banner-degraded {
+  background-color: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
