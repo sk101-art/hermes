@@ -411,7 +411,7 @@ export function renderSearchResultCard(item) {
   const claimStatus = item.claim_status ?? null;
   const maturity = item.maturity || null;
   const riskLevel = item.risk || null;
-  const riskStatus = item.risk_status || (riskLevel ? 'assessed' : 'not_assessed');
+  const riskStatus = item.risk_status ?? null;
   const projectRel = typeof item.project_relevance === 'number' && item.project_relevance > 0 ? Math.round(item.project_relevance * 100) : null;
   const sources = ensureArray(item.sources);
   const isSynthesized = Boolean(item.is_synthesized);

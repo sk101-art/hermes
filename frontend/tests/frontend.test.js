@@ -1390,7 +1390,7 @@ test('Search Result Card never infers canonical ClaimStatus from verification sc
   assert.ok(!htmlContra.includes('Supported (72%)'));
 });
 
-test('Search Result Card correctly passes riskStatus and riskLevel to renderRiskBadge', () => {
+test('Search Result Card correctly passes riskStatus and riskLevel to renderRiskBadge without synthesizing RiskStatus', () => {
   const cases = [
     { status: 'assessed', level: 'low', expectedText: 'Low risk', expectedClass: 'badge-risk-low' },
     { status: 'assessed', level: 'medium', expectedText: 'Medium risk', expectedClass: 'badge-risk-medium' },
@@ -1398,11 +1398,13 @@ test('Search Result Card correctly passes riskStatus and riskLevel to renderRisk
     { status: 'assessed', level: 'critical', expectedText: 'Critical risk', expectedClass: 'badge-risk-critical' },
     { status: 'not_assessed', level: null, expectedText: 'Risk: Not assessed', expectedClass: 'badge-risk-not_assessed' },
     { status: 'insufficient_data', level: null, expectedText: 'Risk: Insufficient data', expectedClass: 'badge-risk-insufficient_data' },
+    { status: null, level: 'medium', expectedText: 'Risk: Not assessed', expectedClass: 'badge-risk-not_assessed', forbiddenText: 'Medium risk', forbiddenClass: 'badge-risk-medium' },
+    { status: null, level: null, expectedText: 'Risk: Not assessed', expectedClass: 'badge-risk-not_assessed' },
   ];
 
   for (const c of cases) {
     const item = {
-      entity_id: `cl_risk_${c.level || c.status}`,
+      entity_id: `cl_risk_${c.level || 'nolevel'}_${c.status || 'nostatus'}`,
       title: `Risk Test ${c.status} ${c.level}`,
       score: 0.8,
       risk: c.level,
@@ -1410,8 +1412,14 @@ test('Search Result Card correctly passes riskStatus and riskLevel to renderRisk
       sources: ['github'],
     };
     const html = renderSearchResultCard(item);
-    assert.ok(html.includes(c.expectedText), `Expected "${c.expectedText}" in HTML for ${c.status}/${c.level}`);
-    assert.ok(html.includes(c.expectedClass), `Expected class "${c.expectedClass}" in HTML for ${c.status}/${c.level}`);
+    assert.ok(html.includes(c.expectedText), `Expected "${c.expectedText}" in HTML for status=${c.status}/level=${c.level}`);
+    assert.ok(html.includes(c.expectedClass), `Expected class "${c.expectedClass}" in HTML for status=${c.status}/level=${c.level}`);
+    if (c.forbiddenText) {
+      assert.ok(!html.includes(c.forbiddenText), `Forbidden text "${c.forbiddenText}" must not appear for status=${c.status}/level=${c.level}`);
+    }
+    if (c.forbiddenClass) {
+      assert.ok(!html.includes(c.forbiddenClass), `Forbidden class "${c.forbiddenClass}" must not appear for status=${c.status}/level=${c.level}`);
+    }
   }
 });
 
