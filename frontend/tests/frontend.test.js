@@ -143,80 +143,151 @@ test('API client surfaces HTTP errors consistently with ApiError', async () => {
 });
 
 /* ==========================================================================
-   2. Semantic Enums & Display Rules
+   2. Canonical Semantic Enums & Display Rules
    ========================================================================== */
 
-test('Canonical maturity labels are mapped correctly', () => {
-  const proposal = getMaturityMeta('proposal');
-  assert.strictEqual(proposal.label, 'Proposal');
-  assert.strictEqual(proposal.cssClass, 'badge-maturity-proposal');
-
-  const mature = getMaturityMeta('mature');
-  assert.strictEqual(mature.label, 'Mature');
-  assert.strictEqual(mature.cssClass, 'badge-maturity-mature');
-});
-
-test('All seven maturity stages render correctly without default fallback', () => {
-  const stages = ['proposal', 'prototype', 'experimental', 'early_adoption', 'mature', 'legacy', 'deprecated'];
+test('All seven canonical maturity stages render correctly without default fallback', () => {
+  const stages = [
+    { key: 'concept', label: 'Concept', css: 'badge-maturity-concept' },
+    { key: 'research', label: 'Research', css: 'badge-maturity-research' },
+    { key: 'prototype', label: 'Prototype', css: 'badge-maturity-prototype' },
+    { key: 'experimental', label: 'Experimental', css: 'badge-maturity-experimental' },
+    { key: 'early_adoption', label: 'Early Adoption', css: 'badge-maturity-early_adoption' },
+    { key: 'production_candidate', label: 'Production Candidate', css: 'badge-maturity-production_candidate' },
+    { key: 'established', label: 'Established', css: 'badge-maturity-established' },
+  ];
   
-  stages.forEach(stage => {
-    const meta = getMaturityMeta(stage);
-    assert.notStrictEqual(meta.label, 'Not assessed');
-    assert.strictEqual(meta.label.toLowerCase().replace(' ', '_'), stage);
+  stages.forEach(({ key, label, css }) => {
+    const meta = getMaturityMeta(key);
+    assert.strictEqual(meta.label, label);
+    assert.strictEqual(meta.cssClass, css);
     
-    const rendered = renderMaturityBadge(stage);
-    assert.ok(rendered.includes(meta.cssClass));
-    assert.ok(rendered.includes(meta.label));
+    const rendered = renderMaturityBadge(key);
+    assert.ok(rendered.includes(css), `Expected ${css} in rendered maturity badge`);
+    assert.ok(rendered.includes(label), `Expected ${label} in rendered maturity badge`);
   });
 
   // Null input must render "Not assessed"
   const unassessed = getMaturityMeta(null);
   assert.strictEqual(unassessed.label, 'Not assessed');
+  assert.strictEqual(unassessed.cssClass, 'badge-maturity-not_assessed');
+
+  // Unknown input must degrade safely to neutral unassessed
+  const unknown = getMaturityMeta('unrecognized_future_stage');
+  assert.strictEqual(unknown.label, 'Unrecognized Future Stage');
+  assert.strictEqual(unknown.cssClass, 'badge-maturity-not_assessed');
 });
 
-test('Claim statuses render without invented fallback', () => {
-  const statuses = ['supported', 'weakly_supported', 'unverified', 'contradicted'];
-  statuses.forEach(status => {
-    const meta = getVerificationMeta(status);
-    assert.notStrictEqual(meta.label, 'Not assessed');
+test('All eight canonical ClaimStatus values render without invented fallback', () => {
+  const statuses = [
+    { key: 'strongly_supported', label: 'Strongly Supported', css: 'badge-verification-strongly_supported' },
+    { key: 'supported', label: 'Supported', css: 'badge-verification-supported' },
+    { key: 'weakly_supported', label: 'Weakly Supported', css: 'badge-verification-weakly_supported' },
+    { key: 'mixed', label: 'Mixed Evidence', css: 'badge-verification-mixed' },
+    { key: 'contradicted', label: 'Contradicted', css: 'badge-verification-contradicted' },
+    { key: 'unverified', label: 'Unverified', css: 'badge-verification-unverified' },
+    { key: 'superseded', label: 'Superseded', css: 'badge-verification-superseded' },
+    { key: 'retracted', label: 'Retracted', css: 'badge-verification-retracted' },
+  ];
+
+  statuses.forEach(({ key, label, css }) => {
+    const meta = getVerificationMeta(key);
+    assert.strictEqual(meta.label, label);
+    assert.strictEqual(meta.cssClass, css);
     
-    const rendered = renderVerificationBadge(status);
-    assert.ok(rendered.includes(meta.label));
+    const rendered = renderVerificationBadge(key);
+    assert.ok(rendered.includes(label), `Expected ${label} in rendered verification badge`);
+    assert.ok(rendered.includes(css), `Expected ${css} in rendered verification badge`);
   });
 
+  // Null input must render "Not assessed"
   const unassessed = getVerificationMeta(null);
   assert.strictEqual(unassessed.label, 'Not assessed');
+  assert.strictEqual(unassessed.cssClass, 'badge-verification-not_assessed');
+
+  // Unknown input must degrade neutrally without positive fallback
+  const unknown = getVerificationMeta('hypothetical_future_status');
+  assert.strictEqual(unknown.label, 'Hypothetical Future Status');
+  assert.strictEqual(unknown.cssClass, 'badge-verification-not_assessed');
 });
 
-test('not_assessed risk is not rendered as Low', () => {
-  const meta = getRiskMeta('not_assessed', null);
-  assert.strictEqual(meta.label, 'Risk: Not assessed');
-  assert.ok(meta.cssClass.includes('badge-risk-not_assessed'));
-  assert.ok(!meta.label.includes('Low'));
+test('Canonical evidence stances render correctly and context never renders as support', () => {
+  const stances = [
+    { key: 'supports', label: 'Supports', css: 'badge-stance-supports' },
+    { key: 'contradicts', label: 'Contradicts', css: 'badge-stance-contradicts' },
+    { key: 'context', label: 'Context', css: 'badge-stance-context' },
+  ];
+
+  stances.forEach(({ key, label, css }) => {
+    const meta = getEvidenceStanceMeta(key);
+    assert.strictEqual(meta.label, label);
+    assert.strictEqual(meta.cssClass, css);
+
+    const rendered = renderEvidenceStanceBadge(key);
+    assert.ok(rendered.includes(label));
+    assert.ok(rendered.includes(css));
+  });
+
+  // Explicit check: context never renders as supports
+  const contextMeta = getEvidenceStanceMeta('context');
+  assert.strictEqual(contextMeta.label, 'Context');
+  assert.ok(!contextMeta.cssClass.includes('badge-stance-supports'));
+  const renderedContext = renderEvidenceStanceBadge('context');
+  assert.ok(renderedContext.includes('Context'));
+  assert.ok(!renderedContext.includes('Supports'));
+
+  // Unknown stance degrades neutrally
+  const unknown = getEvidenceStanceMeta('tangential_citation');
+  assert.strictEqual(unknown.label, 'Tangential Citation');
+  assert.strictEqual(unknown.cssClass, 'badge-stance-context');
+
+  const nullStance = getEvidenceStanceMeta(null);
+  assert.strictEqual(nullStance.label, 'Unspecified');
+});
+
+test('Risk levels include critical, high, medium, low with accurate status handling', () => {
+  // Critical risk
+  const critical = getRiskMeta('assessed', 'critical', 0.95);
+  assert.strictEqual(critical.label, 'Critical risk (95%)');
+  assert.strictEqual(critical.cssClass, 'badge-risk-critical');
+  const renderedCrit = renderRiskBadge('assessed', 'critical', 0.95);
+  assert.ok(renderedCrit.includes('Critical risk (95%)'));
+  assert.ok(renderedCrit.includes('badge-risk-critical'));
+
+  // High risk
+  const high = getRiskMeta('assessed', 'high', 0.80);
+  assert.strictEqual(high.label, 'High risk (80%)');
+  assert.strictEqual(high.cssClass, 'badge-risk-high');
+
+  // Medium risk
+  const medium = getRiskMeta('assessed', 'medium', 0.50);
+  assert.strictEqual(medium.label, 'Medium risk (50%)');
+  assert.strictEqual(medium.cssClass, 'badge-risk-medium');
+
+  // Low risk
+  const low = getRiskMeta('assessed', 'low', 0.15);
+  assert.strictEqual(low.label, 'Low risk (15%)');
+  assert.strictEqual(low.cssClass, 'badge-risk-low');
+
+  // not_assessed risk is NOT rendered as Low
+  const notAssessed = getRiskMeta('not_assessed', null);
+  assert.strictEqual(notAssessed.label, 'Risk: Not assessed');
+  assert.strictEqual(notAssessed.cssClass, 'badge-risk-not_assessed');
+  assert.ok(!notAssessed.label.includes('Low'));
   
-  const rendered = renderRiskBadge('not_assessed', null);
-  assert.ok(rendered.includes('Risk: Not assessed'));
-});
+  const renderedNotAssessed = renderRiskBadge('not_assessed', null);
+  assert.ok(renderedNotAssessed.includes('Risk: Not assessed'));
+  assert.ok(!renderedNotAssessed.includes('Low'));
 
-test('insufficient_data risk differs from Medium', () => {
-  const meta = getRiskMeta('insufficient_data', null);
-  assert.strictEqual(meta.label, 'Risk: Insufficient data');
-  assert.ok(meta.cssClass.includes('badge-risk-insufficient_data'));
-  assert.ok(!meta.label.includes('Medium'));
+  // insufficient_data risk differs from Medium
+  const insufficient = getRiskMeta('insufficient_data', null);
+  assert.strictEqual(insufficient.label, 'Risk: Insufficient data');
+  assert.strictEqual(insufficient.cssClass, 'badge-risk-insufficient_data');
+  assert.ok(!insufficient.label.includes('Medium'));
 
-  const rendered = renderRiskBadge('insufficient_data', null);
-  assert.ok(rendered.includes('Risk: Insufficient data'));
-});
-
-test('contextual evidence does not render as Support', () => {
-  const meta = getEvidenceStanceMeta('context');
-  assert.strictEqual(meta.label, 'Context');
-  assert.ok(meta.cssClass.includes('badge-stance-context'));
-  assert.ok(!meta.cssClass.includes('badge-stance-supports'));
-
-  const rendered = renderEvidenceStanceBadge('context');
-  assert.ok(rendered.includes('Context'));
-  assert.ok(!rendered.includes('Supports'));
+  const renderedInsufficient = renderRiskBadge('insufficient_data', null);
+  assert.ok(renderedInsufficient.includes('Risk: Insufficient data'));
+  assert.ok(!renderedInsufficient.includes('Medium'));
 });
 
 test('ranking score is not labeled Verification or Confidence', () => {
@@ -238,6 +309,81 @@ test('no semantic display helper fabricates a positive state from null', () => {
   
   const stance = getEvidenceStanceMeta(null);
   assert.strictEqual(stance.label, 'Unspecified');
+});
+
+test('Phase 4 canonical payload rendering integration tests', () => {
+  // Test 1: Production Candidate with Strongly Supported and Critical Risk
+  const storyProd = {
+    story_cluster_id: 'cluster:p4-deepseek-v3',
+    title: 'DeepSeek-V3 Architecture Release',
+    summary: 'Multi-head latent attention model candidate with verified benchmarks.',
+    verification_status: 'strongly_supported',
+    verification_score: 0.94,
+    maturity_stage: 'production_candidate',
+    risk_status: 'assessed',
+    risk_level: 'critical',
+    risk_score: 0.88,
+    cluster_score: 0.92
+  };
+
+  const cardHtml1 = renderStoryCard(storyProd);
+  assert.ok(cardHtml1.includes('DeepSeek-V3 Architecture Release'));
+  assert.ok(cardHtml1.includes('Strongly Supported (94%)'));
+  assert.ok(cardHtml1.includes('badge-verification-strongly_supported'));
+  assert.ok(cardHtml1.includes('Production Candidate'));
+  assert.ok(cardHtml1.includes('badge-maturity-production_candidate'));
+  assert.ok(cardHtml1.includes('Critical risk (88%)'));
+  assert.ok(cardHtml1.includes('badge-risk-critical'));
+  assert.ok(cardHtml1.includes('Relevance: 92%'));
+
+  // Test 2: Established technology with Mixed verification and Low Risk
+  const storyEst = {
+    story_cluster_id: 'cluster:p4-vllm-perf',
+    title: 'vLLM Kernel Optimization',
+    summary: 'PagedAttention throughput improvements across GPU architectures.',
+    verification_status: 'mixed',
+    maturity_stage: 'established',
+    risk_status: 'assessed',
+    risk_level: 'low',
+    risk_score: 0.12,
+  };
+
+  const cardHtml2 = renderStoryCard(storyEst);
+  assert.ok(cardHtml2.includes('Mixed Evidence'));
+  assert.ok(cardHtml2.includes('badge-verification-mixed'));
+  assert.ok(cardHtml2.includes('Established'));
+  assert.ok(cardHtml2.includes('badge-maturity-established'));
+  assert.ok(cardHtml2.includes('Low risk (12%)'));
+  assert.ok(cardHtml2.includes('badge-risk-low'));
+
+  // Test 3: Research preprint with Superseded & Insufficient Data Risk
+  const storyResearch = {
+    story_cluster_id: 'cluster:p4-speculative-decoding',
+    title: 'Speculative Decoding Analysis',
+    summary: 'Early algorithmic formulation for draft model acceleration.',
+    verification_status: 'superseded',
+    maturity_stage: 'research',
+    risk_status: 'insufficient_data',
+    risk_level: null,
+  };
+
+  const cardHtml3 = renderStoryCard(storyResearch);
+  assert.ok(cardHtml3.includes('Superseded'));
+  assert.ok(cardHtml3.includes('badge-verification-superseded'));
+  assert.ok(cardHtml3.includes('Research'));
+  assert.ok(cardHtml3.includes('badge-maturity-research'));
+  assert.ok(cardHtml3.includes('Risk: Insufficient data'));
+  assert.ok(cardHtml3.includes('badge-risk-insufficient_data'));
+
+  // Test 4: Retracted claim & Context evidence badges
+  const retractedBadge = renderVerificationBadge('retracted');
+  assert.ok(retractedBadge.includes('Retracted'));
+  assert.ok(retractedBadge.includes('badge-verification-retracted'));
+
+  const contextBadge = renderEvidenceStanceBadge('context');
+  assert.ok(contextBadge.includes('Context'));
+  assert.ok(contextBadge.includes('badge-stance-context'));
+  assert.ok(!contextBadge.includes('Supports'));
 });
 
 /* ==========================================================================

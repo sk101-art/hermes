@@ -23,7 +23,14 @@
   flex-shrink: 0;
 }
 
-/* 1. Verification State Badges */
+/* 1. Verification & Claim Status Badges (All 8 Canonical Values) */
+.badge-verification-strongly_supported {
+  color: var(--verif-strong-text);
+  background-color: var(--verif-strong-bg);
+  border-color: var(--verif-strong-border);
+  font-weight: var(--font-weight-semibold);
+}
+
 .badge-verification-supported {
   color: var(--verif-supported-text);
   background-color: var(--verif-supported-bg);
@@ -36,16 +43,37 @@
   border-color: var(--verif-weak-border);
 }
 
-.badge-verification-unverified {
-  color: var(--verif-unverified-text);
-  background-color: var(--verif-unverified-bg);
-  border-color: var(--verif-unverified-border);
+.badge-verification-mixed {
+  color: var(--verif-mixed-text);
+  background-color: var(--verif-mixed-bg);
+  border-color: var(--verif-mixed-border);
 }
 
 .badge-verification-contradicted {
   color: var(--verif-contradicted-text);
   background-color: var(--verif-contradicted-bg);
   border-color: var(--verif-contradicted-border);
+  font-weight: var(--font-weight-semibold);
+}
+
+.badge-verification-unverified {
+  color: var(--verif-unverified-text);
+  background-color: var(--verif-unverified-bg);
+  border-color: var(--verif-unverified-border);
+}
+
+.badge-verification-superseded {
+  color: var(--verif-superseded-text);
+  background-color: var(--verif-superseded-bg);
+  border-color: var(--verif-superseded-border);
+}
+
+.badge-verification-retracted {
+  color: var(--verif-retracted-text);
+  background-color: var(--verif-retracted-bg);
+  border-color: var(--verif-retracted-border);
+  text-decoration: line-through;
+  font-weight: var(--font-weight-semibold);
 }
 
 .badge-verification-not_assessed {
@@ -55,11 +83,17 @@
   font-style: italic;
 }
 
-/* 2. Maturity Stage Badges */
-.badge-maturity-proposal {
-  color: var(--mat-proposal-text);
-  background-color: var(--mat-proposal-bg);
-  border-color: var(--mat-proposal-border);
+/* 2. Maturity Stage Badges (All 7 Canonical Values) */
+.badge-maturity-concept {
+  color: var(--mat-concept-text);
+  background-color: var(--mat-concept-bg);
+  border-color: var(--mat-concept-border);
+}
+
+.badge-maturity-research {
+  color: var(--mat-research-text);
+  background-color: var(--mat-research-bg);
+  border-color: var(--mat-research-border);
 }
 
 .badge-maturity-prototype {
@@ -80,24 +114,18 @@
   border-color: var(--mat-early-border);
 }
 
-.badge-maturity-mature {
-  color: var(--mat-mature-text);
-  background-color: var(--mat-mature-bg);
-  border-color: var(--mat-mature-border);
+.badge-maturity-production_candidate {
+  color: var(--mat-prodcand-text);
+  background-color: var(--mat-prodcand-bg);
+  border-color: var(--mat-prodcand-border);
   font-weight: var(--font-weight-semibold);
 }
 
-.badge-maturity-legacy {
-  color: var(--mat-legacy-text);
-  background-color: var(--mat-legacy-bg);
-  border-color: var(--mat-legacy-border);
-}
-
-.badge-maturity-deprecated {
-  color: var(--mat-deprecated-text);
-  background-color: var(--mat-deprecated-bg);
-  border-color: var(--mat-deprecated-border);
-  text-decoration: line-through;
+.badge-maturity-established {
+  color: var(--mat-established-text);
+  background-color: var(--mat-established-bg);
+  border-color: var(--mat-established-border);
+  font-weight: var(--font-weight-semibold);
 }
 
 .badge-maturity-not_assessed {
@@ -107,11 +135,19 @@
   font-style: italic;
 }
 
-/* 3. Risk State Badges */
-.badge-risk-low {
-  color: var(--risk-low-text);
-  background-color: var(--risk-low-bg);
-  border-color: var(--risk-low-border);
+/* 3. Risk State Badges (Critical, High, Medium, Low) */
+.badge-risk-critical {
+  color: var(--risk-critical-text);
+  background-color: var(--risk-critical-bg);
+  border-color: var(--risk-critical-border);
+  font-weight: var(--font-weight-bold);
+}
+
+.badge-risk-high {
+  color: var(--risk-high-text);
+  background-color: var(--risk-high-bg);
+  border-color: var(--risk-high-border);
+  font-weight: var(--font-weight-semibold);
 }
 
 .badge-risk-medium {
@@ -120,11 +156,10 @@
   border-color: var(--risk-medium-border);
 }
 
-.badge-risk-high {
-  color: var(--risk-high-text);
-  background-color: var(--risk-high-bg);
-  border-color: var(--risk-high-border);
-  font-weight: var(--font-weight-semibold);
+.badge-risk-low {
+  color: var(--risk-low-text);
+  background-color: var(--risk-low-bg);
+  border-color: var(--risk-low-border);
 }
 
 .badge-risk-not_assessed {
@@ -141,7 +176,7 @@
   border-style: dashed;
 }
 
-/* 4. Evidence Stance Badges */
+/* 4. Evidence Stance Badges (Supports, Contradicts, Context) */
 .badge-stance-supports {
   color: var(--stance-supports-text);
   background-color: var(--stance-supports-bg);
@@ -158,12 +193,6 @@
   color: var(--stance-context-text);
   background-color: var(--stance-context-bg);
   border-color: var(--stance-context-border);
-}
-
-.badge-stance-mentions {
-  color: var(--stance-mentions-text);
-  background-color: var(--stance-mentions-bg);
-  border-color: var(--stance-mentions-border);
 }
 
 /* 5. Relevance / Ranking Badge (Distinct from Verification) */

@@ -5,7 +5,7 @@
  * Strict Truthfulness Guarantee:
  * - null is NEVER converted to zero or positive states.
  * - Missing verification renders "Not assessed", not "Unverified" or "Supported".
- * - Missing maturity renders "Not assessed", not "Experimental" or "Proposal".
+ * - Missing maturity renders "Not assessed", not "Experimental" or "Concept".
  * - Risk with status "not_assessed" NEVER renders "Low Risk".
  * - Risk with status "insufficient_data" NEVER renders "Medium Risk".
  * - Contextual evidence NEVER renders as "Supports".
@@ -42,7 +42,7 @@ export function renderVerificationBadge(status, score = null) {
 
 /**
  * Render a Technology Maturity Stage Badge.
- * @param {string|null} stage 
+ * @param {string|null} stage - 'concept' | 'research' | 'prototype' | 'experimental' | 'early_adoption' | 'production_candidate' | 'established'
  * @returns {string} HTML string
  */
 export function renderMaturityBadge(stage) {
@@ -55,7 +55,7 @@ export function renderMaturityBadge(stage) {
 /**
  * Render a Risk Level / Status Badge.
  * @param {string|null} status - 'assessed' | 'not_assessed' | 'insufficient_data'
- * @param {string|null} level - 'low' | 'medium' | 'high'
+ * @param {string|null} level - 'critical' | 'high' | 'medium' | 'low'
  * @param {number|null} [score=null]
  * @returns {string} HTML string
  */
@@ -71,7 +71,7 @@ export function renderRiskBadge(status, level, score = null) {
 
 /**
  * Render an Evidence Stance Badge.
- * @param {string|null} stance - 'supports' | 'contradicts' | 'context' | 'mentions'
+ * @param {string|null} stance - 'supports' | 'contradicts' | 'context'
  * @returns {string} HTML string
  */
 export function renderEvidenceStanceBadge(stance) {

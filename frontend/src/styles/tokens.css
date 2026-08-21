@@ -84,7 +84,11 @@
   --accent-primary-subtle: #eff6ff;/* Blue 50 */
   --accent-primary-border: #bfdbfe;/* Blue 200 */
 
-  /* Semantic - Verification States */
+  /* Semantic - Claim & Verification States */
+  --verif-strong-text: #065f46;      /* Emerald 800 */
+  --verif-strong-bg: #d1fae5;        /* Emerald 100 */
+  --verif-strong-border: #6ee7b7;    /* Emerald 300 */
+
   --verif-supported-text: #047857;   /* Emerald 700 */
   --verif-supported-bg: #ecfdf5;     /* Emerald 50 */
   --verif-supported-border: #a7f3d0; /* Emerald 200 */
@@ -93,18 +97,34 @@
   --verif-weak-bg: #fffbeb;          /* Amber 50 */
   --verif-weak-border: #fde68a;      /* Amber 200 */
 
-  --verif-unverified-text: #475569;  /* Slate 600 */
-  --verif-unverified-bg: #f1f5f9;    /* Slate 100 */
-  --verif-unverified-border: #cbd5e1;/* Slate 300 */
+  --verif-mixed-text: #7c2d12;       /* Orange 800 */
+  --verif-mixed-bg: #ffedd5;         /* Orange 100 */
+  --verif-mixed-border: #fed7aa;     /* Orange 200 */
 
   --verif-contradicted-text: #b91c1c;/* Red 700 */
   --verif-contradicted-bg: #fef2f2;  /* Red 50 */
   --verif-contradicted-border: #fecaca;/* Red 200 */
 
-  /* Semantic - Maturity Stages */
-  --mat-proposal-text: #475569;
-  --mat-proposal-bg: #f8fafc;
-  --mat-proposal-border: #cbd5e1;
+  --verif-unverified-text: #475569;  /* Slate 600 */
+  --verif-unverified-bg: #f1f5f9;    /* Slate 100 */
+  --verif-unverified-border: #cbd5e1;/* Slate 300 */
+
+  --verif-superseded-text: #57534e;  /* Stone 600 */
+  --verif-superseded-bg: #f5f5f4;    /* Stone 100 */
+  --verif-superseded-border: #d6d3d1;/* Stone 300 */
+
+  --verif-retracted-text: #7f1d1d;   /* Red 900 */
+  --verif-retracted-bg: #fee2e2;     /* Red 100 */
+  --verif-retracted-border: #f87171; /* Red 400 */
+
+  /* Semantic - Canonical 7 Maturity Stages */
+  --mat-concept-text: #475569;       /* Slate 600 */
+  --mat-concept-bg: #f8fafc;
+  --mat-concept-border: #cbd5e1;
+
+  --mat-research-text: #6d28d9;      /* Violet 700 */
+  --mat-research-bg: #f5f3ff;
+  --mat-research-border: #ddd6fe;
 
   --mat-prototype-text: #4338ca;     /* Indigo 700 */
   --mat-prototype-bg: #eef2ff;
@@ -118,30 +138,30 @@
   --mat-early-bg: #f0f9ff;
   --mat-early-border: #bae6fd;
 
-  --mat-mature-text: #0f766e;        /* Teal 700 */
-  --mat-mature-bg: #f0fdfa;
-  --mat-mature-border: #99f6e4;
+  --mat-prodcand-text: #0e7490;      /* Cyan 700 */
+  --mat-prodcand-bg: #ecfeff;
+  --mat-prodcand-border: #a5f3fc;
 
-  --mat-legacy-text: #57534e;        /* Stone 600 */
-  --mat-legacy-bg: #f5f5f4;
-  --mat-legacy-border: #d6d3d1;
+  --mat-established-text: #047857;   /* Emerald 700 */
+  --mat-established-bg: #ecfdf5;
+  --mat-established-border: #a7f3d0;
 
-  --mat-deprecated-text: #991b1b;    /* Red 800 */
-  --mat-deprecated-bg: #fef2f2;
-  --mat-deprecated-border: #fca5a5;
+  /* Semantic - Risk States (Critical, High, Medium, Low) */
+  --risk-critical-text: #7f1d1d;     /* Red 900 */
+  --risk-critical-bg: #fee2e2;       /* Red 100 */
+  --risk-critical-border: #ef4444;   /* Red 500 */
 
-  /* Semantic - Risk States */
-  --risk-low-text: #047857;
-  --risk-low-bg: #ecfdf5;
-  --risk-low-border: #a7f3d0;
+  --risk-high-text: #b91c1c;         /* Red 700 */
+  --risk-high-bg: #fef2f2;
+  --risk-high-border: #f87171;
 
-  --risk-medium-text: #b45309;
+  --risk-medium-text: #b45309;       /* Amber 700 */
   --risk-medium-bg: #fffbeb;
   --risk-medium-border: #fde68a;
 
-  --risk-high-text: #b91c1c;
-  --risk-high-bg: #fef2f2;
-  --risk-high-border: #f87171;
+  --risk-low-text: #047857;          /* Emerald 700 */
+  --risk-low-bg: #ecfdf5;
+  --risk-low-border: #a7f3d0;
 
   --risk-unassessed-text: #64748b;
   --risk-unassessed-bg: #f1f5f9;
@@ -151,7 +171,7 @@
   --risk-insufficient-bg: #fffbeb;
   --risk-insufficient-border: #f59e0b;
 
-  /* Semantic - Evidence Stance */
+  /* Semantic - Evidence Stances (Supports, Contradicts, Context) */
   --stance-supports-text: #047857;
   --stance-supports-bg: #ecfdf5;
   --stance-supports-border: #a7f3d0;
@@ -163,10 +183,6 @@
   --stance-context-text: #0369a1;    /* Sky 700 - clearly distinct from support */
   --stance-context-bg: #f0f9ff;
   --stance-context-border: #bae6fd;
-
-  --stance-mentions-text: #475569;
-  --stance-mentions-bg: #f8fafc;
-  --stance-mentions-border: #e2e8f0;
 
   /* Ranking / Relevance (Distinct from Verification) */
   --rank-text: #1e3a8a;              /* Dark Blue */

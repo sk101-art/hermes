@@ -2,19 +2,36 @@
  * HERMES Canonical Semantic Display Rules & Enums
  * Authoritative mapping for backend domain models to presentation states.
  * 
- * Invariant: Null or missing inputs are ALWAYS mapped to "Not assessed" / unassessed states.
+ * Strict Canonical Schemas:
+ * - Maturity (7): concept, research, prototype, experimental, early_adoption, production_candidate, established
+ * - ClaimStatus (8): strongly_supported, supported, weakly_supported, mixed, contradicted, unverified, superseded, retracted
+ * - EvidenceStance (3): supports, contradicts, context
+ * - RiskLevel (4): critical, high, medium, low
+ * - RiskStatus (3): assessed, not_assessed, insufficient_data
+ * 
+ * Invariant: Null or missing inputs are ALWAYS mapped to "Not assessed" / neutral unassessed states.
  * Never defaults to positive or invented values.
  */
 
-// 1. Canonical Verification Statuses
-export const VERIFICATION_STATUS = {
+// 1. Canonical Claim Statuses (All 8 exact backend values)
+export const CLAIM_STATUS = {
+  STRONGLY_SUPPORTED: 'strongly_supported',
   SUPPORTED: 'supported',
   WEAKLY_SUPPORTED: 'weakly_supported',
-  UNVERIFIED: 'unverified',
+  MIXED: 'mixed',
   CONTRADICTED: 'contradicted',
+  UNVERIFIED: 'unverified',
+  SUPERSEDED: 'superseded',
+  RETRACTED: 'retracted',
 };
 
 export const VERIFICATION_MAP = {
+  strongly_supported: {
+    label: 'Strongly Supported',
+    cssClass: 'badge-verification-strongly_supported',
+    icon: 'checkCircle',
+    description: 'Corroborated by multiple independent primary sources and reproductions',
+  },
   supported: {
     label: 'Supported',
     cssClass: 'badge-verification-supported',
@@ -27,17 +44,35 @@ export const VERIFICATION_MAP = {
     icon: 'alertCircle',
     description: 'Preliminary support without independent replication',
   },
-  unverified: {
-    label: 'Unverified',
-    cssClass: 'badge-verification-unverified',
-    icon: 'helpCircle',
-    description: 'Self-reported or lacking independent verification',
+  mixed: {
+    label: 'Mixed Evidence',
+    cssClass: 'badge-verification-mixed',
+    icon: 'alertCircle',
+    description: 'Conflicting or qualified evidence reported across sources',
   },
   contradicted: {
     label: 'Contradicted',
     cssClass: 'badge-verification-contradicted',
     icon: 'alertTriangle',
     description: 'Contradictory findings or failed replication reported',
+  },
+  unverified: {
+    label: 'Unverified',
+    cssClass: 'badge-verification-unverified',
+    icon: 'helpCircle',
+    description: 'Self-reported or lacking independent verification',
+  },
+  superseded: {
+    label: 'Superseded',
+    cssClass: 'badge-verification-superseded',
+    icon: 'clock',
+    description: 'Superseded by newer findings, releases, or architectural paradigms',
+  },
+  retracted: {
+    label: 'Retracted',
+    cssClass: 'badge-verification-retracted',
+    icon: 'alertTriangle',
+    description: 'Formally retracted, withdrawn, or invalidated claim',
   },
   not_assessed: {
     label: 'Not assessed',
@@ -48,7 +83,7 @@ export const VERIFICATION_MAP = {
 };
 
 /**
- * Returns semantic display model for a verification status.
+ * Returns semantic display model for a verification / claim status.
  * @param {string|null} status 
  * @returns {typeof VERIFICATION_MAP.supported}
  */
@@ -57,55 +92,63 @@ export function getVerificationMeta(status) {
     return VERIFICATION_MAP.not_assessed;
   }
   const key = status.toLowerCase().trim();
-  return VERIFICATION_MAP[key] || VERIFICATION_MAP.not_assessed;
+  if (VERIFICATION_MAP[key]) {
+    return VERIFICATION_MAP[key];
+  }
+  return {
+    label: toTitleCase(key) || 'Unknown',
+    cssClass: 'badge-verification-not_assessed',
+    icon: 'helpCircle',
+    description: 'Unrecognized verification state',
+  };
 }
 
-// 2. Canonical Maturity Stages (All 7 stages)
+// 2. Canonical Maturity Stages (All 7 exact backend values)
 export const MATURITY_STAGES = {
-  PROPOSAL: 'proposal',
+  CONCEPT: 'concept',
+  RESEARCH: 'research',
   PROTOTYPE: 'prototype',
   EXPERIMENTAL: 'experimental',
   EARLY_ADOPTION: 'early_adoption',
-  MATURE: 'mature',
-  LEGACY: 'legacy',
-  DEPRECATED: 'deprecated',
+  PRODUCTION_CANDIDATE: 'production_candidate',
+  ESTABLISHED: 'established',
 };
 
 export const MATURITY_MAP = {
-  proposal: {
-    label: 'Proposal',
-    cssClass: 'badge-maturity-proposal',
-    description: 'Conceptual design, RFC, or preprint',
+  concept: {
+    label: 'Concept',
+    cssClass: 'badge-maturity-concept',
+    description: 'Conceptual design, preprint proposal, or architectural RFC',
+  },
+  research: {
+    label: 'Research',
+    cssClass: 'badge-maturity-research',
+    description: 'Academic or industrial research paper and algorithmic formulation',
   },
   prototype: {
     label: 'Prototype',
     cssClass: 'badge-maturity-prototype',
-    description: 'Initial implementation or proof-of-concept',
+    description: 'Proof-of-concept repository or preliminary reference implementation',
   },
   experimental: {
     label: 'Experimental',
     cssClass: 'badge-maturity-experimental',
-    description: 'Active experimentation, unstable API or early testing',
+    description: 'Active experimentation, unstable API, or early sandbox evaluation',
   },
   early_adoption: {
     label: 'Early Adoption',
     cssClass: 'badge-maturity-early_adoption',
-    description: 'Adopted by early teams, stabilizing interface',
+    description: 'Adopted by early teams, stabilizing interfaces and developer tooling',
   },
-  mature: {
-    label: 'Mature',
-    cssClass: 'badge-maturity-mature',
-    description: 'Production-proven with stable guarantees',
+  production_candidate: {
+    label: 'Production Candidate',
+    cssClass: 'badge-maturity-production_candidate',
+    description: 'Feature-complete, undergoing staging tests and production readiness audits',
   },
-  legacy: {
-    label: 'Legacy',
-    cssClass: 'badge-maturity-legacy',
-    description: 'Superseded by newer approaches, maintained for compatibility',
-  },
-  deprecated: {
-    label: 'Deprecated',
-    cssClass: 'badge-maturity-deprecated',
-    description: 'End-of-life or discouraged from new deployments',
+  established: {
+    label: 'Established',
+    cssClass: 'badge-maturity-established',
+    description: 'Production-proven with stable guarantees, wide adoption, and LTS support',
   },
   not_assessed: {
     label: 'Not assessed',
@@ -115,19 +158,51 @@ export const MATURITY_MAP = {
 };
 
 /**
+ * Normalizes legacy/alternative aliases to canonical maturity values if encountered.
+ * @param {string|null} val 
+ * @returns {string|null}
+ */
+export function normalizeMaturityStage(val) {
+  if (!val || typeof val !== 'string') return null;
+  const v = val.toLowerCase().trim();
+  const legacyAliases = {
+    maturing: 'early_adoption',
+    production_ready: 'established',
+    stable: 'established',
+    proposal: 'concept',
+    mature: 'established',
+  };
+  if (legacyAliases[v]) return legacyAliases[v];
+  if (MATURITY_MAP[v]) return v;
+  return null;
+}
+
+/**
  * Returns semantic display model for a maturity stage.
  * @param {string|null} stage 
- * @returns {typeof MATURITY_MAP.mature}
+ * @returns {typeof MATURITY_MAP.established}
  */
 export function getMaturityMeta(stage) {
   if (!stage || typeof stage !== 'string') {
     return MATURITY_MAP.not_assessed;
   }
   const key = stage.toLowerCase().trim();
-  return MATURITY_MAP[key] || MATURITY_MAP.not_assessed;
+  if (MATURITY_MAP[key]) {
+    return MATURITY_MAP[key];
+  }
+  // Check isolated normalization alias
+  const normalized = normalizeMaturityStage(key);
+  if (normalized && MATURITY_MAP[normalized]) {
+    return MATURITY_MAP[normalized];
+  }
+  return {
+    label: toTitleCase(key) || 'Unknown',
+    cssClass: 'badge-maturity-not_assessed',
+    description: 'Unrecognized maturity stage',
+  };
 }
 
-// 3. Canonical Risk Status & Levels
+// 3. Canonical Risk Status & Levels (critical, high, medium, low)
 export const RISK_STATUS = {
   ASSESSED: 'assessed',
   NOT_ASSESSED: 'not_assessed',
@@ -135,16 +210,17 @@ export const RISK_STATUS = {
 };
 
 export const RISK_LEVELS = {
-  LOW: 'low',
-  MEDIUM: 'medium',
+  CRITICAL: 'critical',
   HIGH: 'high',
+  MEDIUM: 'medium',
+  LOW: 'low',
 };
 
 /**
  * Returns semantic display model for Risk state.
  * Strictly respects RiskStatus and never invents a low/medium risk default.
  * @param {string|null} status - 'assessed' | 'not_assessed' | 'insufficient_data' | null
- * @param {string|null} level - 'low' | 'medium' | 'high' | null
+ * @param {string|null} level - 'critical' | 'high' | 'medium' | 'low' | null
  * @param {number|null} [score] - numeric score (0.0 - 1.0)
  * @returns {{ label: string, cssClass: string, icon: string, description: string }}
  */
@@ -178,30 +254,43 @@ export function getRiskMeta(status, level, score = null) {
 
   // Assessed with valid level
   const normLevel = String(level).toLowerCase().trim();
-  if (normLevel === 'low') {
+  const scoreSuffix = (score !== null && score !== undefined && typeof score === 'number' && !isNaN(score))
+    ? ` (${Math.round(score * 100)}%)`
+    : '';
+
+  if (normLevel === 'critical') {
     return {
-      label: score !== null && score !== undefined ? `Low risk (${Math.round(score * 100)}%)` : 'Low risk',
-      cssClass: 'badge-risk-low',
-      icon: 'shield',
-      description: 'Low architectural, security, or stability risk',
+      label: `Critical risk${scoreSuffix}`,
+      cssClass: 'badge-risk-critical',
+      icon: 'alertTriangle',
+      description: 'Critical severity risk: immediate security vulnerability, major breaking flaw, or project blocker',
+    };
+  }
+
+  if (normLevel === 'high') {
+    return {
+      label: `High risk${scoreSuffix}`,
+      cssClass: 'badge-risk-high',
+      icon: 'alertTriangle',
+      description: 'Elevated risk requiring active mitigation or architectural review',
     };
   }
 
   if (normLevel === 'medium') {
     return {
-      label: score !== null && score !== undefined ? `Medium risk (${Math.round(score * 100)}%)` : 'Medium risk',
+      label: `Medium risk${scoreSuffix}`,
       cssClass: 'badge-risk-medium',
       icon: 'alertCircle',
       description: 'Moderate risk requiring architectural evaluation',
     };
   }
 
-  if (normLevel === 'high') {
+  if (normLevel === 'low') {
     return {
-      label: score !== null && score !== undefined ? `High risk (${Math.round(score * 100)}%)` : 'High risk',
-      cssClass: 'badge-risk-high',
-      icon: 'alertTriangle',
-      description: 'Elevated risk requiring active mitigation or caution',
+      label: `Low risk${scoreSuffix}`,
+      cssClass: 'badge-risk-low',
+      icon: 'shield',
+      description: 'Low architectural, security, or stability risk',
     };
   }
 
@@ -213,7 +302,13 @@ export function getRiskMeta(status, level, score = null) {
   };
 }
 
-// 4. Canonical Evidence Stance
+// 4. Canonical Evidence Stances (All 3 exact backend values)
+export const EVIDENCE_STANCES = {
+  SUPPORTS: 'supports',
+  CONTRADICTS: 'contradicts',
+  CONTEXT: 'context',
+};
+
 export const EVIDENCE_STANCE_MAP = {
   supports: {
     label: 'Supports',
@@ -230,11 +325,6 @@ export const EVIDENCE_STANCE_MAP = {
     cssClass: 'badge-stance-context',
     description: 'Background or related contextual reference',
   },
-  mentions: {
-    label: 'Mentions',
-    cssClass: 'badge-stance-mentions',
-    description: 'Brief or tangential mention',
-  },
 };
 
 /**
@@ -246,18 +336,50 @@ export function getEvidenceStanceMeta(stance) {
   if (!stance || typeof stance !== 'string') {
     return {
       label: 'Unspecified',
-      cssClass: 'badge-stance-mentions',
+      cssClass: 'badge-stance-context',
       description: 'Evidence stance is unspecified',
     };
   }
   const key = stance.toLowerCase().trim();
-  return EVIDENCE_STANCE_MAP[key] || {
-    label: toTitleCase(key),
-    cssClass: 'badge-stance-mentions',
+  if (EVIDENCE_STANCE_MAP[key]) {
+    return EVIDENCE_STANCE_MAP[key];
+  }
+  // Isolated compatibility normalization aliases
+  const aliases = {
+    support: 'supports',
+    contradiction: 'contradicts',
+    refutes: 'contradicts',
+    opposes: 'contradicts',
+    contextual: 'context',
+    neutral: 'context',
+    background: 'context',
+  };
+  if (aliases[key] && EVIDENCE_STANCE_MAP[aliases[key]]) {
+    return EVIDENCE_STANCE_MAP[aliases[key]];
+  }
+  return {
+    label: toTitleCase(key) || 'Unspecified',
+    cssClass: 'badge-stance-context',
     description: 'Evidence reference',
   };
 }
 
-function toTitleCase(str) {
+export function toTitleCase(str) {
+  if (!str) return '';
   return str.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
+
+export default {
+  CLAIM_STATUS,
+  VERIFICATION_MAP,
+  getVerificationMeta,
+  MATURITY_STAGES,
+  MATURITY_MAP,
+  getMaturityMeta,
+  RISK_STATUS,
+  RISK_LEVELS,
+  getRiskMeta,
+  EVIDENCE_STANCES,
+  EVIDENCE_STANCE_MAP,
+  getEvidenceStanceMeta,
+};
