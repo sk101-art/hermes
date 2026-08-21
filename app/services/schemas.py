@@ -36,6 +36,37 @@ class SearchResult(BaseModel):
     explain: Optional[Dict[str, float]] = None
 
 
+class GroundingRef(BaseModel):
+    entity_type: str  # 'event', 'claim', 'evidence', 'assessment', 'project_match', 'change'
+    entity_id: str
+    label: Optional[str] = None
+
+
+class StatementWithProvenance(BaseModel):
+    statement: str
+    grounding_references: List[GroundingRef] = Field(default_factory=list)
+
+
+class KeyClaimRef(BaseModel):
+    claim_id: str
+    claim_text: str
+    claim_type: str
+    status: Optional[str] = None
+    verification_score: Optional[float] = None
+    is_self_reported: bool = False
+
+
+class StorySynthesis(BaseModel):
+    what_happened: Optional[StatementWithProvenance] = None
+    why_it_matters: Optional[StatementWithProvenance] = None
+    evidence_position: Optional[StatementWithProvenance] = None
+    key_claims: List[KeyClaimRef] = Field(default_factory=list)
+    project_implications: Optional[StatementWithProvenance] = None
+    change_summary: Optional[StatementWithProvenance] = None
+    is_synthesized: bool = False
+    fallback_excerpt: Optional[str] = None
+
+
 class StoryDetail(BaseModel):
     cluster_id: str
     canonical_title: str
@@ -49,6 +80,7 @@ class StoryDetail(BaseModel):
     relationships: List[Dict[str, Any]] = Field(default_factory=list)
     project_matches: List[Dict[str, Any]] = Field(default_factory=list)
     is_saved: bool = False
+    synthesis: Optional[StorySynthesis] = None
 
 
 class ClaimDetail(BaseModel):

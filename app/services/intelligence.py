@@ -6,15 +6,21 @@ import numpy as np
 from app.models.schemas import Claim, Event, StoryCluster, TechnologyAssessment
 from app.semantic.embeddings import EmbeddingService
 from app.services.schemas import SearchResult, StoryDetail
+from app.services.synthesis import synthesize_story
 from app.storage.db import Database
 
 
 MATURITY_ORDER = {
-    "prototype": 1,
-    "experimental": 2,
-    "maturing": 3,
-    "established": 4,
-    "production_ready": 5,
+    "concept": 1,
+    "research": 2,
+    "prototype": 3,
+    "experimental": 4,
+    "early_adoption": 5,
+    "production_candidate": 6,
+    "established": 7,
+    # Legacy normalization aliases
+    "maturing": 5,
+    "production_ready": 7,
 }
 
 RISK_ORDER = {
@@ -251,7 +257,15 @@ def search_intelligence(
             reason_codes.append(f"project_relevant:{target_project.name if target_project else ''}")
 
         urls = [e.url for e in events if e.url][:5]
-        summary_text = events[0].text[:300] if events and events[0].text else None
+        synth = synthesize_story(
+            cluster=cl,
+            events=events,
+            claims=claims,
+            assessment=assessment,
+            tech_state=tech_state,
+            validate_references=False,
+        )
+        summary_text = synth.what_happened.statement if synth.what_happened else (f"Source excerpt: {synth.fallback_excerpt}" if synth.fallback_excerpt else None)
 
         explain_dict = None
         if explain:
@@ -344,11 +358,21 @@ def get_top_developments(
             risk_status = "not_assessed"
             risk = None
 
+        synth = synthesize_story(
+            cluster=cl,
+            events=events,
+            claims=claims,
+            assessment=assessment,
+            tech_state=tech_state,
+            validate_references=False,
+        )
+        summary_text = synth.what_happened.statement if synth.what_happened else (f"Source excerpt: {synth.fallback_excerpt}" if synth.fallback_excerpt else None)
+
         res = SearchResult(
             entity_type="inbox_item",
             entity_id=it.id,
             title=it.title,
-            summary=events[0].text[:300] if events and events[0].text else None,
+            summary=summary_text,
             score=round(it.rank_score, 4),
             sources=list(cl.sources),
             published_at=it.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -387,11 +411,21 @@ def get_top_developments(
                 risk_status = "not_assessed"
                 risk = None
 
+            synth = synthesize_story(
+                cluster=cl,
+                events=events,
+                claims=claims,
+                assessment=assessment,
+                tech_state=tech_state,
+                validate_references=False,
+            )
+            summary_text = synth.what_happened.statement if synth.what_happened else (f"Source excerpt: {synth.fallback_excerpt}" if synth.fallback_excerpt else None)
+
             res = SearchResult(
                 entity_type="story_cluster",
                 entity_id=cl.id,
                 title=cl.canonical_title,
-                summary=events[0].text[:300] if events and events[0].text else None,
+                summary=summary_text,
                 score=round(cl.cluster_score, 4),
                 sources=list(cl.sources),
                 published_at=cl.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(cl.updated_at, datetime) else str(cl.updated_at),
@@ -515,6 +549,18 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
             is_saved = True
             break
 
+    # Grounded synthesis
+    synth = synthesize_story(
+        cluster=cl,
+        cluster_id=cluster_id,
+        events=events,
+        claims=claims,
+        assessment=assessment,
+        tech_state=tech_state,
+        db=db,
+        validate_references=False,
+    )
+
     return StoryDetail(
         cluster_id=cl.id,
         canonical_title=cl.canonical_title,
@@ -528,6 +574,7 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
         relationships=rel_summaries[:10],
         project_matches=proj_matches,
         is_saved=is_saved,
+        synthesis=synth,
     )
 
 
