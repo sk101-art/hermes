@@ -67,6 +67,7 @@ import { request, ApiError, getApiBaseUrl, setApiBaseUrl } from '../src/api/clie
 import {
   getVerificationMeta,
   getMaturityMeta,
+  MATURITY_MAP,
   getRiskMeta,
   getEvidenceStanceMeta
 } from '../src/utils/semantic.js';
@@ -211,7 +212,49 @@ test('All eight canonical ClaimStatus values render without invented fallback', 
   assert.strictEqual(unknown.cssClass, 'badge-verification-not_assessed');
 });
 
-test('Canonical evidence stances render correctly and context never renders as support', () => {
+test('Maturity alias normalization preserves neutrality for ungrounded strings', () => {
+  // Backend supported aliases
+  assert.strictEqual(getMaturityMeta('maturing').label, 'Early Adoption');
+  assert.strictEqual(getMaturityMeta('production_ready').label, 'Established');
+  assert.strictEqual(getMaturityMeta('stable').label, 'Established');
+
+  // Ungrounded strings (must NOT silently map to established or concept)
+  const matureMeta = getMaturityMeta('mature');
+  assert.strictEqual(matureMeta.label, 'Mature');
+  assert.strictEqual(matureMeta.cssClass, 'badge-maturity-not_assessed');
+
+  const proposalMeta = getMaturityMeta('proposal');
+  assert.strictEqual(proposalMeta.label, 'Proposal');
+  assert.strictEqual(proposalMeta.cssClass, 'badge-maturity-not_assessed');
+
+  const arbitraryMeta = getMaturityMeta('some_arbitrary_string');
+  assert.strictEqual(arbitraryMeta.label, 'Some Arbitrary String');
+  assert.strictEqual(arbitraryMeta.cssClass, 'badge-maturity-not_assessed');
+});
+
+test('Maturity descriptions contain no unsupported production-readiness claims', () => {
+  const forbiddenPhrases = [
+    'feature-complete',
+    'audit',
+    'safe for production',
+    'guarantee',
+    'lts',
+    'production-proven',
+    'recommended for deployment',
+  ];
+
+  Object.entries(MATURITY_MAP).forEach(([stage, meta]) => {
+    const descLower = (meta.description || '').toLowerCase();
+    forbiddenPhrases.forEach((phrase) => {
+      assert.ok(
+        !descLower.includes(phrase),
+        `Maturity stage "${stage}" description contains forbidden overreach phrase "${phrase}": ${meta.description}`
+      );
+    });
+  });
+});
+
+test('Canonical evidence stances render correctly and unknown stance renders neutrally without context styling', () => {
   const stances = [
     { key: 'supports', label: 'Supports', css: 'badge-stance-supports' },
     { key: 'contradicts', label: 'Contradicts', css: 'badge-stance-contradicts' },
@@ -236,13 +279,21 @@ test('Canonical evidence stances render correctly and context never renders as s
   assert.ok(renderedContext.includes('Context'));
   assert.ok(!renderedContext.includes('Supports'));
 
-  // Unknown stance degrades neutrally
+  // Unknown stance degrades neutrally to .badge-stance-unknown (not .badge-stance-context)
   const unknown = getEvidenceStanceMeta('tangential_citation');
   assert.strictEqual(unknown.label, 'Tangential Citation');
-  assert.strictEqual(unknown.cssClass, 'badge-stance-context');
+  assert.strictEqual(unknown.cssClass, 'badge-stance-unknown');
+  assert.ok(!unknown.cssClass.includes('badge-stance-context'));
 
   const nullStance = getEvidenceStanceMeta(null);
   assert.strictEqual(nullStance.label, 'Unspecified');
+  assert.strictEqual(nullStance.cssClass, 'badge-stance-unknown');
+  assert.ok(!nullStance.cssClass.includes('badge-stance-context'));
+
+  const renderedUnknown = renderEvidenceStanceBadge('unrecognized_stance');
+  assert.ok(renderedUnknown.includes('badge-stance-unknown'));
+  assert.ok(!renderedUnknown.includes('badge-stance-context'));
+  assert.ok(!renderedUnknown.includes('Context'));
 });
 
 test('Risk levels include critical, high, medium, low with accurate status handling', () => {

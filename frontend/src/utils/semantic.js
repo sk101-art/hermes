@@ -118,37 +118,37 @@ export const MATURITY_MAP = {
   concept: {
     label: 'Concept',
     cssClass: 'badge-maturity-concept',
-    description: 'Conceptual design, preprint proposal, or architectural RFC',
+    description: 'Concept-stage technology',
   },
   research: {
     label: 'Research',
     cssClass: 'badge-maturity-research',
-    description: 'Academic or industrial research paper and algorithmic formulation',
+    description: 'Research-stage technology',
   },
   prototype: {
     label: 'Prototype',
     cssClass: 'badge-maturity-prototype',
-    description: 'Proof-of-concept repository or preliminary reference implementation',
+    description: 'Prototype implementation',
   },
   experimental: {
     label: 'Experimental',
     cssClass: 'badge-maturity-experimental',
-    description: 'Active experimentation, unstable API, or early sandbox evaluation',
+    description: 'Experimental implementation',
   },
   early_adoption: {
     label: 'Early Adoption',
     cssClass: 'badge-maturity-early_adoption',
-    description: 'Adopted by early teams, stabilizing interfaces and developer tooling',
+    description: 'Early adoption stage',
   },
   production_candidate: {
     label: 'Production Candidate',
     cssClass: 'badge-maturity-production_candidate',
-    description: 'Feature-complete, undergoing staging tests and production readiness audits',
+    description: 'Production-candidate maturity',
   },
   established: {
     label: 'Established',
     cssClass: 'badge-maturity-established',
-    description: 'Production-proven with stable guarantees, wide adoption, and LTS support',
+    description: 'Established maturity',
   },
   not_assessed: {
     label: 'Not assessed',
@@ -158,7 +158,8 @@ export const MATURITY_MAP = {
 };
 
 /**
- * Normalizes legacy/alternative aliases to canonical maturity values if encountered.
+ * Normalizes only verified backend compatibility aliases to canonical maturity values.
+ * Strictly avoids ungrounded mapping of arbitrary strings.
  * @param {string|null} val 
  * @returns {string|null}
  */
@@ -169,11 +170,9 @@ export function normalizeMaturityStage(val) {
     maturing: 'early_adoption',
     production_ready: 'established',
     stable: 'established',
-    proposal: 'concept',
-    mature: 'established',
   };
   if (legacyAliases[v]) return legacyAliases[v];
-  if (MATURITY_MAP[v]) return v;
+  if (MATURITY_MAP[v] && v !== 'not_assessed') return v;
   return null;
 }
 
@@ -190,7 +189,7 @@ export function getMaturityMeta(stage) {
   if (MATURITY_MAP[key]) {
     return MATURITY_MAP[key];
   }
-  // Check isolated normalization alias
+  // Check backend compatibility aliases
   const normalized = normalizeMaturityStage(key);
   if (normalized && MATURITY_MAP[normalized]) {
     return MATURITY_MAP[normalized];
@@ -263,7 +262,7 @@ export function getRiskMeta(status, level, score = null) {
       label: `Critical risk${scoreSuffix}`,
       cssClass: 'badge-risk-critical',
       icon: 'alertTriangle',
-      description: 'Critical severity risk: immediate security vulnerability, major breaking flaw, or project blocker',
+      description: 'Critical severity risk profile',
     };
   }
 
@@ -272,7 +271,7 @@ export function getRiskMeta(status, level, score = null) {
       label: `High risk${scoreSuffix}`,
       cssClass: 'badge-risk-high',
       icon: 'alertTriangle',
-      description: 'Elevated risk requiring active mitigation or architectural review',
+      description: 'High risk profile',
     };
   }
 
@@ -281,7 +280,7 @@ export function getRiskMeta(status, level, score = null) {
       label: `Medium risk${scoreSuffix}`,
       cssClass: 'badge-risk-medium',
       icon: 'alertCircle',
-      description: 'Moderate risk requiring architectural evaluation',
+      description: 'Moderate risk profile',
     };
   }
 
@@ -290,7 +289,7 @@ export function getRiskMeta(status, level, score = null) {
       label: `Low risk${scoreSuffix}`,
       cssClass: 'badge-risk-low',
       icon: 'shield',
-      description: 'Low architectural, security, or stability risk',
+      description: 'Low risk profile',
     };
   }
 
@@ -325,32 +324,31 @@ export const EVIDENCE_STANCE_MAP = {
     cssClass: 'badge-stance-context',
     description: 'Background or related contextual reference',
   },
+  unknown: {
+    label: 'Unspecified',
+    cssClass: 'badge-stance-unknown',
+    description: 'Evidence stance is unspecified',
+  },
 };
 
 /**
  * Returns semantic display model for Evidence stance.
+ * Unknown stance renders neutrally with .badge-stance-unknown and label 'Unspecified'.
  * @param {string|null} stance 
  * @returns {typeof EVIDENCE_STANCE_MAP.supports}
  */
 export function getEvidenceStanceMeta(stance) {
   if (!stance || typeof stance !== 'string') {
-    return {
-      label: 'Unspecified',
-      cssClass: 'badge-stance-context',
-      description: 'Evidence stance is unspecified',
-    };
+    return EVIDENCE_STANCE_MAP.unknown;
   }
   const key = stance.toLowerCase().trim();
-  if (EVIDENCE_STANCE_MAP[key]) {
+  if (EVIDENCE_STANCE_MAP[key] && key !== 'unknown') {
     return EVIDENCE_STANCE_MAP[key];
   }
-  // Isolated compatibility normalization aliases
+  // Isolated backend compatibility normalization aliases
   const aliases = {
-    support: 'supports',
-    contradiction: 'contradicts',
     refutes: 'contradicts',
     opposes: 'contradicts',
-    contextual: 'context',
     neutral: 'context',
     background: 'context',
   };
@@ -359,8 +357,8 @@ export function getEvidenceStanceMeta(stance) {
   }
   return {
     label: toTitleCase(key) || 'Unspecified',
-    cssClass: 'badge-stance-context',
-    description: 'Evidence reference',
+    cssClass: 'badge-stance-unknown',
+    description: 'Unrecognized evidence stance',
   };
 }
 

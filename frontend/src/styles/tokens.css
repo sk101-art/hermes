@@ -171,7 +171,7 @@
   --risk-insufficient-bg: #fffbeb;
   --risk-insufficient-border: #f59e0b;
 
-  /* Semantic - Evidence Stances (Supports, Contradicts, Context) */
+  /* Semantic - Evidence Stances (Supports, Contradicts, Context, Unknown) */
   --stance-supports-text: #047857;
   --stance-supports-bg: #ecfdf5;
   --stance-supports-border: #a7f3d0;
@@ -183,6 +183,10 @@
   --stance-context-text: #0369a1;    /* Sky 700 - clearly distinct from support */
   --stance-context-bg: #f0f9ff;
   --stance-context-border: #bae6fd;
+
+  --stance-unknown-text: #64748b;    /* Slate 500 - neutral */
+  --stance-unknown-bg: #f1f5f9;
+  --stance-unknown-border: #cbd5e1;
 
   /* Ranking / Relevance (Distinct from Verification) */
   --rank-text: #1e3a8a;              /* Dark Blue */

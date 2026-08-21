@@ -176,7 +176,7 @@
   border-style: dashed;
 }
 
-/* 4. Evidence Stance Badges (Supports, Contradicts, Context) */
+/* 4. Evidence Stance Badges (Supports, Contradicts, Context, Unknown) */
 .badge-stance-supports {
   color: var(--stance-supports-text);
   background-color: var(--stance-supports-bg);
@@ -193,6 +193,13 @@
   color: var(--stance-context-text);
   background-color: var(--stance-context-bg);
   border-color: var(--stance-context-border);
+}
+
+.badge-stance-unknown {
+  color: var(--stance-unknown-text);
+  background-color: var(--stance-unknown-bg);
+  border-color: var(--stance-unknown-border);
+  font-style: italic;
 }
 
 /* 5. Relevance / Ranking Badge (Distinct from Verification) */
