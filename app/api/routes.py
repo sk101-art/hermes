@@ -117,9 +117,10 @@ def get_saved(
     limit: int = Query(20, ge=1, le=50, description="Max items (1-50)"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     tag: Optional[str] = Query(None, description="Tag filter"),
+    include_current: bool = Query(False, description="Hydrate and return current intelligence state alongside saved snapshot"),
     db: Database = Depends(get_db),
 ):
-    items = saved_service.get_saved_items(limit=limit, offset=offset, tag=tag, db=db)
+    items = saved_service.get_saved_items(limit=limit, offset=offset, tag=tag, include_current=include_current, db=db)
     return {"count": len(items), "saved_items": items}
 
 

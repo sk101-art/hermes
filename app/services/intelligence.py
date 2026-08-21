@@ -5,7 +5,16 @@ import numpy as np
 
 from app.models.schemas import Claim, Event, StoryCluster, TechnologyAssessment
 from app.semantic.embeddings import EmbeddingService
-from app.services.schemas import SearchResult, StoryDetail
+from app.services.schemas import (
+    SearchResult,
+    StoryDetail,
+    EventSummary,
+    ClaimSummary,
+    RiskDetail,
+    VerificationDetail,
+    ProjectMatchSummary,
+    RelationshipSummary,
+)
 from app.services.synthesis import synthesize_story
 from app.storage.db import Database
 
@@ -447,7 +456,10 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
     if db is None:
         db = Database()
 
-    cl = db.get_cluster(cluster_id)
+    if not cluster_id or not isinstance(cluster_id, str) or not cluster_id.strip():
+        return None
+
+    cl = db.get_cluster(cluster_id.strip())
     if not cl:
         return None
 
@@ -457,38 +469,55 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
     tech_state = db.get_technology_state(cluster_id)
 
     # Supporting events (safe summary, max 10)
-    ev_summaries = []
+    ev_summaries: List[EventSummary] = []
     for e in events[:10]:
-        ev_summaries.append({
-            "id": e.id,
-            "title": e.title,
-            "source": e.source,
-            "url": e.url,
-            "published_at": e.published_at.isoformat() if e.published_at else None,
-        })
+        ev_summaries.append(
+            EventSummary(
+                id=e.id,
+                title=e.title,
+                source=e.source,
+                url=e.url,
+                published_at=e.published_at.isoformat() if e.published_at else None,
+                discovered_at=e.discovered_at.isoformat() if getattr(e, "discovered_at", None) else None,
+            )
+        )
 
-    # Claims
-    claim_summaries = []
-    for c in claims:
-        claim_summaries.append({
-            "id": c.id,
-            "text": c.claim_text,
-            "type": c.claim_type,
-            "status": c.status,
-            "verification_score": round(c.verification_score, 4),
-        })
-
-    # Evidence summary counts
-    ev_counts = {"support": 0, "contradiction": 0, "uncertainty": 0}
+    # Evidence summary counts and claim summaries
+    ev_counts = {"support": 0, "contradiction": 0, "uncertainty": 0, "context": 0}
+    claim_summaries: List[ClaimSummary] = []
     for c in claims:
         ev_list = db.get_evidence_by_claim(c.id)
         for ev in ev_list:
-            st = ev.stance.lower()
-            if st in ev_counts:
+            st = (ev.stance or "").lower().strip()
+            if st in ("supports", "support"):
+                ev_counts["support"] += 1
+            elif st in ("contradicts", "contradiction"):
+                ev_counts["contradiction"] += 1
+            elif st in ("context", "contextual"):
+                ev_counts["context"] += 1
+            elif st in ev_counts:
                 ev_counts[st] += 1
+            else:
+                ev_counts[st] = ev_counts.get(st, 0) + 1
+
+        claim_summaries.append(
+            ClaimSummary(
+                claim_id=c.id,
+                claim_text=c.claim_text,
+                claim_type=c.claim_type,
+                assertion_level=c.assertion_level,
+                status=c.status,
+                verification_score=round(c.verification_score, 4) if c.verification_score is not None else None,
+                is_self_reported=bool(c.self_reported),
+                evidence_count=len(ev_list),
+                id=c.id,
+                text=c.claim_text,
+                type=c.claim_type,
+            )
+        )
 
     # Verification details
-    claim_scores = [c.verification_score for c in claims]
+    claim_scores = [c.verification_score for c in claims if c.verification_score is not None]
     verif_score = float(np.mean(claim_scores)) if claim_scores else None
 
     if tech_state:
@@ -505,41 +534,59 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
         risk_score = None
         risk_level = None
 
-    verif_dict = {
-        "verification_score": round(verif_score, 4) if verif_score is not None else None,
-        "maturity_stage": assessment.maturity_stage if assessment else None,
-        "risk_level": risk_level,
-        "risk_score": round(risk_score, 4) if risk_score is not None else None,
-        "risk_status": risk_status,
-        "claim_status": claims[0].status if claims else None,
-    }
+    contradictions_count = ev_counts.get("contradiction", 0)
+    contradiction_detected = contradictions_count > 0
+
+    verif_detail = VerificationDetail(
+        verification_score=round(verif_score, 4) if verif_score is not None else None,
+        claim_status=claims[0].status if claims else None,
+        claims_count=len(claims),
+        evidence_count=sum(ev_counts.values()),
+        contradiction_detected=contradiction_detected,
+        contradictions_count=contradictions_count,
+        maturity_stage=assessment.maturity_stage if assessment else None,
+        risk_level=risk_level,
+        risk_score=round(risk_score, 4) if risk_score is not None else None,
+        risk_status=risk_status,
+    )
+
+    risk_detail = RiskDetail(
+        level=risk_level,
+        score=round(risk_score, 4) if risk_score is not None else None,
+        status=risk_status,
+        reason_codes=[],
+    )
 
     # Cross-source relationships
-    rel_summaries = []
+    rel_summaries: List[RelationshipSummary] = []
     for e in events:
         rels = db.get_relationships(e.id)
         for r in rels:
-            rel_summaries.append({
-                "source_event_id": r.source_event_id,
-                "target_event_id": r.target_event_id,
-                "type": r.relationship_type,
-                "confidence": round(r.confidence, 4),
-            })
+            rel_summaries.append(
+                RelationshipSummary(
+                    source_event_id=r.source_event_id,
+                    target_event_id=r.target_event_id,
+                    type=r.relationship_type,
+                    confidence=round(r.confidence, 4),
+                )
+            )
 
     # Project matches
-    proj_matches = []
+    proj_matches: List[ProjectMatchSummary] = []
     all_projects = db.get_all_projects(active_only=True)
     for p in all_projects:
         matches = db.get_project_matches(p.id)
         for m in matches:
             if m.entity_id == cluster_id:
-                proj_matches.append({
-                    "project_id": p.id,
-                    "project_name": p.name,
-                    "relevance_score": round(m.relevance_score, 4),
-                    "match_type": m.match_type,
-                    "recommendation": m.recommendation,
-                })
+                proj_matches.append(
+                    ProjectMatchSummary(
+                        project_id=p.id,
+                        project_name=p.name,
+                        relevance_score=round(m.relevance_score, 4),
+                        match_type=m.match_type,
+                        recommendation=m.recommendation,
+                    )
+                )
 
     # Check saved status
     is_saved = False
@@ -569,8 +616,10 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
         events_count=len(events),
         events=ev_summaries,
         claims=claim_summaries,
+        technology_maturity=assessment.maturity_stage if assessment else None,
+        risk=risk_detail,
         evidence_summary=ev_counts,
-        verification=verif_dict,
+        verification=verif_detail,
         relationships=rel_summaries[:10],
         project_matches=proj_matches,
         is_saved=is_saved,
