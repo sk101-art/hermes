@@ -114,6 +114,83 @@ class Database:
             except Exception:
                 pass
 
+        # Check claim_revisions.new_verification_score nullability
+        cr_info = self.conn.execute("PRAGMA table_info(claim_revisions)").fetchall()
+        for col in cr_info:
+            if col["name"] == "new_verification_score" and col["notnull"] == 1:
+                try:
+                    self.conn.execute("PRAGMA foreign_keys=OFF")
+                    self.conn.execute("""
+                        CREATE TABLE IF NOT EXISTS claim_revisions_mig_tmp (
+                            id TEXT PRIMARY KEY,
+                            claim_id TEXT NOT NULL,
+                            previous_status TEXT,
+                            new_status TEXT NOT NULL,
+                            previous_verification_score REAL,
+                            new_verification_score REAL,
+                            reason TEXT NOT NULL,
+                            trigger_event_id TEXT,
+                            trigger_evidence_id TEXT,
+                            created_at TEXT NOT NULL
+                        )
+                    """)
+                    self.conn.execute("""
+                        INSERT INTO claim_revisions_mig_tmp (
+                            id, claim_id, previous_status, new_status,
+                            previous_verification_score, new_verification_score,
+                            reason, trigger_event_id, trigger_evidence_id, created_at
+                        )
+                        SELECT
+                            id, claim_id, previous_status, new_status,
+                            previous_verification_score, new_verification_score,
+                            reason, trigger_event_id, trigger_evidence_id, created_at
+                        FROM claim_revisions
+                    """)
+                    self.conn.execute("DROP TABLE claim_revisions")
+                    self.conn.execute("ALTER TABLE claim_revisions_mig_tmp RENAME TO claim_revisions")
+                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_claim_id ON claim_revisions(claim_id)")
+                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_created_at ON claim_revisions(created_at DESC)")
+                    self.conn.execute("PRAGMA foreign_keys=ON")
+                except Exception:
+                    pass
+                break
+
+        # Check technology_assessment_revisions.new_score nullability
+        tar_info = self.conn.execute("PRAGMA table_info(technology_assessment_revisions)").fetchall()
+        for col in tar_info:
+            if col["name"] == "new_score" and col["notnull"] == 1:
+                try:
+                    self.conn.execute("PRAGMA foreign_keys=OFF")
+                    self.conn.execute("""
+                        CREATE TABLE IF NOT EXISTS technology_assessment_revisions_mig_tmp (
+                            id TEXT PRIMARY KEY,
+                            cluster_id TEXT NOT NULL,
+                            previous_stage TEXT,
+                            new_stage TEXT NOT NULL,
+                            previous_score REAL,
+                            new_score REAL,
+                            reason TEXT NOT NULL,
+                            created_at TEXT NOT NULL
+                        )
+                    """)
+                    self.conn.execute("""
+                        INSERT INTO technology_assessment_revisions_mig_tmp (
+                            id, cluster_id, previous_stage, new_stage,
+                            previous_score, new_score, reason, created_at
+                        )
+                        SELECT
+                            id, cluster_id, previous_stage, new_stage,
+                            previous_score, new_score, reason, created_at
+                        FROM technology_assessment_revisions
+                    """)
+                    self.conn.execute("DROP TABLE technology_assessment_revisions")
+                    self.conn.execute("ALTER TABLE technology_assessment_revisions_mig_tmp RENAME TO technology_assessment_revisions")
+                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tech_rev_cluster_id ON technology_assessment_revisions(cluster_id)")
+                    self.conn.execute("PRAGMA foreign_keys=ON")
+                except Exception:
+                    pass
+                break
+
         self.conn.commit()
 
     # --- Event Methods ---

@@ -290,6 +290,30 @@ def test_claim_details_and_provenance(temp_db):
     assert claim.evidence[0]["is_independent"] is True
 
 
+def test_claim_revision_preserves_none_verification_score(temp_db):
+    from app.models.schemas import ClaimRevision
+    # Insert a revision where new_verification_score and previous_verification_score are None
+    rev = ClaimRevision(
+        id="rev_unassessed_1",
+        claim_id="claim_llvm_1",
+        previous_status=None,
+        new_status="unverified",
+        previous_verification_score=None,
+        new_verification_score=None,
+        reason="Initial ingestion without verification",
+    )
+    temp_db.insert_claim_revision(rev)
+
+    claim = claims_service.get_claim("claim_llvm_1", db=temp_db)
+    assert claim is not None
+    assert len(claim.revisions) == 1
+    r = claim.revisions[0]
+    assert r.revision_id == "rev_unassessed_1"
+    assert r.new_status == "unverified"
+    assert r.new_verification_score is None
+    assert r.previous_verification_score is None
+
+
 def test_project_summaries_privacy(temp_db):
     projects = projects_service.list_projects(db=temp_db)
     assert len(projects) == 1
@@ -328,3 +352,87 @@ def test_saved_note_length_limit(temp_db):
     ok_bad, msg_bad = saved_service.add_saved_note(saved_id, giant_note, db=temp_db)
     assert ok_bad is False
     assert "exceeds" in msg_bad
+
+
+def test_legacy_schema_migration_preserves_rows_and_allows_null(tmp_path):
+    import sqlite3
+    from app.storage.db import Database
+
+    db_file = tmp_path / "legacy_test.db"
+    
+    # 1. Create a pre-Phase-6 database with NOT NULL constraint on new_verification_score and new_score
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+        CREATE TABLE claim_revisions (
+            id TEXT PRIMARY KEY,
+            claim_id TEXT NOT NULL,
+            previous_status TEXT,
+            new_status TEXT NOT NULL,
+            previous_verification_score REAL,
+            new_verification_score REAL NOT NULL,
+            reason TEXT NOT NULL,
+            trigger_event_id TEXT,
+            trigger_evidence_id TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE technology_assessment_revisions (
+            id TEXT PRIMARY KEY,
+            cluster_id TEXT NOT NULL,
+            previous_stage TEXT,
+            new_stage TEXT NOT NULL,
+            previous_score REAL,
+            new_score REAL NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    # Insert existing rows
+    conn.execute("""
+        INSERT INTO claim_revisions VALUES (
+            'rev_legacy_1', 'claim_1', 'unverified', 'supported', 0.5, 0.85, 'Initial verification', NULL, NULL, '2026-08-01T00:00:00Z'
+        )
+    """)
+    conn.execute("""
+        INSERT INTO technology_assessment_revisions VALUES (
+            'tech_rev_legacy_1', 'cluster_1', 'concept', 'research', 0.4, 0.6, 'Stage transition', '2026-08-01T00:00:00Z'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # 2. Open via Database class, which should trigger _migrate_columns automatically
+    db = Database(str(db_file))
+
+    # 3. Verify existing rows survived intact
+    cur = db.conn.cursor()
+    cur.execute("SELECT * FROM claim_revisions WHERE id = 'rev_legacy_1'")
+    cr_row = cur.fetchone()
+    assert cr_row is not None
+    assert cr_row["new_verification_score"] == 0.85
+
+    cur.execute("SELECT * FROM technology_assessment_revisions WHERE id = 'tech_rev_legacy_1'")
+    tar_row = cur.fetchone()
+    assert tar_row is not None
+    assert tar_row["new_score"] == 0.6
+
+    # 4. Verify inserting NULL into new_verification_score and new_score succeeds
+    cur.execute("""
+        INSERT INTO claim_revisions VALUES (
+            'rev_null_score', 'claim_1', NULL, 'unverified', NULL, NULL, 'Unassessed claim revision', NULL, NULL, '2026-08-21T00:00:00Z'
+        )
+    """)
+    cur.execute("""
+        INSERT INTO technology_assessment_revisions VALUES (
+            'tech_rev_null_score', 'cluster_1', NULL, 'concept', NULL, NULL, 'Unassessed technology stage', '2026-08-21T00:00:00Z'
+        )
+    """)
+    db.conn.commit()
+
+    cur.execute("SELECT new_verification_score FROM claim_revisions WHERE id = 'rev_null_score'")
+    assert cur.fetchone()[0] is None
+
+    cur.execute("SELECT new_score FROM technology_assessment_revisions WHERE id = 'tech_rev_null_score'")
+    assert cur.fetchone()[0] is None
+

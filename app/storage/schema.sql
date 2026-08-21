@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS claim_revisions (
     previous_status TEXT,
     new_status TEXT NOT NULL,
     previous_verification_score REAL,
-    new_verification_score REAL NOT NULL,
+    new_verification_score REAL,
     reason TEXT NOT NULL,
     trigger_event_id TEXT,
     trigger_evidence_id TEXT,
@@ -167,7 +167,7 @@ CREATE TABLE IF NOT EXISTS technology_assessment_revisions (
     previous_stage TEXT,
     new_stage TEXT NOT NULL,
     previous_score REAL,
-    new_score REAL NOT NULL,
+    new_score REAL,
     reason TEXT NOT NULL,
     created_at TEXT NOT NULL
 );

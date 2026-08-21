@@ -305,7 +305,7 @@ class ClaimRevision(BaseModel):
     previous_status: Optional[str] = None
     new_status: str
     previous_verification_score: Optional[float] = None
-    new_verification_score: float
+    new_verification_score: Optional[float] = None
     reason: str
     trigger_event_id: Optional[str] = None
     trigger_evidence_id: Optional[str] = None
