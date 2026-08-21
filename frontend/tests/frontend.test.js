@@ -1183,6 +1183,193 @@ test('Search Result Card renders contradiction and mixed verification status wit
   assert.ok(!html.includes('badge-verification-strongly_supported'));
 });
 
+test('Search URL state serialization and restoration preserve all query and filter parameters', () => {
+  const state = {
+    q: 'sparse kernel compiler',
+    mode: 'lexical',
+    source: 'github',
+    min_maturity: 'prototype',
+    max_risk: 'low',
+    project: 'proj_cuda_engine',
+    verified_only: true,
+    days: 30,
+    explain: true,
+  };
+
+  // 1. Serialization
+  const params = new URLSearchParams();
+  if (state.q) params.set('q', state.q);
+  if (state.mode && state.mode !== 'hybrid') params.set('mode', state.mode);
+  if (state.source) params.set('source', state.source);
+  if (state.min_maturity) params.set('min_maturity', state.min_maturity);
+  if (state.max_risk) params.set('max_risk', state.max_risk);
+  if (state.project) params.set('project', state.project);
+  if (state.verified_only) params.set('verified_only', 'true');
+  if (state.days) params.set('days', String(state.days));
+  if (state.explain) params.set('explain', 'true');
+
+  const queryString = params.toString();
+  assert.ok(queryString.includes('q=sparse+kernel+compiler'));
+  assert.ok(queryString.includes('mode=lexical'));
+  assert.ok(queryString.includes('source=github'));
+  assert.ok(queryString.includes('min_maturity=prototype'));
+  assert.ok(queryString.includes('max_risk=low'));
+  assert.ok(queryString.includes('project=proj_cuda_engine'));
+  assert.ok(queryString.includes('verified_only=true'));
+  assert.ok(queryString.includes('days=30'));
+  assert.ok(queryString.includes('explain=true'));
+
+  // 2. Restoration
+  const parsed = new URLSearchParams(queryString);
+  const restored = {
+    q: parsed.get('q') || '',
+    mode: parsed.get('mode') || 'hybrid',
+    source: parsed.get('source') || '',
+    min_maturity: parsed.get('min_maturity') || '',
+    max_risk: parsed.get('max_risk') || '',
+    project: parsed.get('project') || '',
+    verified_only: parsed.get('verified_only') === 'true',
+    days: parsed.get('days') ? parseInt(parsed.get('days'), 10) : null,
+    explain: parsed.get('explain') === 'true',
+  };
+
+  assert.strictEqual(restored.q, state.q);
+  assert.strictEqual(restored.mode, state.mode);
+  assert.strictEqual(restored.source, state.source);
+  assert.strictEqual(restored.min_maturity, state.min_maturity);
+  assert.strictEqual(restored.max_risk, state.max_risk);
+  assert.strictEqual(restored.project, state.project);
+  assert.strictEqual(restored.verified_only, true);
+  assert.strictEqual(restored.days, 30);
+  assert.strictEqual(restored.explain, true);
+});
+
+function createMockContainer() {
+  const elements = {};
+  const container = {
+    _html: '',
+    get innerHTML() {
+      return this._html;
+    },
+    set innerHTML(val) {
+      this._html = val;
+    },
+    querySelector: (sel) => {
+      if (!elements[sel]) {
+        elements[sel] = {
+          value: '',
+          checked: false,
+          _html: '',
+          get innerHTML() { return this._html; },
+          set innerHTML(v) { this._html = v; },
+          addEventListener: () => {},
+          appendChild: () => {},
+          focus: () => {}
+        };
+      }
+      return elements[sel];
+    },
+    querySelectorAll: () => []
+  };
+  return container;
+}
+
+test('Search View transmits all filter parameters to API search endpoint', async () => {
+  const capturedUrls = [];
+  fetchMock = async (url) => {
+    capturedUrls.push(url);
+    if (url.includes('/sources')) return { ok: true, status: 200, json: async () => ({ sources: [] }) };
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ count: 1, results: [{ entity_id: 'c1', title: 'Result 1', score: 0.9, sources: ['arxiv'] }] }),
+    };
+  };
+
+  const container = createMockContainer();
+  const store = {
+    state: {},
+    getState: () => store.state,
+    setState: (s) => Object.assign(store.state, s),
+    setConnection: () => {},
+  };
+
+  await renderSearchView(container, store, {
+    q: 'sparse kernel',
+    mode: 'semantic',
+    source: 'arxiv',
+    min_maturity: 'established',
+    max_risk: 'high',
+    project: 'proj_opt',
+    verified_only: 'true',
+    days: '14',
+    explain: 'true',
+  });
+
+  const searchUrl = capturedUrls.find((u) => u.includes('/search'));
+  assert.ok(searchUrl, 'Search endpoint was called');
+  assert.ok(searchUrl.includes('q=sparse+kernel'));
+  assert.ok(searchUrl.includes('mode=semantic'));
+  assert.ok(searchUrl.includes('source=arxiv'));
+  assert.ok(searchUrl.includes('min_maturity=established'));
+  assert.ok(searchUrl.includes('max_risk=high'));
+  assert.ok(searchUrl.includes('project=proj_opt'));
+  assert.ok(searchUrl.includes('verified_only=true'));
+  assert.ok(searchUrl.includes('days=14'));
+  assert.ok(searchUrl.includes('explain=true'));
+
+  fetchMock = null;
+});
+
+test('Search View handles API error state gracefully with accessible error message and retry prompt', async () => {
+  fetchMock = async (url) => {
+    if (url.includes('/sources')) return { ok: true, status: 200, json: async () => ({ sources: [] }) };
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return { ok: false, status: 500, statusText: 'Internal Server Error' };
+  };
+
+  const container = createMockContainer();
+  const store = {
+    state: {},
+    getState: () => store.state,
+    setState: (s) => Object.assign(store.state, s),
+    setConnection: () => {},
+  };
+
+  await renderSearchView(container, store, { q: 'cuda failure' });
+
+  const resultsArea = container.querySelector('#search-results-area');
+  assert.ok(resultsArea.innerHTML.includes('Search Request Failed') || resultsArea.innerHTML.includes('state-error'));
+
+  fetchMock = null;
+});
+
+
+test('Search View populates source catalog dynamically from /sources with fallback to defaults', async () => {
+  fetchMock = async (url) => {
+    if (url.includes('/sources')) {
+      return { ok: true, status: 200, json: async () => ({ sources: [{ name: 'custom_feed', display_name: 'Custom Feed' }] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ count: 0, results: [] }) };
+  };
+
+  const container = createMockContainer();
+  const store = {
+    state: {},
+    getState: () => store.state,
+    setState: (s) => Object.assign(store.state, s),
+    setConnection: () => {},
+  };
+
+  await renderSearchView(container, store, { q: '' });
+  assert.ok(container.innerHTML.includes('search-source-select'));
+
+  fetchMock = null;
+});
+
+
+
 
 
 

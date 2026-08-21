@@ -385,21 +385,21 @@ class Database:
 
     def search_events_fts(self, query: str, limit: int = 100) -> List[Tuple[str, float]]:
         """
-        Safely searches events_fts with BM25 ranking or falls back to LIKE queries.
+        Safely searches events_fts with BM25 ranking or falls back to parameterized LIKE queries.
         Returns: list of (event_id, lexical_score)
         """
         if not query or not query.strip():
             return []
 
         import re
-        tokens = [t.lower() for t in re.findall(r"[a-zA-Z0-9_\-\.]{2,}", query)]
-        if not tokens:
-            return []
+        raw_tokens = re.findall(r"[a-zA-Z0-9_\-\.+]+", query)
+        clean_fts_tokens = [re.sub(r'[^a-zA-Z0-9_\-\.]', '', t) for t in raw_tokens]
+        clean_fts_tokens = [t.lower() for t in clean_fts_tokens if len(t) >= 2]
 
         results = []
-        if self.has_fts5:
+        if self.has_fts5 and clean_fts_tokens:
             # Build safe match query (each token quoted, joined by OR)
-            clean_tokens = [t.replace('"', '""') for t in tokens[:10]]
+            clean_tokens = [t.replace('"', '""') for t in clean_fts_tokens[:10]]
             match_query = " OR ".join([f'"{t}"' for t in clean_tokens])
             try:
                 cursor = self.conn.cursor()
@@ -416,16 +416,16 @@ class Database:
             except Exception:
                 pass
 
-        if not results and tokens:
-            # Fallback to parameterized LIKE queries
-            like_pat = f"%{tokens[0]}%"
+        if not results and query.strip():
+            # Fallback to parameterized LIKE queries with exact query substring and tokens
+            like_pat = f"%{query.strip()}%"
             cursor = self.conn.cursor()
             cursor.execute(
                 "SELECT id FROM events WHERE title LIKE ? OR text LIKE ? LIMIT ?",
                 (like_pat, like_pat, limit),
             )
             for r in cursor.fetchall():
-                results.append((r[0], 0.5))
+                results.append((r[0], 0.7))
 
         return results
 
@@ -434,19 +434,29 @@ class Database:
         if not query or not query.strip():
             return []
         import re
-        tokens = [t.lower() for t in re.findall(r"[a-zA-Z0-9_\-\.]{2,}", query)]
-        if not tokens:
-            return []
-
+        like_pat = f"%{query.strip()}%"
         cursor = self.conn.cursor()
-        like_pat = f"%{tokens[0]}%"
         cursor.execute(
             "SELECT id FROM story_clusters WHERE canonical_title LIKE ? ORDER BY cluster_score DESC LIMIT ?",
             (like_pat, limit),
         )
+        matched_ids = [r[0] for r in cursor.fetchall()]
+
+        # Also search by individual alphanumeric/symbol tokens
+        tokens = re.findall(r"[a-zA-Z0-9_\-\.+]+", query)
+        for t in tokens:
+            if len(t) >= 2 and len(matched_ids) < limit:
+                cursor.execute(
+                    "SELECT id FROM story_clusters WHERE canonical_title LIKE ? ORDER BY cluster_score DESC LIMIT ?",
+                    (f"%{t}%", limit - len(matched_ids)),
+                )
+                for r in cursor.fetchall():
+                    if r[0] not in matched_ids:
+                        matched_ids.append(r[0])
+
         clusters = []
-        for r in cursor.fetchall():
-            cl = self.get_cluster(r["id"])
+        for cid in matched_ids:
+            cl = self.get_cluster(cid)
             if cl:
                 clusters.append(cl)
         return clusters

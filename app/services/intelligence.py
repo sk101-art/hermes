@@ -51,11 +51,11 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def sanitize_fts_query(query: str) -> List[str]:
-    """Extracts clean alphanumeric tokens suitable for safe FTS querying."""
+    """Extracts clean tokens suitable for search querying, preserving language/symbol keywords."""
     if not query:
         return []
-    tokens = re.findall(r"[a-zA-Z0-9_\-\.]{2,}", query)
-    return [t.lower() for t in tokens if len(t) >= 2]
+    tokens = re.findall(r"[a-zA-Z0-9_\-\.+]+", query)
+    return [t.lower() for t in tokens if len(t) >= 1]
 
 
 def aggregate_cluster_claim_status(claims: List[Any]) -> Optional[str]:
@@ -173,10 +173,10 @@ def search_intelligence(
     # 2. Semantic Embedding for Query (if hybrid or semantic)
     q_emb = None
     embedder = None
-    if mode in ("hybrid", "semantic") and tokens:
+    if mode in ("hybrid", "semantic") and query and query.strip():
         try:
             embedder = EmbeddingService(model_name="sentence-transformers/all-MiniLM-L6-v2", device="cpu", batch_size=16)
-            q_emb = embedder.embed(query)
+            q_emb = embedder.embed(query.strip())
         except Exception:
             q_emb = None
 
@@ -255,8 +255,11 @@ def search_intelligence(
         # 3. Calculate Component Scores
         # Lexical score
         lex_score = event_lexical_scores.get(c_id, 0.0)
-        # Token overlap ratio bonus on title
+        # Direct query substring match or token overlap ratio bonus on title
         title_lower = cl.canonical_title.lower()
+        q_lower = query.lower().strip()
+        if q_lower and q_lower in title_lower:
+            lex_score = max(lex_score, 1.0)
         matched_tokens = [t for t in tokens if t in title_lower]
         if tokens:
             token_ratio = len(matched_tokens) / len(tokens)

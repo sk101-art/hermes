@@ -535,3 +535,113 @@ def test_search_intelligence_contract_transport_and_explain(tmp_path):
     assert not any(r.entity_id == "cluster_1" for r in low_risk_results)
 
 
+def test_search_intelligence_uses_retrieved_current_claims_for_aggregation(tmp_path):
+    """Proves search_intelligence fetches canonical claims via db.get_claims_by_cluster rather than an unhydrated attribute."""
+    from app.services.intelligence import search_intelligence
+    from app.models.schemas import Event, StoryCluster, Claim
+
+    db = Database(str(tmp_path / "test_claims_hydrated.db"))
+    ev = Event(id="ev_hydrated", source="github", title="Quantum compiler engine", url="https://github.com/qc/engine", final_score=0.9, raw_payload={})
+    db.save_event(ev)
+    cl = StoryCluster(id="cluster_qc", canonical_title="Quantum compiler engine optimization", cluster_score=0.9, sources=["github"], event_ids=["ev_hydrated"])
+    db.save_cluster(cl)
+
+    # Current claim: supported
+    c1 = Claim(id="c1", cluster_id="cluster_qc", subject="QC", predicate="speeds", object="run", claim_text="QC speeds run", status="supported", verification_score=0.85, is_self_reported=False)
+    db.save_claim(c1)
+
+    results = search_intelligence("Quantum compiler", db=db)
+    assert len(results) == 1
+    assert results[0].claim_status == "supported"
+    assert results[0].verification_score == 0.85
+
+
+def test_search_verified_only_all_nine_claim_permutations(tmp_path):
+    """Comprehensive test covering all 9 claim status permutations under verified_only=True."""
+    from app.services.intelligence import search_intelligence
+    from app.models.schemas import Event, StoryCluster, Claim
+
+    db = Database(str(tmp_path / "test_verif_permutations.db"))
+
+    permutations = [
+        ("strongly_supported", 0.90, True),
+        ("supported", 0.75, True),
+        ("weakly_supported", 0.80, False),  # status not in (supported, strongly_supported)
+        ("mixed", 0.70, False),
+        ("contradicted", 0.80, False),
+        ("unverified", 0.65, False),
+        ("superseded", 0.90, False),
+        ("retracted", 0.90, False),
+        ("no_claims", 0.0, False),
+    ]
+
+    for status_name, verif_score, should_pass in permutations:
+        cid = f"cluster_{status_name}"
+        evid = f"ev_{status_name}"
+        ev = Event(id=evid, source="github", title=f"Bench {status_name} system", url=f"https://github.com/{status_name}", final_score=0.8, raw_payload={})
+        db.save_event(ev)
+        cl = StoryCluster(id=cid, canonical_title=f"Benchmark {status_name} evaluation", cluster_score=0.8, sources=["github"], event_ids=[evid])
+        db.save_cluster(cl)
+
+        if status_name != "no_claims":
+            clm = Claim(
+                id=f"clm_{status_name}",
+                cluster_id=cid,
+                subject=f"System {status_name}",
+                predicate="passes",
+                object="test",
+                claim_text=f"System {status_name} test claim",
+                status=status_name,
+                verification_score=verif_score,
+                is_self_reported=False,
+            )
+            db.save_claim(clm)
+
+    # Search with verified_only=True
+    verif_results = search_intelligence("Benchmark", verified_only=True, db=db)
+    returned_ids = {r.entity_id for r in verif_results}
+
+    assert "cluster_strongly_supported" in returned_ids
+    assert "cluster_supported" in returned_ids
+    assert "cluster_weakly_supported" not in returned_ids
+    assert "cluster_mixed" not in returned_ids
+    assert "cluster_contradicted" not in returned_ids
+    assert "cluster_unverified" not in returned_ids
+    assert "cluster_superseded" not in returned_ids
+    assert "cluster_retracted" not in returned_ids
+    assert "cluster_no_claims" not in returned_ids
+
+
+def test_search_symbol_queries_cpp_cuda_aes(tmp_path):
+    """Regression test proving C++, CUDA 13, and AES-256 can be searched accurately."""
+    from app.services.intelligence import search_intelligence
+    from app.models.schemas import Event, StoryCluster
+
+    db = Database(str(tmp_path / "test_symbol_search.db"))
+
+    # Seed C++ cluster
+    db.save_event(Event(id="ev_cpp", source="github", title="Llama C++ inference engine", url="https://github.com/llama/cpp", final_score=0.9, raw_payload={}))
+    db.save_cluster(StoryCluster(id="cl_cpp", canonical_title="ggml-org/llama.cpp - LLM inference in C/C++", cluster_score=0.9, sources=["github"], event_ids=["ev_cpp"]))
+
+    # Seed CUDA 13 cluster
+    db.save_event(Event(id="ev_cuda", source="github", title="CUDA 13 compiler kernels", url="https://github.com/cuda/kernels", final_score=0.9, raw_payload={}))
+    db.save_cluster(StoryCluster(id="cl_cuda", canonical_title="NVIDIA CUDA 13 kernel architecture", cluster_score=0.9, sources=["github"], event_ids=["ev_cuda"]))
+
+    # Seed AES-256 cluster
+    db.save_event(Event(id="ev_aes", source="github", title="AES-256 hardware acceleration", url="https://github.com/crypto/aes", final_score=0.9, raw_payload={}))
+    db.save_cluster(StoryCluster(id="cl_aes", canonical_title="AES-256 cryptographic hardware module", cluster_score=0.9, sources=["github"], event_ids=["ev_aes"]))
+
+    # Test C++
+    res_cpp = search_intelligence("C++", db=db)
+    assert any(r.entity_id == "cl_cpp" for r in res_cpp)
+
+    # Test CUDA 13
+    res_cuda = search_intelligence("CUDA 13", db=db)
+    assert any(r.entity_id == "cl_cuda" for r in res_cuda)
+
+    # Test AES-256
+    res_aes = search_intelligence("AES-256", db=db)
+    assert any(r.entity_id == "cl_aes" for r in res_aes)
+
+
+
