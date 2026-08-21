@@ -1,6 +1,155 @@
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
+
+
+class MaturityStage(str, Enum):
+    CONCEPT = "concept"
+    RESEARCH = "research"
+    PROTOTYPE = "prototype"
+    EXPERIMENTAL = "experimental"
+    EARLY_ADOPTION = "early_adoption"
+    PRODUCTION_CANDIDATE = "production_candidate"
+    ESTABLISHED = "established"
+
+
+class ClaimStatus(str, Enum):
+    STRONGLY_SUPPORTED = "strongly_supported"
+    SUPPORTED = "supported"
+    WEAKLY_SUPPORTED = "weakly_supported"
+    MIXED = "mixed"
+    CONTRADICTED = "contradicted"
+    UNVERIFIED = "unverified"
+    SUPERSEDED = "superseded"
+    RETRACTED = "retracted"
+
+
+class EvidenceStance(str, Enum):
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    CONTEXT = "context"
+
+
+class EvidenceClass(str, Enum):
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    COMMUNITY = "community"
+    METADATA = "metadata"
+
+
+class AssertionLevel(str, Enum):
+    ARTIFACT_FACT = "artifact_fact"
+    PERFORMANCE_CLAIM = "performance_claim"
+    RESEARCH_CLAIM = "research_claim"
+    COMMUNITY_OBSERVATION = "community_observation"
+    SELF_REPORTED_CLAIM = "self_reported_claim"
+
+
+class RiskLevel(str, Enum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class RiskStatus(str, Enum):
+    NOT_ASSESSED = "not_assessed"
+    INSUFFICIENT_DATA = "insufficient_data"
+    ASSESSED = "assessed"
+
+
+def normalize_maturity_stage(val: Any) -> Optional[str]:
+    """Normalizes raw or legacy maturity stage strings or enum members to canonical MaturityStage values."""
+    if not val:
+        return None
+    v = val.value if hasattr(val, "value") else str(val)
+    v = v.strip().lower()
+    mapping = {
+        "maturing": MaturityStage.EARLY_ADOPTION.value,
+        "production_ready": MaturityStage.ESTABLISHED.value,
+        "stable": MaturityStage.ESTABLISHED.value,
+    }
+    if v in mapping:
+        return mapping[v]
+    valid_stages = {s.value for s in MaturityStage}
+    if v in valid_stages:
+        return v
+    return None
+
+
+def normalize_claim_status(val: Any) -> Optional[str]:
+    """Normalizes raw claim status strings or enum members to canonical ClaimStatus values."""
+    if not val:
+        return None
+    v = val.value if hasattr(val, "value") else str(val)
+    v = v.strip().lower()
+    valid_statuses = {s.value for s in ClaimStatus}
+    if v in valid_statuses:
+        return v
+    return None
+
+
+def normalize_evidence_stance(val: Any) -> Optional[str]:
+    """Normalizes raw evidence stance strings or enum members to canonical EvidenceStance values."""
+    if not val:
+        return None
+    v = val.value if hasattr(val, "value") else str(val)
+    v = v.strip().lower()
+    mapping = {
+        "refutes": EvidenceStance.CONTRADICTS.value,
+        "opposes": EvidenceStance.CONTRADICTS.value,
+        "neutral": EvidenceStance.CONTEXT.value,
+        "background": EvidenceStance.CONTEXT.value,
+    }
+    if v in mapping:
+        return mapping[v]
+    valid_stances = {s.value for s in EvidenceStance}
+    if v in valid_stances:
+        return v
+    return None
+
+
+def normalize_evidence_class(val: Any) -> Optional[str]:
+    """Normalizes raw evidence class strings or enum members to canonical EvidenceClass values."""
+    if not val:
+        return None
+    v = val.value if hasattr(val, "value") else str(val)
+    v = v.strip().lower()
+    mapping = {
+        "author": EvidenceClass.PRIMARY.value,
+        "discussion": EvidenceClass.COMMUNITY.value,
+        "registry": EvidenceClass.METADATA.value,
+        "benchmark": EvidenceClass.SECONDARY.value,
+        "independent": EvidenceClass.PRIMARY.value,
+    }
+    if v in mapping:
+        return mapping[v]
+    valid_classes = {c.value for c in EvidenceClass}
+    if v in valid_classes:
+        return v
+    return None
+
+
+def normalize_assertion_level(val: Any) -> Optional[str]:
+    """Normalizes raw assertion level strings or enum members to canonical AssertionLevel values."""
+    if not val:
+        return None
+    v = val.value if hasattr(val, "value") else str(val)
+    v = v.strip().lower()
+    mapping = {
+        "artifact": AssertionLevel.ARTIFACT_FACT.value,
+        "performance": AssertionLevel.PERFORMANCE_CLAIM.value,
+        "research": AssertionLevel.RESEARCH_CLAIM.value,
+        "community": AssertionLevel.COMMUNITY_OBSERVATION.value,
+        "self_reported": AssertionLevel.SELF_REPORTED_CLAIM.value,
+    }
+    if v in mapping:
+        return mapping[v]
+    valid_levels = {a.value for a in AssertionLevel}
+    if v in valid_levels:
+        return v
+    return None
 
 
 class SourceProfile(BaseModel):
@@ -320,9 +469,9 @@ class SavedItem(BaseModel):
     inbox_item_id: Optional[str] = None
     title_snapshot: str
     saved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    verification_snapshot: float = 0.50
-    maturity_snapshot: str = "concept"
-    risk_snapshot: float = 0.25
+    verification_snapshot: Optional[float] = None
+    maturity_snapshot: Optional[str] = None
+    risk_snapshot: Optional[float] = None
     user_note: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     project_ids: List[str] = Field(default_factory=list)

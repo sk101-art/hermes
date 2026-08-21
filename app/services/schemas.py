@@ -1,6 +1,21 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
+
+from app.models.schemas import (
+    MaturityStage,
+    ClaimStatus,
+    EvidenceStance,
+    EvidenceClass,
+    AssertionLevel,
+    RiskLevel,
+    RiskStatus,
+    normalize_maturity_stage,
+    normalize_claim_status,
+    normalize_evidence_stance,
+    normalize_evidence_class,
+    normalize_assertion_level,
+)
 
 
 class SearchResult(BaseModel):
@@ -11,9 +26,10 @@ class SearchResult(BaseModel):
     score: float
     sources: List[str] = Field(default_factory=list)
     published_at: Optional[str] = None
-    verification_score: float = 0.0
+    verification_score: Optional[float] = None
     maturity: Optional[str] = None
     risk: Optional[str] = None
+    risk_status: Optional[str] = None
     project_relevance: float = 0.0
     reason_codes: List[str] = Field(default_factory=list)
     urls: List[str] = Field(default_factory=list)

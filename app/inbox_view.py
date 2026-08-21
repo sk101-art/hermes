@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import sys
 from collections import defaultdict
 from app.inbox.lifecycle import mark_inbox_items_seen
@@ -86,7 +86,7 @@ def run_inbox_view(
             cluster = db.get_cluster(it.story_cluster_id)
             claims = db.get_claims_by_cluster(it.story_cluster_id)
             assessment = db.get_technology_assessment(it.story_cluster_id)
-            mat_str = assessment.maturity_stage.upper() if assessment else "UNKNOWN"
+            mat_str = assessment.maturity_stage.upper() if assessment and assessment.maturity_stage else "NOT ASSESSED"
 
             star_icon = "[STARRED]" if it.is_starred else f"[{it.state.upper()}]"
             print(f"\n{idx:02d} [{it.inbox_score:.2f}] {star_icon} \"{it.title}\"")

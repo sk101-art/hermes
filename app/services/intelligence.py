@@ -141,20 +141,35 @@ def search_intelligence(
         claims = db.get_claims_by_cluster(c_id, current_only=True)
 
         claim_scores = [c.verification_score for c in claims]
-        verif_score = float(np.mean(claim_scores)) if claim_scores else (assessment.assessment_score if assessment else 0.50)
-        maturity = assessment.maturity_stage if assessment else "experimental"
-        risk_score = tech_state.risk_score if tech_state else 0.0
-        risk = "critical" if risk_score >= 0.7 else ("high" if risk_score >= 0.4 else ("medium" if risk_score >= 0.2 else "low"))
-        claim_status = claims[0].status if claims else "supported"
+        verif_score = float(np.mean(claim_scores)) if claim_scores else None
+        maturity = assessment.maturity_stage if assessment else None
+
+        if tech_state:
+            if not claims and not events:
+                risk_status = "insufficient_data"
+                risk_score = tech_state.risk_score
+                risk = None
+            else:
+                risk_status = "assessed"
+                risk_score = tech_state.risk_score
+                risk = "critical" if risk_score >= 0.7 else ("high" if risk_score >= 0.4 else ("medium" if risk_score >= 0.2 else "low"))
+        else:
+            risk_status = "not_assessed"
+            risk_score = None
+            risk = None
+
+        claim_status = claims[0].status if claims else None
 
         # Filter: Verified Only
         if verified_only:
-            if verif_score < 0.60 or claim_status not in ("supported", "strongly_supported"):
+            if verif_score is None or verif_score < 0.60 or claim_status not in ("supported", "strongly_supported"):
                 continue
 
         # Filter: Min Maturity
         if min_maturity and min_maturity.lower() in MATURITY_ORDER:
             req_rank = MATURITY_ORDER[min_maturity.lower()]
+            if maturity is None:
+                continue
             act_rank = MATURITY_ORDER.get(maturity.lower(), 1)
             if act_rank < req_rank:
                 continue
@@ -162,6 +177,8 @@ def search_intelligence(
         # Filter: Max Risk
         if max_risk and max_risk.lower() in RISK_ORDER:
             max_r_rank = RISK_ORDER[max_risk.lower()]
+            if risk is None:
+                continue
             act_r_rank = RISK_ORDER.get(risk.lower(), 1)
             if act_r_rank > max_r_rank:
                 continue
@@ -189,8 +206,8 @@ def search_intelligence(
                         best_sim = sim
             sem_score = max(0.0, best_sim)
 
-        # Verification adjustment
-        verif_adj = verif_score * 0.15
+        # Evidence-strength ranking contribution (influences ordering only, not truth status)
+        verif_adj = (verif_score or 0.0) * 0.15
 
         # Freshness adjustment (strictly bounded [0.0, 0.10])
         age_days = max(0.0, (now - newest_event_time).total_seconds() / 86400.0)
@@ -228,7 +245,7 @@ def search_intelligence(
             reason_codes.append(f"matched_tokens:{','.join(matched_tokens)}")
         if sem_score > 0.60:
             reason_codes.append("high_semantic_similarity")
-        if verif_score >= 0.70:
+        if verif_score is not None and verif_score >= 0.70:
             reason_codes.append("high_verification")
         if project_rel >= 0.50:
             reason_codes.append(f"project_relevant:{target_project.name if target_project else ''}")
@@ -254,10 +271,11 @@ def search_intelligence(
             summary=summary_text,
             score=round(final_score, 4),
             sources=list(cl.sources),
-            published_at=newest_event_time.strftime("%Y-%m-%d %H:%M:%S UTC"),
-            verification_score=round(verif_score, 4),
+            published_at=newest_event_time.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(newest_event_time, datetime) else str(newest_event_time),
+            verification_score=round(verif_score, 4) if verif_score is not None else None,
             maturity=maturity,
             risk=risk,
+            risk_status=risk_status,
             project_relevance=round(project_rel, 4),
             reason_codes=reason_codes,
             urls=urls,
@@ -307,6 +325,24 @@ def get_top_developments(
             continue
         events = db.get_cluster_events(cl.id)
         urls = [e.url for e in events if e.url][:3]
+        assessment = db.get_technology_assessment(cl.id)
+        tech_state = db.get_technology_state(cl.id)
+        claims = db.get_claims_by_cluster(cl.id, current_only=True)
+        claim_scores = [c.verification_score for c in claims]
+        verif_score = float(np.mean(claim_scores)) if claim_scores else None
+        maturity = assessment.maturity_stage if assessment else None
+
+        if tech_state:
+            if not claims and not events:
+                risk_status = "insufficient_data"
+                risk = None
+            else:
+                risk_status = "assessed"
+                r_score = tech_state.risk_score
+                risk = "critical" if r_score >= 0.7 else ("high" if r_score >= 0.4 else ("medium" if r_score >= 0.2 else "low"))
+        else:
+            risk_status = "not_assessed"
+            risk = None
 
         res = SearchResult(
             entity_type="inbox_item",
@@ -316,9 +352,10 @@ def get_top_developments(
             score=round(it.rank_score, 4),
             sources=list(cl.sources),
             published_at=it.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
-            verification_score=round(it.inbox_score, 4),
-            maturity="experimental",
-            risk="low",
+            verification_score=round(verif_score, 4) if verif_score is not None else None,
+            maturity=maturity,
+            risk=risk,
+            risk_status=risk_status,
             project_relevance=round(it.project_impact_score, 4),
             reason_codes=list(it.reason_codes),
             urls=urls,
@@ -332,9 +369,24 @@ def get_top_developments(
             events = db.get_cluster_events(cl.id)
             urls = [e.url for e in events if e.url][:3]
             assessment = db.get_technology_assessment(cl.id)
+            tech_state = db.get_technology_state(cl.id)
             claims = db.get_claims_by_cluster(cl.id, current_only=True)
             claim_scores = [c.verification_score for c in claims]
-            verif_score = float(np.mean(claim_scores)) if claim_scores else (assessment.assessment_score if assessment else 0.50)
+            verif_score = float(np.mean(claim_scores)) if claim_scores else None
+            maturity = assessment.maturity_stage if assessment else None
+
+            if tech_state:
+                if not claims and not events:
+                    risk_status = "insufficient_data"
+                    risk = None
+                else:
+                    risk_status = "assessed"
+                    r_score = tech_state.risk_score
+                    risk = "critical" if r_score >= 0.7 else ("high" if r_score >= 0.4 else ("medium" if r_score >= 0.2 else "low"))
+            else:
+                risk_status = "not_assessed"
+                risk = None
+
             res = SearchResult(
                 entity_type="story_cluster",
                 entity_id=cl.id,
@@ -343,9 +395,10 @@ def get_top_developments(
                 score=round(cl.cluster_score, 4),
                 sources=list(cl.sources),
                 published_at=cl.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(cl.updated_at, datetime) else str(cl.updated_at),
-                verification_score=round(verif_score, 4),
-                maturity=assessment.maturity_stage if assessment else "experimental",
-                risk="low",
+                verification_score=round(verif_score, 4) if verif_score is not None else None,
+                maturity=maturity,
+                risk=risk,
+                risk_status=risk_status,
                 project_relevance=0.0,
                 reason_codes=["top_story_cluster"],
                 urls=urls,
@@ -402,14 +455,29 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
 
     # Verification details
     claim_scores = [c.verification_score for c in claims]
-    verif_score = float(np.mean(claim_scores)) if claim_scores else (assessment.assessment_score if assessment else 0.50)
-    risk_score = tech_state.risk_score if tech_state else 0.0
-    risk = "critical" if risk_score >= 0.7 else ("high" if risk_score >= 0.4 else ("medium" if risk_score >= 0.2 else "low"))
+    verif_score = float(np.mean(claim_scores)) if claim_scores else None
+
+    if tech_state:
+        if not claims and not events:
+            risk_status = "insufficient_data"
+            risk_score = tech_state.risk_score
+            risk_level = None
+        else:
+            risk_status = "assessed"
+            risk_score = tech_state.risk_score
+            risk_level = "critical" if risk_score >= 0.7 else ("high" if risk_score >= 0.4 else ("medium" if risk_score >= 0.2 else "low"))
+    else:
+        risk_status = "not_assessed"
+        risk_score = None
+        risk_level = None
+
     verif_dict = {
-        "verification_score": round(verif_score, 4),
-        "maturity_stage": assessment.maturity_stage if assessment else (tech_state.maturity_stage if tech_state else "experimental"),
-        "risk_level": risk,
-        "claim_status": claims[0].status if claims else "supported",
+        "verification_score": round(verif_score, 4) if verif_score is not None else None,
+        "maturity_stage": assessment.maturity_stage if assessment else None,
+        "risk_level": risk_level,
+        "risk_score": round(risk_score, 4) if risk_score is not None else None,
+        "risk_status": risk_status,
+        "claim_status": claims[0].status if claims else None,
     }
 
     # Cross-source relationships
@@ -586,14 +654,16 @@ def get_morning_brief(
         if inbox_item:
             cluster = db.get_cluster(inbox_item.story_cluster_id) if inbox_item.story_cluster_id else None
             summary = cluster.canonical_title if cluster else inbox_item.title
-            verification_score = cluster.cluster_score if cluster else 0.0
+            claims = db.get_claims_by_cluster(inbox_item.story_cluster_id, current_only=True) if inbox_item.story_cluster_id else []
+            claim_scores = [c.verification_score for c in claims]
+            verif_score = float(np.mean(claim_scores)) if claim_scores else None
             item_data = {
                 "inbox_item_id": inbox_item.id,
                 "cluster_id": inbox_item.story_cluster_id,
                 "title": inbox_item.title,
                 "summary": summary,
                 "priority": round(inbox_item.rank_score, 4),
-                "verification_score": round(verification_score, 4),
+                "verification_score": round(verif_score, 4) if verif_score is not None else None,
                 "position": bi.position,
             }
             items_by_section.setdefault(bi.section, []).append(item_data)

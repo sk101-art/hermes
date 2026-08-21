@@ -1,4 +1,4 @@
-﻿import math
+import math
 from typing import List, Optional, Tuple
 from app.models.schemas import Claim, Evidence
 
@@ -11,6 +11,17 @@ VERIFICATION_WEIGHTS = {
 }
 
 HYSTERESIS_DELTA = 0.02
+
+
+def is_independent_evidence(evidence: Evidence) -> bool:
+    """
+    Canonical determination of whether an individual evidence record represents
+    an independent reproduction or sufficiently independent evidence.
+    """
+    return (
+        getattr(evidence, "evidence_type", None) == "independent_reproduction"
+        or getattr(evidence, "independence_score", 0.0) >= 0.85
+    )
 
 
 def calculate_evidence_independence(evidence_list: List[Evidence]) -> List[Evidence]:
@@ -93,7 +104,7 @@ def derive_status_with_policy(
         # Policy rules for strongly_supported
         if assertion_level in ("self_reported_claim", "performance_claim"):
             # Requires independent corroboration (>= 2 independent sources or independent reproduction)
-            has_independent = any(e.evidence_type == "independent_reproduction" or e.independence_score >= 0.85 for e in supporting)
+            has_independent = any(is_independent_evidence(e) for e in supporting)
             if unique_sources >= 2 or has_independent:
                 return "strongly_supported"
             else:

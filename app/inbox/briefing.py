@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -53,7 +53,7 @@ def build_briefing_text(
         for idx, it in enumerate(corr_items, 1):
             claims = db.get_claims_by_cluster(it.story_cluster_id)
             events = db.get_cluster_events(it.story_cluster_id)
-            v_str = f"{claims[0].status.upper()} ({claims[0].verification_score:.2f})" if claims else "UNVERIFIED"
+            v_str = f"{claims[0].status.upper()} ({claims[0].verification_score:.2f})" if claims else "NO CLAIMS EXTRACTED"
             lines.append(f"{idx:02d}. [{it.inbox_score:.2f}] \"{it.title}\"")
             lines.append(f"    Verification: {v_str}")
             if it.reason_codes:
@@ -71,7 +71,7 @@ def build_briefing_text(
             claims = db.get_claims_by_cluster(it.story_cluster_id)
             events = db.get_cluster_events(it.story_cluster_id)
             assessment = db.get_technology_assessment(it.story_cluster_id)
-            mat_str = assessment.maturity_stage.upper() if assessment else "UNKNOWN"
+            mat_str = assessment.maturity_stage.upper() if assessment and assessment.maturity_stage else "NOT ASSESSED"
 
             lines.append(f"{idx:02d}. [{it.inbox_score:.2f}] \"{it.title}\"")
             lines.append(f"    Maturity: {mat_str} | Priority: HIGH")

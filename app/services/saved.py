@@ -33,9 +33,9 @@ def get_saved_items(
             "inbox_item_id": s.inbox_item_id,
             "story_cluster_id": s.story_cluster_id,
             "title": s.title_snapshot,
-            "verification_score": round(s.verification_snapshot, 4),
+            "verification_score": round(s.verification_snapshot, 4) if s.verification_snapshot is not None else None,
             "maturity_stage": s.maturity_snapshot,
-            "risk_score": round(s.risk_snapshot, 4),
+            "risk_score": round(s.risk_snapshot, 4) if s.risk_snapshot is not None else None,
             "tags": list(s.tags),
             "user_note": s.user_note,
             "project_ids": list(s.project_ids),
@@ -71,9 +71,9 @@ def get_saved_item(saved_id: str, db: Optional[Database] = None) -> Optional[Dic
         "story_cluster_id": s.story_cluster_id,
         "inbox_item_id": s.inbox_item_id,
         "title": s.title_snapshot,
-        "verification_score": round(s.verification_snapshot, 4),
+        "verification_score": round(s.verification_snapshot, 4) if s.verification_snapshot is not None else None,
         "maturity_stage": s.maturity_snapshot,
-        "risk_score": round(s.risk_snapshot, 4),
+        "risk_score": round(s.risk_snapshot, 4) if s.risk_snapshot is not None else None,
         "user_note": s.user_note,
         "tags": list(s.tags),
         "project_ids": list(s.project_ids),
@@ -86,7 +86,7 @@ def star_inbox_item(
     db: Optional[Database] = None,
 ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     """
-    Safely stars an inbox item and creates a SavedItem snapshot.
+    Safely stars an inbox item and creates a SavedItem snapshot with truthful intelligence values.
     Idempotent: calling multiple times will not duplicate records.
     """
     if db is None:
@@ -114,7 +114,15 @@ def star_inbox_item(
     if existing_saved:
         return True, "Item is already starred and saved in library", get_saved_item(saved_id, db)
 
-    # 3. Create persistent SavedItem snapshot
+    # 3. Create persistent SavedItem snapshot with genuine intelligence values
+    assessment = db.get_technology_assessment(item.story_cluster_id)
+    tech_state = db.get_technology_state(item.story_cluster_id)
+    claims = db.get_claims_by_cluster(item.story_cluster_id, current_only=True)
+    claim_scores = [c.verification_score for c in claims]
+    v_snap = float(sum(claim_scores) / len(claim_scores)) if claim_scores else None
+    m_snap = assessment.maturity_stage if assessment else None
+    r_snap = tech_state.risk_score if tech_state else None
+
     new_saved = SavedItem(
         id=saved_id,
         entity_type="cluster",
@@ -123,9 +131,9 @@ def star_inbox_item(
         inbox_item_id=item.id,
         title_snapshot=item.title,
         saved_at=now,
-        verification_snapshot=item.inbox_score,
-        maturity_snapshot="experimental",
-        risk_snapshot=0.25,
+        verification_snapshot=v_snap,
+        maturity_snapshot=m_snap,
+        risk_snapshot=r_snap,
         user_note=None,
         tags=["starred"],
         project_ids=list(item.matched_project_ids),
