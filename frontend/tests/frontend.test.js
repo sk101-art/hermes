@@ -103,6 +103,11 @@ import {
   renderClaimRevisions,
   renderClaimCard,
 } from '../src/views/story-detail.js';
+import {
+  renderSearchView,
+  renderSearchResultCard,
+  renderRankingDecomposition,
+} from '../src/views/search.js';
 
 /* ==========================================================================
    1. API Client Contracts
@@ -990,6 +995,195 @@ test('Exact API call count verification for progressive claim loading and sessio
   // Reset fetch mock
   fetchMock = null;
 });
+
+/* ==========================================================================
+   Phase 7: Search & Query Experience Tests
+   ========================================================================== */
+
+test('Search Result Card strictly labels ranking score as Relevance Score / Search Rank, never Verification / Confidence', () => {
+  const item = {
+    entity_id: 'cluster_gpu_attn',
+    title: 'FlashAttention-4 Architecture for Blackwell GPUs',
+    score: 0.942,
+    verification_score: null, // Null verification
+    claim_status: null,
+    sources: ['github'],
+    published_at: '2026-08-20T12:00:00Z',
+    is_synthesized: true,
+    summary: 'Hardware-aware kernel implementation for tensor cores.',
+  };
+
+  const html = renderSearchResultCard(item);
+
+  // 1. Must label score as Relevance Score
+  assert.ok(html.includes('Relevance Score: 94%'));
+  assert.ok(html.includes('pill-relevance'));
+
+  // 2. Must NEVER label score as Confidence, Verification, or Trust
+  assert.ok(!html.includes('Confidence: 94%'));
+  assert.ok(!html.includes('Verification Score: 94%'));
+  assert.ok(!html.includes('Trust Score: 94%'));
+  assert.ok(!html.includes('Accuracy: 94%'));
+
+  // 3. Null verification renders Not assessed
+  assert.ok(html.includes('Verification: Not assessed') || html.includes('badge-verification-unassessed'));
+});
+
+test('Search Result Card distinguishes grounded synthesis from raw fallback source excerpts', () => {
+  // Synthesized intelligence result
+  const synthItem = {
+    entity_id: 'cluster_synth_1',
+    title: 'Sparse Kernel Compiler Optimization',
+    score: 0.88,
+    verification_score: 0.85,
+    claim_status: 'supported',
+    sources: ['github'],
+    is_synthesized: true,
+    summary: 'Synthesized intelligence finding grounded in repository events and claims.',
+  };
+
+  const synthHtml = renderSearchResultCard(synthItem);
+  assert.ok(synthHtml.includes('summary-synthesized'));
+  assert.ok(synthHtml.includes('Grounded Synthesis'));
+  assert.ok(!synthHtml.includes('summary-source-excerpt'));
+
+  // Raw fallback source excerpt result
+  const rawItem = {
+    entity_id: 'cluster_raw_2',
+    title: 'Unprocessed Preprint Release',
+    score: 0.72,
+    verification_score: null,
+    claim_status: 'unverified',
+    sources: ['arxiv'],
+    is_synthesized: false,
+    summary: 'Raw excerpt extracted directly from publication metadata without analytic synthesis.',
+  };
+
+  const rawHtml = renderSearchResultCard(rawItem);
+  assert.ok(rawHtml.includes('summary-source-excerpt'));
+  assert.ok(rawHtml.includes('Source Excerpt'));
+  assert.ok(!rawHtml.includes('summary-synthesized'));
+  assert.ok(!rawHtml.includes('Grounded Synthesis'));
+});
+
+test('Search ranking decomposition panel presents factors truthfully and explains ordering rather than epistemic truth', () => {
+  const explain = {
+    lexical_score: 0.8500,
+    semantic_score: 0.9120,
+    verification_adjustment: 0.1250,
+    freshness_adjustment: 0.0800,
+    project_boost: 0.2000,
+    final_score: 0.9250
+  };
+
+  const html = renderRankingDecomposition(explain);
+
+  // 1. Explicit heading indicating ranking explanation
+  assert.ok(html.includes('Why this ranked here (Search Ranking Explanation)'));
+  assert.ok(html.includes('Factors explain search ordering, not epistemic truth'));
+  assert.ok(!html.includes('Why this is true'));
+
+  // 2. All 6 exact decomposition factors present
+  assert.ok(html.includes('Lexical Match:'));
+  assert.ok(html.includes('0.8500'));
+  assert.ok(html.includes('Semantic Sim:'));
+  assert.ok(html.includes('0.9120'));
+  assert.ok(html.includes('Verification Adj:'));
+  assert.ok(html.includes('0.1250'));
+  assert.ok(html.includes('Freshness Adj:'));
+  assert.ok(html.includes('0.0800'));
+  assert.ok(html.includes('Project Boost:'));
+  assert.ok(html.includes('0.2000'));
+  assert.ok(html.includes('Final Rank Score:'));
+  assert.ok(html.includes('0.9250'));
+});
+
+test('Search result card title and action button route to canonical Story Dossier (#/story/{id})', () => {
+  const item = {
+    entity_id: 'cluster:cuda-compiler-opt',
+    title: 'CUDA Compiler Optimization',
+    score: 0.85,
+    sources: ['github'],
+  };
+
+  const html = renderSearchResultCard(item);
+  assert.ok(html.includes('href="#/story/cluster%3Acuda-compiler-opt"'));
+  assert.ok(html.includes('Open Story Dossier &rarr;'));
+});
+
+test('Blank Search view does not issue requests and renders guidance empty state', async () => {
+  let searchCalled = false;
+  fetchMock = async (url) => {
+    if (url.includes('/search')) searchCalled = true;
+    return { ok: true, status: 200, json: async () => ({ count: 0, results: [] }) };
+  };
+
+  const container = {
+    innerHTML: '',
+    querySelectorAll: () => [],
+    querySelector: () => null,
+  };
+  const store = {
+    state: { searchQuery: '' },
+    getState: () => store.state,
+    setState: (s) => Object.assign(store.state, s),
+    setConnection: () => {}
+  };
+
+  await renderSearchView(container, store, { q: '' });
+
+  // No backend search request issued for blank query
+  assert.strictEqual(searchCalled, false);
+  assert.ok(container.innerHTML.includes('Start with an Engineering Query'));
+
+  fetchMock = null;
+});
+
+test('Technical query strings preserve meaningful symbols at search boundary without destructive modification', () => {
+  const testQueries = ['C++', 'CUDA 13', 'AES-256', 'vLLM', 'CET1', 'PostgreSQL 18'];
+  for (const q of testQueries) {
+    const item = {
+      entity_id: 'test_tech_id',
+      title: `Implementation of ${q}`,
+      score: 0.9,
+      sources: ['github'],
+    };
+    const html = renderSearchResultCard(item);
+    assert.ok(html.includes(escapeHtml(q)));
+  }
+});
+
+test('Search Result Card preserves Project Relevance without converting to upgrade advice', () => {
+  const item = {
+    entity_id: 'cluster_proj_match',
+    title: 'vLLM Kernel Optimization',
+    score: 0.88,
+    project_relevance: 0.75,
+    sources: ['github'],
+  };
+
+  const html = renderSearchResultCard(item);
+  assert.ok(html.includes('Project Rel: 75%'));
+  assert.ok(!html.includes('Upgrade Recommendation'));
+  assert.ok(!html.includes('Should adopt'));
+});
+
+test('Search Result Card renders contradiction and mixed verification status without positive inflation', () => {
+  const contradictedItem = {
+    entity_id: 'cluster_contra',
+    title: 'Disputed Benchmark Claims',
+    score: 0.92,
+    verification_score: 0.35,
+    claim_status: 'contradicted',
+    sources: ['arxiv'],
+  };
+
+  const html = renderSearchResultCard(contradictedItem);
+  assert.ok(html.includes('Contradicted (35%)'));
+  assert.ok(!html.includes('badge-verification-strongly_supported'));
+});
+
+
 
 
 

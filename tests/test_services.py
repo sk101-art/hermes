@@ -436,3 +436,102 @@ def test_legacy_schema_migration_preserves_rows_and_allows_null(tmp_path):
     cur.execute("SELECT new_score FROM technology_assessment_revisions WHERE id = 'tech_rev_null_score'")
     assert cur.fetchone()[0] is None
 
+
+def test_aggregate_cluster_claim_status_branches():
+    from app.services.intelligence import aggregate_cluster_claim_status
+
+    # 1. No claims -> None
+    assert aggregate_cluster_claim_status([]) is None
+
+    # 2. Retracted present -> retracted
+    claims_retracted = [{"status": "supported"}, {"status": "retracted"}]
+    assert aggregate_cluster_claim_status(claims_retracted) == "retracted"
+
+    # 3. Contradicted + Positively supported -> mixed
+    claims_contra_pos = [{"status": "contradicted"}, {"status": "supported"}]
+    assert aggregate_cluster_claim_status(claims_contra_pos) == "mixed"
+    claims_contra_strongly = [{"status": "contradicted"}, {"status": "strongly_supported"}]
+    assert aggregate_cluster_claim_status(claims_contra_strongly) == "mixed"
+
+    # 4. Contradicted only / no positive -> contradicted
+    claims_contra_only = [{"status": "contradicted"}, {"status": "unverified"}]
+    assert aggregate_cluster_claim_status(claims_contra_only) == "contradicted"
+
+    # 5. Mixed present -> mixed
+    claims_mixed = [{"status": "mixed"}, {"status": "unverified"}]
+    assert aggregate_cluster_claim_status(claims_mixed) == "mixed"
+
+    # 6. All strongly supported -> strongly_supported
+    claims_all_strong = [{"status": "strongly_supported"}, {"status": "strongly_supported"}]
+    assert aggregate_cluster_claim_status(claims_all_strong) == "strongly_supported"
+
+    # 7. Supported + strongly supported -> supported
+    claims_supp_strong = [{"status": "supported"}, {"status": "strongly_supported"}]
+    assert aggregate_cluster_claim_status(claims_supp_strong) == "supported"
+
+    # 8. Weakly supported only -> weakly_supported
+    claims_weak = [{"status": "weakly_supported"}, {"status": "unverified"}]
+    assert aggregate_cluster_claim_status(claims_weak) == "weakly_supported"
+
+    # 9. Superseded only -> superseded
+    claims_superseded = [{"status": "superseded"}, {"status": "superseded"}]
+    assert aggregate_cluster_claim_status(claims_superseded) == "superseded"
+
+    # 10. Unverified only -> unverified
+    claims_unverif = [{"status": "unverified"}]
+    assert aggregate_cluster_claim_status(claims_unverif) == "unverified"
+
+
+def test_search_intelligence_contract_transport_and_explain(tmp_path):
+    from app.services.intelligence import search_intelligence
+    from app.models.schemas import Event, StoryCluster, Claim, TechnologyAssessment, TechnologyState, RiskStatus
+
+    db = Database(str(tmp_path / "test_search_intel.db"))
+
+    # Seed event and cluster: Grounded synthesis + strongly_supported + explain
+    ev1 = Event(id="ev_1", source="github", title="Sparse Kernel Release", url="https://github.com/cuda/sparse", final_score=0.9, raw_payload={})
+    db.save_event(ev1)
+    cl1 = StoryCluster(id="cluster_1", canonical_title="CUDA Sparse Kernel Compiler Optimization", cluster_score=0.85, sources=["github"], event_ids=["ev_1"])
+    db.save_cluster(cl1)
+
+    clm1 = Claim(
+        id="clm_1",
+        cluster_id="cluster_1",
+        subject="Sparse kernel",
+        predicate="achieves",
+        object="2.5x speedup",
+        claim_text="Sparse kernel achieves 2.5x speedup.",
+        status="strongly_supported",
+        verification_score=0.92,
+        is_self_reported=True,
+        claim_type="performance",
+    )
+    db.save_claim(clm1)
+    db.save_technology_assessment(TechnologyAssessment(cluster_id="cluster_1", maturity_stage="prototype", score=0.8))
+    db.save_technology_state(TechnologyState(cluster_id="cluster_1", maturity_stage="prototype", risk_score=0.25, risk_status=RiskStatus.ASSESSED))
+
+    # Search with explain=True
+    results = search_intelligence("sparse kernel", explain=True, db=db)
+    assert len(results) >= 1
+    r1 = next(r for r in results if r.entity_id == "cluster_1")
+    assert r1.is_synthesized is True
+    assert r1.claim_status == "strongly_supported"
+    assert r1.verification_score == 0.92
+    assert r1.score > 0.0
+    assert r1.explain is not None
+    assert "lexical_score" in r1.explain
+    assert "semantic_score" in r1.explain
+    assert "verification_adjustment" in r1.explain
+    assert "freshness_adjustment" in r1.explain
+    assert "project_boost" in r1.explain
+    assert "final_score" in r1.explain
+
+    # Verified only filter
+    verif_results = search_intelligence("sparse kernel", verified_only=True, db=db)
+    assert any(r.entity_id == "cluster_1" for r in verif_results)
+
+    # Max risk filter: low (max_risk='low' should exclude medium risk score 0.25)
+    low_risk_results = search_intelligence("sparse kernel", max_risk="low", db=db)
+    assert not any(r.entity_id == "cluster_1" for r in low_risk_results)
+
+

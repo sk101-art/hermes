@@ -58,6 +58,60 @@ def sanitize_fts_query(query: str) -> List[str]:
     return [t.lower() for t in tokens if len(t) >= 2]
 
 
+def aggregate_cluster_claim_status(claims: List[Any]) -> Optional[str]:
+    """
+    Computes a deterministic aggregate claim verification status for a story cluster.
+    
+    Policy:
+    - no claims -> None
+    - any retracted -> 'retracted'
+    - any contradicted AND any positively supported (supported / strongly_supported) -> 'mixed'
+    - any contradicted and no positively supported -> 'contradicted'
+    - any mixed -> 'mixed'
+    - all strongly_supported -> 'strongly_supported'
+    - at least one supported or strongly_supported -> 'supported'
+    - at least one weakly_supported (or partially_supported) -> 'weakly_supported'
+    - all remaining claims superseded -> 'superseded'
+    - otherwise -> 'unverified'
+    """
+    if not claims:
+        return None
+
+    statuses = [getattr(c, "status", None) or (c.get("status") if isinstance(c, dict) else None) for c in claims]
+    statuses = [s for s in statuses if s]
+    if not statuses:
+        return "unverified"
+
+    if any(s == "retracted" for s in statuses):
+        return "retracted"
+
+    has_contradicted = any(s == "contradicted" for s in statuses)
+    has_positive = any(s in ("supported", "strongly_supported") for s in statuses)
+
+    if has_contradicted and has_positive:
+        return "mixed"
+
+    if has_contradicted:
+        return "contradicted"
+
+    if any(s == "mixed" for s in statuses):
+        return "mixed"
+
+    if all(s == "strongly_supported" for s in statuses):
+        return "strongly_supported"
+
+    if any(s in ("supported", "strongly_supported") for s in statuses):
+        return "supported"
+
+    if any(s in ("weakly_supported", "partially_supported") for s in statuses):
+        return "weakly_supported"
+
+    if all(s == "superseded" for s in statuses):
+        return "superseded"
+
+    return "unverified"
+
+
 def search_intelligence(
     query: str,
     project: Optional[str] = None,
@@ -173,7 +227,7 @@ def search_intelligence(
             risk_score = None
             risk = None
 
-        claim_status = claims[0].status if claims else None
+        claim_status = aggregate_cluster_claim_status(claims)
 
         # Filter: Verified Only
         if verified_only:
@@ -274,7 +328,8 @@ def search_intelligence(
             tech_state=tech_state,
             validate_references=False,
         )
-        summary_text = synth.what_happened.statement if synth.what_happened else (f"Source excerpt: {synth.fallback_excerpt}" if synth.fallback_excerpt else None)
+        is_synthesized = synth.is_synthesized
+        summary_text = synth.what_happened.statement if synth.what_happened else (synth.fallback_excerpt if synth.fallback_excerpt else None)
 
         explain_dict = None
         if explain:
@@ -292,6 +347,8 @@ def search_intelligence(
             entity_id=c_id,
             title=cl.canonical_title,
             summary=summary_text,
+            is_synthesized=is_synthesized,
+            claim_status=claim_status,
             score=round(final_score, 4),
             sources=list(cl.sources),
             published_at=newest_event_time.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(newest_event_time, datetime) else str(newest_event_time),

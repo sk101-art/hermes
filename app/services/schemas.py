@@ -23,6 +23,8 @@ class SearchResult(BaseModel):
     entity_id: str
     title: str
     summary: Optional[str] = None
+    is_synthesized: bool = False
+    claim_status: Optional[str] = None
     score: float
     sources: List[str] = Field(default_factory=list)
     published_at: Optional[str] = None
