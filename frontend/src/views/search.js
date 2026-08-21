@@ -40,9 +40,6 @@ export async function renderSearchView(container, store, routeParams = {}) {
 
   const isSearched = Boolean(query && query.trim().length > 0);
 
-  // Asynchronously pre-fetch dynamic sources and projects for filter dropdowns
-  loadFilterCatalogs();
-
   let initialHtml = `
     <div class="page-header-container">
       <div>
@@ -185,6 +182,9 @@ export async function renderSearchView(container, store, routeParams = {}) {
   const explainCheck = container.querySelector('#search-explain-checkbox');
   const liveAnnouncer = container.querySelector('#search-live-announcer');
 
+  // Pre-fetch dynamic catalogs for sources and projects for filter dropdowns
+  await loadFilterCatalogs(sourceSelect, projectSelect, selectedSource, selectedProject);
+
   function buildHashUrl() {
     const q = inputEl ? inputEl.value : '';
     const params = new URLSearchParams();
@@ -324,10 +324,11 @@ export async function renderSearchView(container, store, routeParams = {}) {
  * Helper to render options for dynamic source list.
  */
 function renderSourceOptions(selected) {
-  const sources = cachedSourcesList || ['github', 'arxiv', 'huggingface', 'openalex', 'crossref', 'rss'];
+  const sources = cachedSourcesList || [];
   return sources.map(src => {
-    const val = typeof src === 'string' ? src : src.id || src.source || '';
-    const label = typeof src === 'string' ? src : src.name || src.id || '';
+    const val = typeof src === 'string' ? src : src.id || src.source || src.name || '';
+    const label = typeof src === 'string' ? src : src.display_name || src.name || src.id || '';
+    if (!val) return '';
     return `<option value="${escapeHtml(val)}" ${selected === val ? 'selected' : ''}>${escapeHtml(label)}</option>`;
   }).join('');
 }
@@ -340,6 +341,7 @@ function renderProjectOptions(selected) {
   return projects.map(p => {
     const val = p.id || p.name || '';
     const label = p.name || p.id || '';
+    if (!val) return '';
     return `<option value="${escapeHtml(val)}" ${selected === val ? 'selected' : ''}>${escapeHtml(label)}</option>`;
   }).join('');
 }
@@ -347,23 +349,55 @@ function renderProjectOptions(selected) {
 /**
  * Pre-fetch dynamic catalogs for sources and projects without blocking view render.
  */
-async function loadFilterCatalogs() {
-  if (!cachedSourcesList) {
+async function loadFilterCatalogs(sourceSelect, projectSelect, selectedSource = 'all', selectedProject = 'all') {
+  if (cachedSourcesList === null) {
     try {
       const res = await api.sources();
-      if (res && res.sources) cachedSourcesList = res.sources;
+      if (res && Array.isArray(res.sources)) {
+        cachedSourcesList = res.sources;
+        if (sourceSelect) {
+          const currentVal = sourceSelect.value || selectedSource;
+          sourceSelect.innerHTML = `<option value="all" ${currentVal === 'all' ? 'selected' : ''}>All Ingested Sources</option>${renderSourceOptions(currentVal)}`;
+        }
+      } else {
+        cachedSourcesList = [];
+        if (sourceSelect) {
+          const currentVal = sourceSelect.value || selectedSource;
+          sourceSelect.innerHTML = `<option value="all" ${currentVal === 'all' ? 'selected' : ''}>All Ingested Sources</option>${renderSourceOptions(currentVal)}`;
+        }
+      }
     } catch {
-      // Degrades safely to default sources
+      cachedSourcesList = [];
+      if (sourceSelect) {
+        const currentVal = sourceSelect.value || selectedSource;
+        sourceSelect.innerHTML = `<option value="all" ${currentVal === 'all' ? 'selected' : ''}>All Ingested Sources</option>${renderSourceOptions(currentVal)}`;
+      }
     }
   }
-  if (!cachedProjectsList) {
+  if (cachedProjectsList === null) {
     try {
       const res = await api.getProjects();
-      if (res && res.projects) cachedProjectsList = res.projects;
+      if (res && Array.isArray(res.projects)) {
+        cachedProjectsList = res.projects;
+        if (projectSelect) {
+          const currentVal = projectSelect.value || selectedProject;
+          projectSelect.innerHTML = `<option value="all" ${currentVal === 'all' ? 'selected' : ''}>General Corpus (No Boost)</option>${renderProjectOptions(currentVal)}`;
+        }
+      } else {
+        cachedProjectsList = [];
+      }
     } catch {
-      // Degrades safely to empty project list
+      cachedProjectsList = [];
     }
   }
+}
+
+/**
+ * Resets cached source and project catalogs (used for isolated testing).
+ */
+export function resetSearchFilterCatalogsCache() {
+  cachedSourcesList = null;
+  cachedProjectsList = null;
 }
 
 /**
@@ -374,7 +408,7 @@ export function renderSearchResultCard(item) {
   const title = item.title || item.canonical_title || 'Untitled Discovery';
   const scorePct = typeof item.score === 'number' ? Math.round(item.score * 100) : null;
   const verifScore = typeof item.verification_score === 'number' ? item.verification_score : null;
-  const claimStatus = item.claim_status || (verifScore !== null ? 'supported' : null);
+  const claimStatus = item.claim_status ?? null;
   const maturity = item.maturity || null;
   const riskLevel = item.risk || null;
   const riskStatus = item.risk_status || (riskLevel ? 'assessed' : 'not_assessed');
@@ -410,7 +444,7 @@ export function renderSearchResultCard(item) {
       <div class="search-result-meta-row">
         ${renderVerificationBadge(claimStatus, verifScore)}
         ${renderMaturityBadge(maturity)}
-        ${renderRiskBadge(riskLevel, riskStatus)}
+        ${renderRiskBadge(riskStatus, riskLevel)}
         ${projectRel !== null ? `<span class="chip mono" title="Relevance to active project context">Project Rel: ${projectRel}%</span>` : ''}
       </div>
 

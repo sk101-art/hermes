@@ -107,6 +107,7 @@ import {
   renderSearchView,
   renderSearchResultCard,
   renderRankingDecomposition,
+  resetSearchFilterCatalogsCache,
 } from '../src/views/search.js';
 
 /* ==========================================================================
@@ -1346,27 +1347,143 @@ test('Search View handles API error state gracefully with accessible error messa
 });
 
 
-test('Search View populates source catalog dynamically from /sources with fallback to defaults', async () => {
+test('Search Result Card never infers canonical ClaimStatus from verification score alone', () => {
+  // Case A: Supported claim with score
+  const itemSupported = {
+    entity_id: 'cl_supp',
+    title: 'Supported Discovery',
+    score: 0.85,
+    verification_score: 0.72,
+    claim_status: 'supported',
+    sources: ['github'],
+  };
+  const htmlSupp = renderSearchResultCard(itemSupported);
+  assert.ok(htmlSupp.includes('Supported (72%)'));
+  assert.ok(htmlSupp.includes('badge-verification-supported'));
+
+  // Case B: Null claim status with score -> must NEVER become Supported
+  const itemNullStatus = {
+    entity_id: 'cl_null_status',
+    title: 'Unassessed Status Discovery',
+    score: 0.85,
+    verification_score: 0.72,
+    claim_status: null,
+    sources: ['github'],
+  };
+  const htmlNullStatus = renderSearchResultCard(itemNullStatus);
+  assert.ok(htmlNullStatus.includes('Not assessed (72%)') || htmlNullStatus.includes('badge-verification-unassessed'));
+  assert.ok(!htmlNullStatus.includes('Supported (72%)'));
+  assert.ok(!htmlNullStatus.includes('badge-verification-supported'));
+
+  // Case C: Contradicted claim with score
+  const itemContra = {
+    entity_id: 'cl_contra',
+    title: 'Contradicted Discovery',
+    score: 0.85,
+    verification_score: 0.72,
+    claim_status: 'contradicted',
+    sources: ['arxiv'],
+  };
+  const htmlContra = renderSearchResultCard(itemContra);
+  assert.ok(htmlContra.includes('Contradicted (72%)'));
+  assert.ok(htmlContra.includes('badge-verification-contradicted'));
+  assert.ok(!htmlContra.includes('Supported (72%)'));
+});
+
+test('Search Result Card correctly passes riskStatus and riskLevel to renderRiskBadge', () => {
+  const cases = [
+    { status: 'assessed', level: 'low', expectedText: 'Low risk', expectedClass: 'badge-risk-low' },
+    { status: 'assessed', level: 'medium', expectedText: 'Medium risk', expectedClass: 'badge-risk-medium' },
+    { status: 'assessed', level: 'high', expectedText: 'High risk', expectedClass: 'badge-risk-high' },
+    { status: 'assessed', level: 'critical', expectedText: 'Critical risk', expectedClass: 'badge-risk-critical' },
+    { status: 'not_assessed', level: null, expectedText: 'Risk: Not assessed', expectedClass: 'badge-risk-not_assessed' },
+    { status: 'insufficient_data', level: null, expectedText: 'Risk: Insufficient data', expectedClass: 'badge-risk-insufficient_data' },
+  ];
+
+  for (const c of cases) {
+    const item = {
+      entity_id: `cl_risk_${c.level || c.status}`,
+      title: `Risk Test ${c.status} ${c.level}`,
+      score: 0.8,
+      risk: c.level,
+      risk_status: c.status,
+      sources: ['github'],
+    };
+    const html = renderSearchResultCard(item);
+    assert.ok(html.includes(c.expectedText), `Expected "${c.expectedText}" in HTML for ${c.status}/${c.level}`);
+    assert.ok(html.includes(c.expectedClass), `Expected class "${c.expectedClass}" in HTML for ${c.status}/${c.level}`);
+  }
+});
+
+test('Source control renders only returned sources on /sources success and no fabricated options on empty or failure', async () => {
+  // Test Case 1: /sources success with specific sources
+  resetSearchFilterCatalogsCache();
   fetchMock = async (url) => {
     if (url.includes('/sources')) {
-      return { ok: true, status: 200, json: async () => ({ sources: [{ name: 'custom_feed', display_name: 'Custom Feed' }] }) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sources: [
+            { id: 'custom_source_a', name: 'custom_source_a', display_name: 'Custom Source A' },
+            { id: 'custom_source_b', name: 'custom_source_b', display_name: 'Custom Source B' },
+          ],
+        }),
+      };
     }
     return { ok: true, status: 200, json: async () => ({ count: 0, results: [] }) };
   };
 
-  const container = createMockContainer();
-  const store = {
-    state: {},
-    getState: () => store.state,
-    setState: (s) => Object.assign(store.state, s),
-    setConnection: () => {},
+  const container1 = createMockContainer();
+  const store1 = { state: {}, getState: () => store1.state, setState: (s) => Object.assign(store1.state, s), setConnection: () => {} };
+  await renderSearchView(container1, store1, { q: '' });
+
+  const sourceSelect1 = container1.querySelector('#search-source-select');
+  assert.ok(sourceSelect1.innerHTML.includes('Custom Source A'));
+  assert.ok(sourceSelect1.innerHTML.includes('Custom Source B'));
+  // Fabricated adapters must NOT appear if not in response
+  assert.ok(!sourceSelect1.innerHTML.includes('openalex'));
+  assert.ok(!sourceSelect1.innerHTML.includes('crossref'));
+
+  // Test Case 2: /sources empty -> no fabricated source options
+  resetSearchFilterCatalogsCache();
+  fetchMock = async (url) => {
+    if (url.includes('/sources')) {
+      return { ok: true, status: 200, json: async () => ({ sources: [] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ count: 0, results: [] }) };
   };
 
-  await renderSearchView(container, store, { q: '' });
-  assert.ok(container.innerHTML.includes('search-source-select'));
+  const container2 = createMockContainer();
+  const store2 = { state: {}, getState: () => store2.state, setState: (s) => Object.assign(store2.state, s), setConnection: () => {} };
+  await renderSearchView(container2, store2, { q: '' });
+
+  const sourceSelect2 = container2.querySelector('#search-source-select');
+  assert.ok(sourceSelect2.innerHTML.includes('All Ingested Sources'));
+  assert.ok(!sourceSelect2.innerHTML.includes('github'));
+  assert.ok(!sourceSelect2.innerHTML.includes('arxiv'));
+
+  // Test Case 3: /sources failure -> no fabricated source options
+  resetSearchFilterCatalogsCache();
+  fetchMock = async (url) => {
+    if (url.includes('/sources')) {
+      return { ok: false, status: 500, statusText: 'Internal Error' };
+    }
+    return { ok: true, status: 200, json: async () => ({ count: 0, results: [] }) };
+  };
+
+  const container3 = createMockContainer();
+  const store3 = { state: {}, getState: () => store3.state, setState: (s) => Object.assign(store3.state, s), setConnection: () => {} };
+  await renderSearchView(container3, store3, { q: '' });
+
+  const sourceSelect3 = container3.querySelector('#search-source-select');
+  assert.ok(sourceSelect3.innerHTML.includes('All Ingested Sources'));
+  assert.ok(!sourceSelect3.innerHTML.includes('github'));
+  assert.ok(!sourceSelect3.innerHTML.includes('huggingface'));
 
   fetchMock = null;
 });
+
 
 
 
