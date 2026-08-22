@@ -10,18 +10,25 @@ import { escapeHtml, formatDate, formatTime, ensureArray, toTitleCase } from '..
 
 let _activeRuntimeRequestId = 0;
 
-function formatNullOrVal(val, fallback = '—') {
-  if (val === null || val === undefined) {
-    return fallback;
+function formatFiniteNumber(val, fallback = '—') {
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return String(val);
   }
-  return String(val);
+  return fallback;
+}
+
+function formatMetricNumber(val, fallback = 'Not recorded') {
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return String(val);
+  }
+  return fallback;
 }
 
 function formatNullOrSeconds(val) {
-  if (val === null || val === undefined) {
-    return '—';
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return `${val.toFixed(2)}s`;
   }
-  return `${Number(val).toFixed(2)}s`;
+  return '—';
 }
 
 function formatNullOrTime(isoStr) {
@@ -171,7 +178,7 @@ export async function renderRuntimeView(container, store) {
             ${daemon.pid ? `<span class="mono text-xs text-muted">PID ${daemon.pid}</span>` : ''}
           </div>
           <div class="text-xs text-muted" style="margin-top:4px;">
-            ${daemon.heartbeat_timestamp ? `Heartbeat: ${daemon.heartbeat_age_seconds !== null ? `${daemon.heartbeat_age_seconds}s ago` : formatNullOrTime(daemon.heartbeat_timestamp)}` : 'No heartbeat file'}
+            ${daemon.heartbeat_timestamp ? `Heartbeat: ${daemon.heartbeat_age_seconds !== null && daemon.heartbeat_age_seconds !== undefined ? `${daemon.heartbeat_age_seconds}s ago` : formatNullOrTime(daemon.heartbeat_timestamp)}` : 'No daemon heartbeat recorded'}
           </div>
         </div>
 
@@ -191,7 +198,7 @@ export async function renderRuntimeView(container, store) {
             ${escapeHtml(system.database || 'ok')}
           </div>
           <div class="text-xs text-muted" style="margin-top:4px;">
-            Disk: ${system.disk_free_mb !== null ? `${system.disk_free_mb} MB free` : '—'} (${escapeHtml(system.disk_status || 'ok')})
+            Disk: ${system.disk_free_mb !== null && system.disk_free_mb !== undefined ? `${system.disk_free_mb} MB free` : '—'} (${escapeHtml(system.disk_status || 'ok')})
           </div>
         </div>
       </div>
@@ -205,11 +212,11 @@ export async function renderRuntimeView(container, store) {
           <span class="text-xs text-muted">Per-provider poll intervals, attempt timestamps, backoff schedule, and failure tracking.</span>
         </div>
         <div class="runtime-summary-chips">
-          <span class="runtime-status-badge runtime-status-healthy">${srcCounts.healthy || 0} Healthy</span>
-          ${srcCounts.retrying ? `<span class="runtime-status-badge runtime-status-retrying">${srcCounts.retrying} Retrying</span>` : ''}
-          ${srcCounts.rate_limited ? `<span class="runtime-status-badge runtime-status-rate-limited">${srcCounts.rate_limited} Rate-Limited</span>` : ''}
-          ${srcCounts.degraded ? `<span class="runtime-status-badge runtime-status-degraded">${srcCounts.degraded} Degraded</span>` : ''}
-          ${srcCounts.disabled ? `<span class="runtime-status-badge runtime-status-disabled">${srcCounts.disabled} Disabled</span>` : ''}
+          ${typeof srcCounts.healthy === 'number' ? `<span class="runtime-status-badge runtime-status-healthy">${srcCounts.healthy} Healthy</span>` : ''}
+          ${typeof srcCounts.retrying === 'number' && srcCounts.retrying > 0 ? `<span class="runtime-status-badge runtime-status-retrying">${srcCounts.retrying} Retrying</span>` : ''}
+          ${typeof srcCounts.rate_limited === 'number' && srcCounts.rate_limited > 0 ? `<span class="runtime-status-badge runtime-status-rate-limited">${srcCounts.rate_limited} Rate-Limited</span>` : ''}
+          ${typeof srcCounts.degraded === 'number' && srcCounts.degraded > 0 ? `<span class="runtime-status-badge runtime-status-degraded">${srcCounts.degraded} Degraded</span>` : ''}
+          ${typeof srcCounts.disabled === 'number' && srcCounts.disabled > 0 ? `<span class="runtime-status-badge runtime-status-disabled">${srcCounts.disabled} Disabled</span>` : ''}
         </div>
       </div>
 
@@ -239,7 +246,7 @@ export async function renderRuntimeView(container, store) {
                 </td>
                 <td class="mono text-xs">${formatNullOrTime(s.last_attempt_at)}</td>
                 <td class="mono text-xs">${formatNullOrTime(s.last_success_at)}</td>
-                <td class="mono text-xs">${formatNullOrVal(s.consecutive_failures)}</td>
+                <td class="mono text-xs">${formatFiniteNumber(s.consecutive_failures)}</td>
                 <td class="text-xs">
                   ${s.next_retry_at ? `<span class="mono">${formatTime(s.next_retry_at)}</span> (${s.backoff_seconds ? `${Math.ceil(s.backoff_seconds / 60)}m backoff` : 'due'})` : escapeHtml(s.due_reason || '—')}
                 </td>
@@ -261,12 +268,12 @@ export async function renderRuntimeView(container, store) {
           <span class="text-xs text-muted">Autonomous background jobs, prerequisite satisfaction, and execution history.</span>
         </div>
         <div class="runtime-summary-chips">
-          <span class="runtime-status-badge runtime-status-completed">${jobCounts.completed || 0} Completed</span>
-          ${jobCounts.running ? `<span class="runtime-status-badge runtime-status-running">${jobCounts.running} Running</span>` : ''}
-          ${jobCounts.partial ? `<span class="runtime-status-badge runtime-status-partial">${jobCounts.partial} Partial</span>` : ''}
-          ${jobCounts.failed ? `<span class="runtime-status-badge runtime-status-failed">${jobCounts.failed} Failed</span>` : ''}
-          ${jobCounts.interrupted ? `<span class="runtime-status-badge runtime-status-interrupted">${jobCounts.interrupted} Interrupted</span>` : ''}
-          ${jobCounts.blocked ? `<span class="runtime-status-badge runtime-status-blocked">${jobCounts.blocked} Blocked</span>` : ''}
+          ${typeof jobCounts.completed === 'number' ? `<span class="runtime-status-badge runtime-status-completed">${jobCounts.completed} Completed</span>` : ''}
+          ${typeof jobCounts.running === 'number' && jobCounts.running > 0 ? `<span class="runtime-status-badge runtime-status-running">${jobCounts.running} Running</span>` : ''}
+          ${typeof jobCounts.partial === 'number' && jobCounts.partial > 0 ? `<span class="runtime-status-badge runtime-status-partial">${jobCounts.partial} Partial</span>` : ''}
+          ${typeof jobCounts.failed === 'number' && jobCounts.failed > 0 ? `<span class="runtime-status-badge runtime-status-failed">${jobCounts.failed} Failed</span>` : ''}
+          ${typeof jobCounts.interrupted === 'number' && jobCounts.interrupted > 0 ? `<span class="runtime-status-badge runtime-status-interrupted">${jobCounts.interrupted} Interrupted</span>` : ''}
+          ${typeof jobCounts.blocked === 'number' && jobCounts.blocked > 0 ? `<span class="runtime-status-badge runtime-status-blocked">${jobCounts.blocked} Blocked</span>` : ''}
         </div>
       </div>
 
@@ -295,7 +302,7 @@ export async function renderRuntimeView(container, store) {
                 </td>
                 <td class="mono text-xs">${formatNullOrTime(j.last_completed_at)}</td>
                 <td class="mono text-xs">${formatNullOrSeconds(j.duration_seconds)}</td>
-                <td class="mono text-xs">${formatNullOrVal(j.run_count)} / ${formatNullOrVal(j.failure_count)}</td>
+                <td class="mono text-xs">${formatFiniteNumber(j.run_count)} / ${formatFiniteNumber(j.failure_count)}</td>
                 <td class="text-xs">
                   ${j.blocked_by ? `<span class="text-danger" style="font-weight:600;">Blocked by ${escapeHtml(j.blocked_by)}</span>: ${escapeHtml(j.blocked_reason || '')}` : escapeHtml(j.next_schedule || '—')}
                 </td>
@@ -376,7 +383,7 @@ export async function renderRuntimeView(container, store) {
             </span>
           </div>
           <div class="text-xs text-muted" style="margin-top:4px;">
-            ${todayBriefing.generated ? `${todayBriefing.total_items ?? '—'} items snapshot on ${todayBriefing.date}` : `Scheduled for ${todayBriefing.date}`}
+            ${todayBriefing.generated ? `${typeof todayBriefing.total_items === 'number' ? `${todayBriefing.total_items} items` : 'Snapshot'} on ${escapeHtml(todayBriefing.date || '')}` : `Scheduled for ${escapeHtml(todayBriefing.date || '')}`}
           </div>
         </div>
 
@@ -386,29 +393,29 @@ export async function renderRuntimeView(container, store) {
             ${freshness.last_successful_ingestion ? formatNullOrTime(freshness.last_successful_ingestion) : 'Never completed'}
           </div>
           <div class="text-xs text-muted" style="margin-top:4px;">
-            Sources Polled: ${overview.lifetime_metrics?.sources_polled ?? 0}
+            Sources Polled: ${formatMetricNumber(overview.lifetime_metrics?.sources_polled)}
           </div>
         </div>
 
         <div class="runtime-diag-card">
           <div class="runtime-diag-label">Lifetime Events Ingested</div>
           <div class="runtime-diag-value">
-            ${overview.lifetime_metrics?.events_ingested ?? 0}
+            ${formatMetricNumber(overview.lifetime_metrics?.events_ingested)}
           </div>
           <div class="text-xs text-muted" style="margin-top:4px;">
-            Inbox Items: ${overview.lifetime_metrics?.inbox_items_generated ?? 0}
+            Inbox Items: ${formatMetricNumber(overview.lifetime_metrics?.inbox_items_generated)}
           </div>
         </div>
 
         <div class="runtime-diag-card">
           <div class="runtime-diag-label">Lifetime Job Outcomes</div>
           <div class="runtime-diag-value" style="font-size:var(--text-sm);">
-            <span class="text-success">${overview.lifetime_metrics?.jobs_completed ?? 0} ok</span> ·
-            <span class="text-danger">${overview.lifetime_metrics?.jobs_failed ?? 0} fails</span> ·
-            <span class="text-muted">${overview.lifetime_metrics?.jobs_interrupted ?? 0} intr</span>
+            <span class="text-success">${formatMetricNumber(overview.lifetime_metrics?.jobs_completed)} ok</span> ·
+            <span class="text-danger">${formatMetricNumber(overview.lifetime_metrics?.jobs_failed)} fails</span> ·
+            <span class="text-muted">${formatMetricNumber(overview.lifetime_metrics?.jobs_interrupted)} intr</span>
           </div>
           <div class="text-xs text-muted" style="margin-top:4px;">
-            Briefings: ${overview.lifetime_metrics?.briefings_generated ?? 0}
+            Briefings: ${formatMetricNumber(overview.lifetime_metrics?.briefings_generated)}
           </div>
         </div>
       </div>
@@ -433,6 +440,12 @@ export async function renderRuntimeView(container, store) {
     } else {
       store.setConnection('degraded', err.message);
       container.innerHTML = renderErrorState('Failed to Load Runtime Status', err.message);
+    }
+    const retryBtn = container.querySelector('#retry-btn');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', () => {
+        renderRuntimeView(container, store);
+      });
     }
   }
 }

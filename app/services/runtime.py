@@ -235,7 +235,24 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
             cached_briefing=latest_briefing,
         )
 
-        status = j_state.last_status if j_state else "pending"
+        last_st = j_state.last_status if j_state else "pending"
+        eval_st = j_state.evaluation_status if j_state and j_state.evaluation_status else (
+            "not_applicable" if "NOT_APPLICABLE" in due_reason else (
+                "due" if due else (
+                    "blocked" if j_state and j_state.blocked_by else "not_due"
+                )
+            )
+        )
+
+        # Operational status for badging: running > blocked > not_applicable > last execution status
+        if last_st == "running":
+            op_status = "running"
+        elif eval_st == "blocked":
+            op_status = "blocked"
+        elif eval_st == "not_applicable":
+            op_status = "not_applicable"
+        else:
+            op_status = last_st
 
         j_err_cat = None
         j_sanitized_err = None
@@ -246,7 +263,10 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
 
         j_rec = JobOperationalRecord(
             job_name=j_name,
-            status=status,
+            status=op_status,
+            last_status=last_st,
+            evaluation_status=eval_st,
+            evaluated_at=j_state.evaluated_at.isoformat() if j_state and j_state.evaluated_at else None,
             last_started_at=j_state.last_started_at.isoformat() if j_state and j_state.last_started_at else None,
             last_completed_at=j_state.last_completed_at.isoformat() if j_state and j_state.last_completed_at else None,
             duration_seconds=j_state.duration_seconds if j_state else None,
@@ -264,21 +284,21 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         job_records.append(j_rec)
 
         job_counts.total += 1
-        if status == "completed":
+        if op_status == "completed":
             job_counts.completed += 1
-        elif status == "running":
+        elif op_status == "running":
             job_counts.running += 1
-        elif status == "failed":
+        elif op_status == "failed":
             job_counts.failed += 1
-        elif status == "partial":
+        elif op_status == "partial":
             job_counts.partial += 1
-        elif status == "interrupted":
+        elif op_status == "interrupted":
             job_counts.interrupted += 1
-        elif status == "blocked":
+        elif op_status == "blocked":
             job_counts.blocked += 1
-        elif status in ("not_due", "skipped"):
+        elif op_status in ("not_due", "skipped"):
             job_counts.not_due += 1
-        elif status == "not_applicable":
+        elif op_status == "not_applicable":
             job_counts.not_applicable += 1
         else:
             job_counts.pending += 1

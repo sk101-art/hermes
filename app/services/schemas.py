@@ -541,6 +541,9 @@ class SourceOperationalRecord(BaseModel):
 class JobOperationalRecord(BaseModel):
     job_name: str
     status: str  # pending, running, completed, failed, partial, interrupted, blocked, skipped, not_due, not_applicable
+    last_status: str = "pending"  # latest execution outcome: pending, running, completed, failed, partial, interrupted
+    evaluation_status: str = "pending"  # latest scheduler evaluation: pending, due, not_due, blocked, not_applicable
+    evaluated_at: Optional[str] = None
     last_started_at: Optional[str] = None
     last_completed_at: Optional[str] = None
     duration_seconds: Optional[float] = None

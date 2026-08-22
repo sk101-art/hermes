@@ -202,10 +202,15 @@ def run_source_ingestion(
             db.increment_runtime_metric("events_ingested", new_events_count)
             logger.info(f"Source '{src_name}' complete: {new_events_count} new events persisted.")
         except Exception as e:
-            err_msg = str(e)
-            logger.warning(f"Source '{src_name}' failed: {err_msg}")
-            record_source_failure(src_name, err_msg, db, now=now, config=config)
-            results["sources_failed"].append({"source": src_name, "error": err_msg})
+            raw_err = str(e)
+            category, sanitized_err = sanitize_error(raw_err)
+            logger.warning(f"Source '{src_name}' failed: {sanitized_err}")
+            record_source_failure(src_name, sanitized_err, db, now=now, config=config)
+            results["sources_failed"].append({
+                "source": src_name,
+                "error": sanitized_err,
+                "error_category": category,
+            })
 
     # Determine aggregated ingestion status
     if results["sources_failed"]:

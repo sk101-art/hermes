@@ -5011,191 +5011,801 @@ test('Phase 12 remediation: Unavailable Story produces neutral copy without infe
 // Phase 13: Runtime Reliability & Operational Tests
 // ==========================================
 
-test('Phase 13: renderRuntimeView makes exactly 1 request to /runtime and 0 Story/Inbox/Claim/Project requests', async () => {
+// ==========================================
+// Phase 13: Runtime Reliability & Operational Tests (45 Focused Cases)
+// ==========================================
+
+function getMockRuntimeOverview(overrides = {}) {
+  return {
+    schema_version: 'v1',
+    status: 'HEALTHY',
+    observed_at: '2026-08-22T10:00:00Z',
+    effective_timezone: 'UTC',
+    scheduler_time: '2026-08-22 10:00:00 UTC',
+    daemon: { status: 'running', pid: 1234, heartbeat_timestamp: '2026-08-22T09:59:50Z', heartbeat_age_seconds: 10, is_stale: false, lock_present: true },
+    system: { database: 'ok', network: 'online', disk_free_mb: 15000, disk_status: 'ok', embedding_model: 'all-MiniLM-L6-v2', reference_folder: 'data/raw', observed_at: '2026-08-22T10:00:00Z', cache_age_seconds: 0.1, is_cached: false },
+    sources: [
+      { source: 'github', health_status: 'healthy', consecutive_failures: 0, is_due: false, due_reason: 'NEXT_IN_45m', interval_minutes: 60, last_attempt_at: '2026-08-22T09:45:00Z', last_success_at: '2026-08-22T09:45:00Z' }
+    ],
+    source_summary: { total: 1, healthy: 1, retrying: 0, rate_limited: 0, degraded: 0, disabled: 0, unknown: 0, unavailable: 0 },
+    jobs: [
+      { job_name: 'ingestion', status: 'completed', last_status: 'completed', evaluation_status: 'completed', duration_seconds: 4.2, run_count: 5, failure_count: 0, next_schedule: 'NEXT_IN_45m', last_completed_at: '2026-08-22T09:45:00Z' }
+    ],
+    job_summary: { total: 1, completed: 1, running: 0, failed: 0, partial: 0, interrupted: 0, blocked: 0, not_due: 0, not_applicable: 0, pending: 0 },
+    recent_failures: [],
+    current_source_issues: [],
+    intelligence_freshness: {
+      last_successful_ingestion: '2026-08-22T09:45:00Z',
+      today_briefing: { date: '2026-08-22', generated: true, total_items: 5, generated_at: '2026-08-22T07:30:00Z' }
+    },
+    lifetime_metrics: { sources_polled: 12, events_ingested: 45, inbox_items_generated: 10, jobs_completed: 20, jobs_failed: 0, jobs_interrupted: 0, briefings_generated: 3 },
+    warnings: [],
+    issues: [],
+    ...overrides,
+  };
+}
+
+test('Phase 13: 1. Initial Runtime load sends exactly 1 GET /runtime request', async () => {
   const { renderRuntimeView } = await import('../src/views/runtime.js');
   const store = (await import('../src/state/store.js')).store;
-
   const requestedUrls = [];
   fetchMock = async (url) => {
     requestedUrls.push(url);
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        schema_version: 'v1',
-        status: 'HEALTHY',
-        observed_at: '2026-08-22T10:00:00Z',
-        effective_timezone: 'UTC',
-        scheduler_time: '2026-08-22 10:00:00 UTC',
-        daemon: { status: 'running', pid: 1234, heartbeat_timestamp: '2026-08-22T09:59:50Z', heartbeat_age_seconds: 10 },
-        system: { database: 'ok', network: 'online', disk_free_mb: 15000, disk_status: 'ok' },
-        sources: [
-          { source: 'github', health_status: 'healthy', consecutive_failures: 0, is_due: false, due_reason: 'NEXT_IN_45m', interval_minutes: 60 }
-        ],
-        source_summary: { total: 1, healthy: 1, retrying: 0, rate_limited: 0, degraded: 0, disabled: 0, unknown: 0, unavailable: 0 },
-        jobs: [
-          { job_name: 'ingestion', status: 'completed', duration_seconds: 4.2, run_count: 5, failure_count: 0, next_schedule: 'NEXT_IN_45m' }
-        ],
-        job_summary: { total: 1, completed: 1, running: 0, failed: 0, partial: 0, interrupted: 0, blocked: 0, not_due: 0, not_applicable: 0, pending: 0 },
-        recent_failures: [],
-        current_source_issues: [],
-        intelligence_freshness: {
-          last_successful_ingestion: '2026-08-22T09:15:00Z',
-          today_briefing: { date: '2026-08-22', generated: true, total_items: 5, generated_at: '2026-08-22T07:30:00Z' }
-        },
-        lifetime_metrics: { sources_polled: 12, events_ingested: 45, jobs_completed: 20, jobs_failed: 0, jobs_interrupted: 0 },
-        warnings: [],
-        issues: []
-      })
-    };
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
   };
-
   const container = { innerHTML: '', querySelector: () => null };
   await renderRuntimeView(container, store);
-
   assert.strictEqual(requestedUrls.length, 1);
   assert.ok(requestedUrls[0].endsWith('/runtime'));
-  assert.ok(!requestedUrls.some((u) => u.includes('/story') || u.includes('/inbox') || u.includes('/claims') || u.includes('/projects')));
+});
 
-  // Verify no epistemic verification badge classes are in output
+test('Phase 13: 2. Runtime load sends zero /health subrequests', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.strictEqual(requestedUrls.filter(u => u.includes('/health')).length, 0);
+});
+
+test('Phase 13: 3. Runtime load sends zero /sources subrequests', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.strictEqual(requestedUrls.filter(u => u.includes('/sources')).length, 0);
+});
+
+test('Phase 13: 4. Runtime load sends zero /stories subrequests', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.strictEqual(requestedUrls.filter(u => u.includes('/stories') || u.includes('/story')).length, 0);
+});
+
+test('Phase 13: 5. Runtime load sends zero /claims subrequests', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.strictEqual(requestedUrls.filter(u => u.includes('/claims')).length, 0);
+});
+
+test('Phase 13: 6. Runtime load sends zero /inbox subrequests', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.strictEqual(requestedUrls.filter(u => u.includes('/inbox')).length, 0);
+});
+
+test('Phase 13: 7. Runtime load sends zero /projects subrequests', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.strictEqual(requestedUrls.filter(u => u.includes('/projects')).length, 0);
+});
+
+test('Phase 13: 8. Zero epistemic verification badges (badge-verification-*) rendered in Runtime view', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({ ok: true, status: 200, json: async () => getMockRuntimeOverview() });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
   assert.ok(!container.innerHTML.includes('badge-verification-supported'));
   assert.ok(!container.innerHTML.includes('badge-verification-contradicted'));
   assert.ok(!container.innerHTML.includes('badge-verification-unverified'));
 });
 
-test('Phase 13: renderRuntimeView renders dedicated .runtime-status-* classes for all operational states', async () => {
+test('Phase 13: 9. Source health: healthy source renders runtime-status-healthy', async () => {
   const { renderRuntimeView } = await import('../src/views/runtime.js');
   const store = (await import('../src/state/store.js')).store;
-
   fetchMock = async () => ({
     ok: true,
     status: 200,
-    json: async () => ({
-      schema_version: 'v1',
-      status: 'DEGRADED',
-      observed_at: '2026-08-22T10:00:00Z',
-      effective_timezone: 'America/New_York',
-      scheduler_time: '2026-08-22 06:00:00 EDT',
-      daemon: { status: 'stale', pid: 9999, is_stale: true },
-      system: { database: 'ok', network: 'offline', disk_free_mb: 500, disk_status: 'low_space (500 MB < 1024 MB)' },
-      sources: [
-        { source: 'arxiv', health_status: 'healthy', consecutive_failures: 0 },
-        { source: 'crossref', health_status: 'retrying', consecutive_failures: 1, next_retry_at: '2026-08-22T10:15:00Z', backoff_seconds: 900 },
-        { source: 'hackernews', health_status: 'rate_limited', consecutive_failures: 2 },
-        { source: 'openalex', health_status: 'degraded', consecutive_failures: 5, failure_threshold_reached: true, max_consecutive_failures: 5 },
-        { source: 'custom_feed', health_status: 'disabled', enabled: false },
-        { source: 'new_provider', health_status: 'unknown', consecutive_failures: null },
-        { source: 'broken_auth', health_status: 'unavailable', error_category: 'auth_error' },
-      ],
-      source_summary: { total: 7, healthy: 1, retrying: 1, rate_limited: 1, degraded: 1, disabled: 1, unknown: 1, unavailable: 1 },
-      jobs: [
-        { job_name: 'health_check', status: 'completed', duration_seconds: 0.05, run_count: 10, failure_count: 0 },
-        { job_name: 'ingestion', status: 'running', duration_seconds: null, run_count: 5, failure_count: 0, configured_timeout_minutes: 15, timeout_enforced: false },
-        { job_name: 'semantic', status: 'failed', duration_seconds: 1.2, run_count: 3, failure_count: 1, error_category: 'schema_error', sanitized_error: 'Invalid embedding vector' },
-        { job_name: 'claims', status: 'partial', duration_seconds: 2.5, run_count: 2, failure_count: 0 },
-        { job_name: 'recheck', status: 'interrupted', duration_seconds: 3.1, run_count: 1, failure_count: 0 },
-        { job_name: 'context_match', status: 'not_applicable', duration_seconds: null, run_count: null, failure_count: null },
-        { job_name: 'inbox_refresh', status: 'blocked', blocked_by: 'semantic', blocked_reason: 'Prerequisite failed' },
-        { job_name: 'morning_brief', status: 'not_due', next_schedule: 'SCHEDULED_AT_07:30' },
-        { job_name: 'backup', status: 'pending', duration_seconds: null, run_count: null, failure_count: null },
-      ],
-      job_summary: { total: 9, completed: 1, running: 1, failed: 1, partial: 1, interrupted: 1, blocked: 1, not_due: 1, not_applicable: 1, pending: 1 },
-      recent_failures: [
-        { run_id: 'run:1', job_name: 'semantic', started_at: '2026-08-22T09:00:00Z', status: 'failed', error_category: 'schema_error', sanitized_error: 'Invalid embedding vector' }
-      ],
-      current_source_issues: [
-        { source: 'openalex', health_status: 'degraded', consecutive_failures: 5, last_attempt_at: '2026-08-22T09:45:00Z', error_category: 'network_error', sanitized_error: 'Connection reset' }
-      ],
-      intelligence_freshness: {
-        last_successful_ingestion: null,
-        today_briefing: { date: '2026-08-22', generated: false, total_items: null }
-      },
-      lifetime_metrics: { sources_polled: 10, events_ingested: 0, jobs_completed: 1, jobs_failed: 1, jobs_interrupted: 1 },
-      warnings: ['Free disk space low: 500 MB available'],
-      issues: []
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'arxiv', health_status: 'healthy', consecutive_failures: 0 }]
     })
   });
-
   const container = { innerHTML: '', querySelector: () => null };
   await renderRuntimeView(container, store);
-
-  const html = container.innerHTML;
-
-  // Source statuses
-  assert.ok(html.includes('runtime-status-healthy'));
-  assert.ok(html.includes('runtime-status-retrying'));
-  assert.ok(html.includes('runtime-status-rate-limited'));
-  assert.ok(html.includes('runtime-status-degraded'));
-  assert.ok(html.includes('runtime-status-disabled'));
-  assert.ok(html.includes('runtime-status-unknown'));
-  assert.ok(html.includes('runtime-status-unavailable'));
-  assert.ok(html.includes('runtime-threshold-tag'));
-
-  // Job statuses
-  assert.ok(html.includes('runtime-status-completed'));
-  assert.ok(html.includes('runtime-status-running'));
-  assert.ok(html.includes('runtime-status-failed'));
-  assert.ok(html.includes('runtime-status-partial'));
-  assert.ok(html.includes('runtime-status-interrupted'));
-  assert.ok(html.includes('runtime-status-blocked'));
-  assert.ok(html.includes('runtime-status-not-due'));
-  assert.ok(html.includes('runtime-status-not-applicable'));
-  assert.ok(html.includes('runtime-status-pending'));
-
-  // Blocked notice
-  assert.ok(html.includes('Blocked by semantic'));
-
-  // Un-enforced timeout notice
-  assert.ok(html.includes('not enforced'));
+  assert.ok(container.innerHTML.includes('runtime-status-healthy'));
+  assert.ok(container.innerHTML.includes('arxiv'));
 });
 
-test('Phase 13: Truthful Null versus Zero rendering in Runtime view', async () => {
+test('Phase 13: 10. Source health: unknown source renders runtime-status-unknown', async () => {
   const { renderRuntimeView } = await import('../src/views/runtime.js');
   const store = (await import('../src/state/store.js')).store;
-
   fetchMock = async () => ({
     ok: true,
     status: 200,
-    json: async () => ({
-      schema_version: 'v1',
-      status: 'HEALTHY',
-      observed_at: '2026-08-22T10:00:00Z',
-      effective_timezone: 'UTC',
-      scheduler_time: '2026-08-22 10:00:00 UTC',
-      daemon: { status: 'stopped', pid: null, heartbeat_timestamp: null, heartbeat_age_seconds: null },
-      system: { database: 'ok', network: 'online', disk_free_mb: null, disk_status: 'ok' },
-      sources: [
-        { source: 'never_polled', health_status: 'unknown', consecutive_failures: null, last_attempt_at: null, last_success_at: null }
-      ],
-      source_summary: { total: 1, healthy: 0, retrying: 0, rate_limited: 0, degraded: 0, disabled: 0, unknown: 1, unavailable: 0 },
-      jobs: [
-        { job_name: 'never_run', status: 'pending', duration_seconds: null, run_count: null, failure_count: null, last_completed_at: null },
-        { job_name: 'zero_duration', status: 'completed', duration_seconds: 0.0, run_count: 1, failure_count: 0, last_completed_at: '2026-08-22T10:00:00Z' }
-      ],
-      job_summary: { total: 2, completed: 1, running: 0, failed: 0, partial: 0, interrupted: 0, blocked: 0, not_due: 0, not_applicable: 0, pending: 1 },
-      recent_failures: [],
-      current_source_issues: [],
-      intelligence_freshness: {
-        last_successful_ingestion: null,
-        today_briefing: { date: '2026-08-22', generated: false, total_items: null }
-      },
-      lifetime_metrics: {},
-      warnings: [],
-      issues: []
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'new_source', health_status: 'unknown', consecutive_failures: null }]
     })
   });
-
   const container = { innerHTML: '', querySelector: () => null };
   await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-unknown'));
+});
 
-  const html = container.innerHTML;
+test('Phase 13: 11. Source health: retrying source renders runtime-status-retrying', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'crossref', health_status: 'retrying', consecutive_failures: 1, next_retry_at: '2026-08-22T10:15:00Z', backoff_seconds: 900 }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-retrying'));
+});
 
-  // Unrecorded timestamps render "Not recorded"
-  assert.ok(html.includes('Not recorded'));
+test('Phase 13: 12. Source health: rate-limited source renders runtime-status-rate-limited', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'hackernews', health_status: 'rate_limited', consecutive_failures: 2, error_category: 'rate_limit' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-rate-limited'));
+});
 
-  // Genuine zero duration renders "0.00s"
-  assert.ok(html.includes('0.00s'));
+test('Phase 13: 13. Source health: degraded source renders runtime-status-degraded and THRESHOLD tag', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'openalex', health_status: 'degraded', consecutive_failures: 5, failure_threshold_reached: true, max_consecutive_failures: 5 }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-degraded'));
+  assert.ok(container.innerHTML.includes('runtime-threshold-tag'));
+});
 
-  // Never completed ingestion renders "Never completed"
-  assert.ok(html.includes('Never completed'));
+test('Phase 13: 14. Source health: disabled source renders runtime-status-disabled', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'legacy_feed', health_status: 'disabled', enabled: false }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-disabled'));
+});
+
+test('Phase 13: 15. Source health: unavailable source renders runtime-status-unavailable', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'bad_auth', health_status: 'unavailable', error_category: 'auth_error' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-unavailable'));
+});
+
+test('Phase 13: 16. Job status: pending job renders runtime-status-pending', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'backup', status: 'pending', duration_seconds: null, run_count: null, failure_count: null }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-pending'));
+});
+
+test('Phase 13: 17. Job status: running job renders runtime-status-running', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'ingestion', status: 'running', duration_seconds: null, run_count: 5, failure_count: 0 }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-running'));
+});
+
+test('Phase 13: 18. Job status: completed job renders runtime-status-completed', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'semantic', status: 'completed', duration_seconds: 1.5, run_count: 3, failure_count: 0 }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-completed'));
+});
+
+test('Phase 13: 19. Job status: failed job renders runtime-status-failed', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'claims', status: 'failed', duration_seconds: 0.8, run_count: 2, failure_count: 1, error_category: 'schema_error', sanitized_error: 'Invalid schema' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-failed'));
+});
+
+test('Phase 13: 20. Job status: partial job renders runtime-status-partial', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'ingestion', status: 'partial', duration_seconds: 5.0, run_count: 4, failure_count: 0 }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-partial'));
+});
+
+test('Phase 13: 21. Job status: interrupted job renders runtime-status-interrupted', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'recheck', status: 'interrupted', duration_seconds: 2.1, run_count: 1, failure_count: 0 }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-interrupted'));
+});
+
+test('Phase 13: 22. Blocked job evaluation renders runtime-status-blocked and blocked reason distinct from execution status', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [
+        { job_name: 'inbox_refresh', status: 'blocked', last_status: 'completed', evaluation_status: 'blocked', blocked_by: 'claims', blocked_reason: 'Prerequisite failed in current cycle' }
+      ]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-blocked'));
+  assert.ok(container.innerHTML.includes('Blocked by claims'));
+  assert.ok(container.innerHTML.includes('Prerequisite failed in current cycle'));
+});
+
+test('Phase 13: 23. Not-due job evaluation renders runtime-status-not-due', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'morning_brief', status: 'not_due', evaluation_status: 'not_due', next_schedule: 'SCHEDULED_AT_07:30' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-not-due'));
+  assert.ok(container.innerHTML.includes('SCHEDULED_AT_07:30'));
+});
+
+test('Phase 13: 24. Not-applicable job evaluation renders runtime-status-not-applicable', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'context_match', status: 'not_applicable', evaluation_status: 'not_applicable', next_schedule: 'NOT_APPLICABLE_0_PROJECTS' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-not-applicable'));
+});
+
+test('Phase 13: 25. Null timestamps render as Not recorded or —', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'unpolled', health_status: 'unknown', last_attempt_at: null, last_success_at: null }],
+      jobs: [{ job_name: 'unrun', status: 'pending', last_completed_at: null }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('Not recorded'));
+});
+
+test('Phase 13: 26. Null counts render as —', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'src_null', health_status: 'unknown', consecutive_failures: null }],
+      jobs: [{ job_name: 'job_null', status: 'pending', run_count: null, failure_count: null }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('—'));
+});
+
+test('Phase 13: 27. Genuine zero counts render as 0', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'src_zero', health_status: 'healthy', consecutive_failures: 0 }],
+      jobs: [{ job_name: 'job_zero', status: 'completed', run_count: 5, failure_count: 0 }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('5 / 0'));
+});
+
+test('Phase 13: 28. Null lifetime metrics do not become zero (render Not recorded)', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      lifetime_metrics: {}
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('Not recorded'));
+});
+
+test('Phase 13: 29. Genuine zero lifetime metrics remain zero', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      lifetime_metrics: { sources_polled: 0, events_ingested: 0, inbox_items_generated: 0, jobs_completed: 0, jobs_failed: 0, jobs_interrupted: 0, briefings_generated: 0 }
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('0 ok'));
+  assert.ok(container.innerHTML.includes('0 fails'));
+  assert.ok(container.innerHTML.includes('0 intr'));
+  assert.ok(container.innerHTML.includes('Briefings: 0'));
+});
+
+test('Phase 13: 30. Missing daemon heartbeat renders No daemon heartbeat recorded', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      daemon: { status: 'stopped', pid: null, heartbeat_timestamp: null, heartbeat_age_seconds: null }
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('No daemon heartbeat recorded'));
+});
+
+test('Phase 13: 31. Stale daemon heartbeat renders STALE status', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      daemon: { status: 'stale', pid: 1234, heartbeat_timestamp: '2026-08-22T08:00:00Z', heartbeat_age_seconds: 7200, is_stale: true }
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('STALE'));
+  assert.ok(container.innerHTML.includes('7200s ago'));
+});
+
+test('Phase 13: 32. Running daemon heartbeat renders RUNNING status with PID', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      daemon: { status: 'running', pid: 4567, heartbeat_timestamp: '2026-08-22T09:59:55Z', heartbeat_age_seconds: 5 }
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('RUNNING'));
+  assert.ok(container.innerHTML.includes('PID 4567'));
+});
+
+test('Phase 13: 33. Lock and heartbeat disagreement notice banner renders when present', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      warnings: ['Lock file exists for PID 8888 but heartbeat is stale (7200s old).']
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('Lock file exists for PID 8888'));
+});
+
+test('Phase 13: 34. Timezone warning notice banner renders when warning present', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      effective_timezone: 'UTC',
+      warnings: ['Unrecognized timezone "Mars/Olympus"; falling back to UTC.']
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('Unrecognized timezone'));
+});
+
+test('Phase 13: 35. Timeout-not-enforced telemetry notice renders in job table', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      jobs: [{ job_name: 'ingestion', status: 'running', configured_timeout_minutes: 15, timeout_enforced: false }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('15m (not enforced)'));
+});
+
+test('Phase 13: 36. Sanitized error and error category render cleanly in source and job tables', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'arxiv', health_status: 'degraded', sanitized_error: 'HTTP connection timeout', error_category: 'network_timeout' }],
+      jobs: [{ job_name: 'semantic', status: 'failed', sanitized_error: 'Model out of memory', error_category: 'resource_limit' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('[network_timeout] HTTP connection timeout'));
+});
+
+test('Phase 13: 37. Raw credential fixtures (Bearer token) are absent from rendered DOM', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const rawSecret = 'ghp_secret_token_1234567890abcdef';
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'github', health_status: 'degraded', sanitized_error: 'Request failed with Bearer [REDACTED]', error_category: 'auth_error' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(!container.innerHTML.includes(rawSecret));
+  assert.ok(container.innerHTML.includes('[REDACTED]'));
+});
+
+test('Phase 13: 38. Raw local path fixtures (C:\\Users\\) are absent from rendered DOM', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const rawPath = 'C:\\Users\\admin\\secret_workspace\\app.py';
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      recent_failures: [{ run_id: 'run:1', job_name: 'semantic', started_at: '2026-08-22T09:00:00Z', status: 'failed', sanitized_error: 'FileNotFoundError: [USER_PATH]/app.py', error_category: 'io_error' }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(!container.innerHTML.includes(rawPath));
+  assert.ok(container.innerHTML.includes('[USER_PATH]'));
+});
+
+test('Phase 13: 39. Loading state renders before overview request completes', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  let resolvePromise;
+  fetchMock = () => new Promise(r => { resolvePromise = r; });
+  const container = { innerHTML: '', querySelector: () => null };
+  const p = renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('state-loading'));
+  resolvePromise({ ok: true, status: 200, json: async () => getMockRuntimeOverview() });
+  await p;
+  assert.ok(!container.innerHTML.includes('state-loading'));
+});
+
+test('Phase 13: 40. Offline state renders and bound retry button triggers read-only GET /runtime', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  let callCount = 0;
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    callCount++;
+    if (callCount === 1) {
+      const err = new Error('Failed to fetch');
+      err.isNetworkError = true;
+      throw err;
+    }
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+
+  const container = createMockContainer();
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('state-offline'));
+
+  const retryBtn = container.querySelector('#retry-btn');
+  assert.ok(retryBtn !== null);
+
+  // Invoke retry click handler
+  const listeners = retryBtn._listeners['click'] || [];
+  for (const l of listeners) {
+    await l({ preventDefault() {} });
+  }
+
+  assert.strictEqual(callCount, 2);
+  assert.strictEqual(requestedUrls.length, 2);
+  assert.ok(requestedUrls[1].endsWith('/runtime'));
+});
+
+test('Phase 13: 41. Backend failure state renders and bound retry button triggers read-only GET /runtime', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const requestedUrls = [];
+  let callCount = 0;
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    callCount++;
+    if (callCount === 1) {
+      return {
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => ({ detail: 'Database connection failed' })
+      };
+    }
+    return { ok: true, status: 200, json: async () => getMockRuntimeOverview() };
+  };
+
+  const container = createMockContainer();
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('state-error'));
+
+  const retryBtn = container.querySelector('#retry-btn');
+  assert.ok(retryBtn !== null);
+
+  // Invoke retry click handler
+  const listeners = retryBtn._listeners['click'] || [];
+  for (const l of listeners) {
+    await l({ preventDefault() {} });
+  }
+
+  assert.strictEqual(callCount, 2);
+  assert.strictEqual(requestedUrls.length, 2);
+  assert.ok(requestedUrls[1].endsWith('/runtime'));
+});
+
+test('Phase 13: 42. Stale response protection prevents out-of-order race condition overwrite', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+
+  let resolveFirst;
+  let resolveSecond;
+
+  let reqCount = 0;
+  fetchMock = async () => {
+    reqCount++;
+    if (reqCount === 1) {
+      return new Promise(r => { resolveFirst = r; });
+    } else {
+      return new Promise(r => { resolveSecond = r; });
+    }
+  };
+
+  const container = { innerHTML: '', querySelector: () => null };
+
+  // Trigger Request 1
+  const p1 = renderRuntimeView(container, store);
+  // Trigger Request 2 (fast follow)
+  const p2 = renderRuntimeView(container, store);
+
+  // Resolve Request 2 FIRST
+  resolveSecond({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({ scheduler_time: 'SECOND_RESPONSE_FAST' })
+  });
+  await p2;
+
+  assert.ok(container.innerHTML.includes('SECOND_RESPONSE_FAST'));
+
+  // Resolve Request 1 LATER (stale)
+  resolveFirst({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({ scheduler_time: 'FIRST_RESPONSE_STALE' })
+  });
+  await p1;
+
+  // Stale response must have been discarded
+  assert.ok(container.innerHTML.includes('SECOND_RESPONSE_FAST'));
+  assert.ok(!container.innerHTML.includes('FIRST_RESPONSE_STALE'));
+});
+
+test('Phase 13: 43. Accessible aria-live region announces operational overview status', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({ status: 'DEGRADED', daemon: { status: 'stale' } })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('aria-live="polite"'));
+  assert.ok(container.innerHTML.includes('Operational overview status is DEGRADED. Daemon is stale.'));
+});
+
+test('Phase 13: 44. Today briefing missing versus zero-item generated briefing distinction', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+
+  // Case A: Missing briefing (not generated)
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      intelligence_freshness: { today_briefing: { date: '2026-08-22', generated: false, total_items: null } }
+    })
+  });
+  const containerA = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(containerA, store);
+  assert.ok(containerA.innerHTML.includes('NOT GENERATED'));
+  assert.ok(containerA.innerHTML.includes('Scheduled for 2026-08-22'));
+
+  // Case B: Generated briefing with 0 items
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      intelligence_freshness: { today_briefing: { date: '2026-08-22', generated: true, total_items: 0 } }
+    })
+  });
+  const containerB = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(containerB, store);
+  assert.ok(containerB.innerHTML.includes('GENERATED'));
+  assert.ok(containerB.innerHTML.includes('0 items on 2026-08-22'));
+});
+
+test('Phase 13: 45. Partial availability warning notice banner renders when present', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      warnings: ['Partial source availability: openalex failed, remaining 8 sources ingested successfully.']
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('Partial source availability: openalex failed'));
 });

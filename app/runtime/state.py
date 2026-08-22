@@ -116,10 +116,16 @@ def record_source_success(
     cursor: Optional[str] = None,
     event_time: Optional[datetime] = None,
     now: Optional[datetime] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> SourceCheckpoint:
     """Updates source checkpoint on successful fetch and persistence, resetting failure counters."""
     if now is None:
         now = datetime.now(timezone.utc)
+    if config is None:
+        config = load_runtime_config()
+
+    src_cfg = config.get("sources", {}).get(source_name, {})
+    max_fails = src_cfg.get("max_consecutive_failures", 5)
 
     existing = db.get_source_checkpoint(source_name)
     cp = SourceCheckpoint(
@@ -132,6 +138,7 @@ def record_source_success(
         last_error_category=None,
         consecutive_failures=0,
         failure_threshold_reached=False,
+        max_consecutive_failures=max_fails,
         next_retry_at=None,
         health_status="healthy",
         updated_at=now,
@@ -221,6 +228,8 @@ def start_job_run(
         last_started_at=now,
         last_completed_at=job.last_completed_at if job else None,
         last_status="running",
+        evaluation_status="due",
+        evaluated_at=now,
         last_error=None,
         last_error_category=None,
         duration_seconds=None,
@@ -271,6 +280,8 @@ def finish_job_run(
         last_started_at=job.last_started_at if job else run.started_at,
         last_completed_at=now,
         last_status=status,
+        evaluation_status=status,
+        evaluated_at=now,
         last_error=sanitized_err,
         last_error_category=category,
         duration_seconds=round(duration, 2),

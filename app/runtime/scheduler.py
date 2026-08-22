@@ -281,7 +281,7 @@ def execute_job(
             if runner_status in ("export_failed", "failed"):
                 err = res.get("error", "Runner reported failure status")
                 finish_job_run(run_rec, status="failed", items_processed=items_count, error_summary=err, db=db, now=datetime.now(timezone.utc))
-                return {"job_name": job_name, "status": "failed", "duration_seconds": run_rec.duration_seconds, "error": err, "result": res}
+                return {"job_name": job_name, "status": "failed", "duration_seconds": run_rec.duration_seconds, "error": run_rec.error_summary, "error_category": run_rec.error_category, "result": res}
             elif runner_status == "partial":
                 finish_job_run(run_rec, status="partial", items_processed=items_count, db=db, now=datetime.now(timezone.utc))
                 return {"job_name": job_name, "status": "partial", "duration_seconds": run_rec.duration_seconds, "result": res}
@@ -293,10 +293,11 @@ def execute_job(
                 logger.info(f"Job '{job_name}' completed successfully in {run_rec.duration_seconds}s.")
                 return {"job_name": job_name, "status": "completed", "duration_seconds": run_rec.duration_seconds, "result": res}
     except Exception as e:
-        err_msg = str(e)
-        logger.error(f"Job '{job_name}' failed with error: {err_msg}", exc_info=True)
-        finish_job_run(run_rec, status="failed", items_processed=0, error_summary=err_msg, db=db, now=datetime.now(timezone.utc))
-        return {"job_name": job_name, "status": "failed", "error": err_msg}
+        raw_err = str(e)
+        category, sanitized_err = sanitize_error(raw_err)
+        logger.error(f"Job '{job_name}' failed with error: {sanitized_err}", exc_info=True)
+        finish_job_run(run_rec, status="failed", items_processed=0, error_summary=sanitized_err, db=db, now=datetime.now(timezone.utc))
+        return {"job_name": job_name, "status": "failed", "error": run_rec.error_summary or sanitized_err, "error_category": run_rec.error_category or category}
 
 
 def run_all_due_jobs(
@@ -317,8 +318,18 @@ def run_all_due_jobs(
     for j_name in JOB_DEPENDENCIES_ORDER:
         is_due, reason = is_job_due(j_name, db, now, config)
         if not is_due:
-            cycle_results[j_name] = "not_due"
-            results.append({"job_name": j_name, "status": "skipped", "reason": reason})
+            eval_st = "not_applicable" if "NOT_APPLICABLE" in reason else "not_due"
+            cycle_results[j_name] = eval_st
+            results.append({"job_name": j_name, "status": "skipped", "reason": reason, "evaluation_status": eval_st})
+
+            job_rec = db.get_runtime_job(j_name)
+            if job_rec:
+                job_rec.evaluation_status = eval_st
+                job_rec.evaluated_at = now
+                job_rec.blocked_by = None
+                job_rec.blocked_reason = None
+                job_rec.updated_at = now
+                db.save_runtime_job(job_rec)
             continue
 
         # Check dependencies before starting execution
@@ -332,13 +343,16 @@ def run_all_due_jobs(
             if not job_rec:
                 job_rec = RuntimeJob(
                     job_name=j_name,
-                    last_status="blocked",
+                    last_status="pending",
+                    evaluation_status="blocked",
+                    evaluated_at=now,
                     blocked_by=blocked_by,
                     blocked_reason=blocked_reason,
                     updated_at=now,
                 )
             else:
-                job_rec.last_status = "blocked"
+                job_rec.evaluation_status = "blocked"
+                job_rec.evaluated_at = now
                 job_rec.blocked_by = blocked_by
                 job_rec.blocked_reason = blocked_reason
                 job_rec.updated_at = now
@@ -347,6 +361,7 @@ def run_all_due_jobs(
             results.append({
                 "job_name": j_name,
                 "status": "blocked",
+                "evaluation_status": "blocked",
                 "blocked_by": blocked_by,
                 "reason": blocked_reason,
             })

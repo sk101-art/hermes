@@ -227,19 +227,26 @@ class Database:
                 except Exception:
                     pass
 
-        # Phase 13: Runtime error categories and blocked reasons
+        # Phase 13: Runtime error categories, threshold state, evaluation status, and blocked reasons
         scp_info = self.conn.execute("PRAGMA table_info(source_checkpoints)").fetchall()
         existing_scp_cols = {r["name"] for r in scp_info}
-        if "last_error_category" not in existing_scp_cols:
-            try:
-                self.conn.execute("ALTER TABLE source_checkpoints ADD COLUMN last_error_category TEXT")
-            except Exception:
-                pass
+        for col_name, col_def in [
+            ("last_error_category", "TEXT"),
+            ("failure_threshold_reached", "INTEGER DEFAULT 0"),
+            ("max_consecutive_failures", "INTEGER DEFAULT 5"),
+        ]:
+            if col_name not in existing_scp_cols:
+                try:
+                    self.conn.execute(f"ALTER TABLE source_checkpoints ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
 
         rj_info = self.conn.execute("PRAGMA table_info(runtime_jobs)").fetchall()
         existing_rj_cols = {r["name"] for r in rj_info}
         for col_name, col_def in [
             ("last_error_category", "TEXT"),
+            ("evaluation_status", "TEXT DEFAULT 'pending'"),
+            ("evaluated_at", "TEXT"),
             ("blocked_by", "TEXT"),
             ("blocked_reason", "TEXT"),
         ]:
@@ -2381,8 +2388,9 @@ class Database:
         sql = """
         INSERT OR REPLACE INTO source_checkpoints (
             source, last_success_at, last_attempt_at, last_cursor, last_event_time,
-            last_error, last_error_category, consecutive_failures, next_retry_at, health_status, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_error, last_error_category, consecutive_failures, failure_threshold_reached,
+            max_consecutive_failures, next_retry_at, health_status, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -2395,6 +2403,8 @@ class Database:
                 cp.last_error,
                 cp.last_error_category,
                 cp.consecutive_failures,
+                1 if cp.failure_threshold_reached else 0,
+                cp.max_consecutive_failures,
                 cp.next_retry_at.isoformat() if cp.next_retry_at else None,
                 cp.health_status,
                 cp.updated_at.isoformat(),
@@ -2405,6 +2415,10 @@ class Database:
 
     def _row_to_source_checkpoint(self, r: sqlite3.Row) -> SourceCheckpoint:
         keys = r.keys()
+        max_f = r["max_consecutive_failures"] if "max_consecutive_failures" in keys and r["max_consecutive_failures"] is not None else 5
+        consec_f = r["consecutive_failures"] if r["consecutive_failures"] is not None else 0
+        thresh_reached = bool(r["failure_threshold_reached"]) if "failure_threshold_reached" in keys and r["failure_threshold_reached"] is not None else (consec_f >= max_f)
+
         return SourceCheckpoint(
             source=r["source"],
             last_success_at=datetime.fromisoformat(r["last_success_at"]) if r["last_success_at"] else None,
@@ -2413,7 +2427,9 @@ class Database:
             last_event_time=datetime.fromisoformat(r["last_event_time"]) if r["last_event_time"] else None,
             last_error=r["last_error"],
             last_error_category=r["last_error_category"] if "last_error_category" in keys else None,
-            consecutive_failures=r["consecutive_failures"] if r["consecutive_failures"] is not None else 0,
+            consecutive_failures=consec_f,
+            failure_threshold_reached=thresh_reached,
+            max_consecutive_failures=max_f,
             next_retry_at=datetime.fromisoformat(r["next_retry_at"]) if r["next_retry_at"] else None,
             health_status=r["health_status"] or "unknown",
             updated_at=datetime.fromisoformat(r["updated_at"]),
@@ -2438,10 +2454,11 @@ class Database:
     def save_runtime_job(self, job: RuntimeJob) -> bool:
         sql = """
         INSERT OR REPLACE INTO runtime_jobs (
-            job_name, last_started_at, last_completed_at, last_status, last_error,
-            last_error_category, duration_seconds, run_count, failure_count,
-            next_run_at, blocked_by, blocked_reason, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            job_name, last_started_at, last_completed_at, last_status,
+            evaluation_status, evaluated_at, last_error, last_error_category,
+            duration_seconds, run_count, failure_count, next_run_at,
+            blocked_by, blocked_reason, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -2450,6 +2467,8 @@ class Database:
                 job.last_started_at.isoformat() if job.last_started_at else None,
                 job.last_completed_at.isoformat() if job.last_completed_at else None,
                 job.last_status,
+                job.evaluation_status,
+                job.evaluated_at.isoformat() if job.evaluated_at else None,
                 job.last_error,
                 job.last_error_category,
                 job.duration_seconds,
@@ -2471,6 +2490,8 @@ class Database:
             last_started_at=datetime.fromisoformat(r["last_started_at"]) if r["last_started_at"] else None,
             last_completed_at=datetime.fromisoformat(r["last_completed_at"]) if r["last_completed_at"] else None,
             last_status=r["last_status"] or "pending",
+            evaluation_status=r["evaluation_status"] if "evaluation_status" in keys and r["evaluation_status"] else (r["last_status"] or "pending"),
+            evaluated_at=datetime.fromisoformat(r["evaluated_at"]) if "evaluated_at" in keys and r["evaluated_at"] else None,
             last_error=r["last_error"],
             last_error_category=r["last_error_category"] if "last_error_category" in keys else None,
             duration_seconds=r["duration_seconds"],
@@ -2561,13 +2582,6 @@ class Database:
         cursor.execute("SELECT COUNT(*) as cnt FROM projects WHERE is_active = 1")
         row = cursor.fetchone()
         return row["cnt"] if row else 0
-
-    def get_latest_daily_briefing(self) -> Optional[DailyBriefing]:
-        """Returns the latest daily briefing record."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM daily_briefings ORDER BY briefing_date DESC LIMIT 1")
-        row = cursor.fetchone()
-        return self._row_to_daily_briefing(row) if row else None
 
     def increment_runtime_metric(self, key: str, delta: int = 1) -> int:
         now_str = datetime.now(timezone.utc).isoformat()

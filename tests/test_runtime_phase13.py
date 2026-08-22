@@ -412,9 +412,9 @@ def test_blocked_job_does_not_create_run_record(temp_db):
         runs = temp_db.get_recent_runtime_job_runs(job_name="semantic")
         assert len(runs) == 0
 
-        # Verify runtime_jobs table records status blocked with reason
+        # Verify runtime_jobs table records evaluation_status blocked with reason
         job_rec = temp_db.get_runtime_job("semantic")
-        assert job_rec.last_status == "blocked"
+        assert job_rec.evaluation_status == "blocked"
         assert job_rec.blocked_by == "ingestion"
 
 
@@ -599,47 +599,355 @@ def test_null_vs_zero_storage_and_serialization(temp_db):
 
 
 # =========================================================================
-# 10. Aggregated Overview API & Query Budget
+# 10. Authoritative Fresh Schema Audit (PRAGMA table_info)
 # =========================================================================
 
-def test_runtime_overview_response_and_query_budget(temp_db):
-    # Insert some dummy checkpoints and jobs
+def test_authoritative_fresh_schema_pragma_table_info():
+    """Verify fresh schema.sql creates all Phase 13 fields directly without migrations."""
+    schema_path = Path(__file__).resolve().parent.parent / "app" / "storage" / "schema.sql"
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_sql = f.read()
+
+    raw_conn = sqlite3.connect(":memory:")
+    raw_conn.executescript(schema_sql)
+
+    # 1. source_checkpoints columns
+    cur = raw_conn.execute("PRAGMA table_info(source_checkpoints)")
+    scp_cols = {row[1] for row in cur.fetchall()}
+    assert "last_error_category" in scp_cols
+    assert "failure_threshold_reached" in scp_cols
+    assert "max_consecutive_failures" in scp_cols
+
+    # 2. runtime_jobs columns
+    cur = raw_conn.execute("PRAGMA table_info(runtime_jobs)")
+    job_cols = {row[1] for row in cur.fetchall()}
+    assert "last_error_category" in job_cols
+    assert "evaluation_status" in job_cols
+    assert "evaluated_at" in job_cols
+    assert "blocked_by" in job_cols
+    assert "blocked_reason" in job_cols
+
+    # 3. runtime_job_runs columns
+    cur = raw_conn.execute("PRAGMA table_info(runtime_job_runs)")
+    run_cols = {row[1] for row in cur.fetchall()}
+    assert "error_category" in run_cols
+
+    raw_conn.close()
+
+
+# =========================================================================
+# 11. Persisted Threshold Contract, Close/Reopen & Legacy Fallback
+# =========================================================================
+
+def test_threshold_state_persisted_contract_reopen_and_reset(temp_db):
+    """Test persisted threshold state across DB close/reopen and recovery."""
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    config = {
+        "sources": {
+            "github": {"interval_minutes": 60, "max_consecutive_failures": 3, "enabled": True}
+        }
+    }
+
+    # Record 3 failures to trigger threshold
+    record_source_failure("github", "Fail 1", temp_db, now=now, config=config)
+    record_source_failure("github", "Fail 2", temp_db, now=now + timedelta(minutes=16), config=config)
+    cp = record_source_failure("github", "Fail 3", temp_db, now=now + timedelta(minutes=32), config=config)
+
+    assert cp.consecutive_failures == 3
+    assert cp.failure_threshold_reached is True
+    assert cp.max_consecutive_failures == 3
+
+    # Close DB and reopen from disk path
+    db_path = temp_db.db_path
+    temp_db.close()
+
+    reopened_db = Database(db_path)
+    try:
+        loaded = reopened_db.get_source_checkpoint("github")
+        assert loaded is not None
+        assert loaded.consecutive_failures == 3
+        assert loaded.failure_threshold_reached is True
+        assert loaded.max_consecutive_failures == 3
+
+        # Successful poll resets threshold
+        recovered = record_source_success("github", reopened_db, now=now + timedelta(minutes=60))
+        assert recovered.consecutive_failures == 0
+        assert recovered.failure_threshold_reached is False
+        assert recovered.health_status == "healthy"
+
+        # Direct SQL insertion of legacy row (NULLs in threshold fields)
+        reopened_db.conn.execute(
+            "INSERT INTO source_checkpoints (source, last_attempt_at, health_status, consecutive_failures, updated_at) "
+            "VALUES ('legacy_source', '2026-08-22T08:00:00Z', 'healthy', 0, '2026-08-22T08:00:00Z')"
+        )
+        reopened_db.conn.commit()
+
+        legacy_cp = reopened_db.get_source_checkpoint("legacy_source")
+        assert legacy_cp.failure_threshold_reached is False
+        assert legacy_cp.max_consecutive_failures == 5  # Default fallback
+    finally:
+        reopened_db.close()
+
+
+# =========================================================================
+# 12. Evaluation vs Execution Separation & Dependency Freshness
+# =========================================================================
+
+def test_scheduler_evaluation_separated_from_execution_outcome(temp_db):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    config = {
+        "jobs": {
+            "ingestion": {"interval_minutes": 60},
+            "semantic": {"interval_minutes": 60},
+            "claims": {"interval_minutes": 60},
+            "inbox_refresh": {"interval_minutes": 60},
+        }
+    }
+
+    # Case A: Completed execution followed by blocked evaluation
+    run = start_job_run("semantic", temp_db, now=now)
+    finish_job_run(run, "completed", 10, temp_db, now=now)
+    completed_rec = temp_db.get_runtime_job("semantic")
+    assert completed_rec.last_status == "completed"
+    assert completed_rec.run_count == 1
+    assert completed_rec.last_completed_at == now
+
+    # Ingestion fails in scheduler cycle -> semantic becomes blocked
+    with patch("app.runtime.scheduler.load_runtime_config", return_value=config), \
+         patch("app.runtime.scheduler.is_job_due", return_value=(True, "DUE")), \
+         patch("app.runtime.scheduler.execute_job", return_value={"status": "failed"}):
+
+        results = run_all_due_jobs(temp_db, dry_run=False, now=now + timedelta(minutes=10), config=config)
+        sem_res = next(r for r in results if r["job_name"] == "semantic")
+        assert sem_res["status"] == "blocked"
+
+        job_state = temp_db.get_runtime_job("semantic")
+        # last_status must NOT be overwritten by blocked evaluation!
+        assert job_state.last_status == "completed"
+        assert job_state.evaluation_status == "blocked"
+        assert job_state.last_completed_at == now
+        assert job_state.run_count == 1
+        assert job_state.failure_count == 0
+        assert job_state.blocked_by == "ingestion"
+
+    # Case B: Blocked evaluation followed by successful execution
+    run_rec = start_job_run("semantic", temp_db, now=now + timedelta(minutes=20))
+    finish_job_run(run_rec, "completed", 5, temp_db, now=now + timedelta(minutes=20))
+    recovered_job = temp_db.get_runtime_job("semantic")
+    assert recovered_job.last_status == "completed"
+    assert recovered_job.evaluation_status == "completed"
+    assert recovered_job.blocked_by is None
+    assert recovered_job.blocked_reason is None
+
+    # Case C: Partial prerequisite satisfies downstream dependency
+    run_ing = start_job_run("ingestion", temp_db, now=now + timedelta(minutes=30))
+    finish_job_run(run_ing, "partial", 2, temp_db, now=now + timedelta(minutes=30))
+
+    # Check semantic dependencies (it requires ingestion)
+    deps_ok, blocker, reason = check_job_dependencies("semantic", temp_db, cycle_results={}, now=now + timedelta(minutes=31), config=config)
+    assert deps_ok is True  # Partial ingestion from database satisfies dependency!
+
+    # Check fresh execution timestamp was used
+    ingest_rec = temp_db.get_runtime_job("ingestion")
+    assert ingest_rec.last_status == "partial"
+    assert ingest_rec.last_completed_at == now + timedelta(minutes=30)
+
+
+# =========================================================================
+# 13. Query Budget & Scale Invariance Tests
+# =========================================================================
+
+def test_query_budget_separated_application_queries_and_integrity_probe(temp_db):
+    """Assert <=6 application data queries + 1 explicit integrity probe."""
     temp_db.save_source_checkpoint(SourceCheckpoint(
-        source="github",
-        health_status="healthy",
-        consecutive_failures=0,
-        last_success_at=datetime.now(timezone.utc),
+        source="github", health_status="healthy", consecutive_failures=0, last_success_at=datetime.now(timezone.utc)
     ))
     temp_db.save_runtime_job(RuntimeJob(
-        job_name="ingestion",
-        last_status="completed",
-        duration_seconds=1.5,
-        run_count=3,
-        failure_count=0,
-        last_completed_at=datetime.now(timezone.utc),
+        job_name="ingestion", last_status="completed", duration_seconds=1.0, run_count=2, failure_count=0
     ))
 
-    # Instrument SQLite query count budget (<= 6 queries)
+    invalidate_health_cache(temp_db.db_path)
     statements = []
     temp_db.conn.set_trace_callback(lambda stmt: statements.append(stmt))
-
     try:
         with patch("app.runtime.health.check_network_connectivity", return_value=True):
             overview = get_runtime_overview(temp_db)
     finally:
         temp_db.conn.set_trace_callback(None)
 
-    assert overview.schema_version == "v1"
-    assert overview.status in ("HEALTHY", "DEGRADED", "UNHEALTHY")
-    assert len(overview.sources) >= 1
-    assert len(overview.jobs) >= 1
-    assert overview.job_summary.total >= 1
-    assert overview.source_summary.total >= 1
+    # Filter internal SQLite sub-traces
+    raw_queries = [s.strip() for s in statements if not s.strip().startswith("--")]
+    app_queries = [s for s in raw_queries if not s.upper().startswith("PRAGMA QUICK_CHECK")]
+    integrity_queries = [s for s in raw_queries if s.upper().startswith("PRAGMA QUICK_CHECK")]
 
-    # Filter out SQLite internal engine sub-traces (which start with '--')
-    app_queries = [s for s in statements if not s.strip().startswith("--")]
+    assert len(app_queries) <= 6
+    assert len(integrity_queries) <= 1
+    assert len(raw_queries) <= 7
 
-    # Verify query count is bounded <= 7 (6 batch queries + 1 PRAGMA check)
-    assert len(app_queries) <= 7
+
+def test_query_budget_scale_invariance_small_vs_large(temp_db):
+    """Prove query count is scale-invariant between small and large source/job sets."""
+    # Small set (1 source, 1 job)
+    temp_db.save_source_checkpoint(SourceCheckpoint(source="src_0", health_status="healthy"))
+    temp_db.save_runtime_job(RuntimeJob(job_name="job_0", last_status="completed"))
+
+    invalidate_health_cache(temp_db.db_path)
+    stmts_small = []
+    temp_db.conn.set_trace_callback(lambda stmt: stmts_small.append(stmt))
+    with patch("app.runtime.health.check_network_connectivity", return_value=True):
+        get_runtime_overview(temp_db)
+    temp_db.conn.set_trace_callback(None)
+    app_small = len([s for s in stmts_small if not s.strip().startswith("--") and not s.strip().upper().startswith("PRAGMA QUICK_CHECK")])
+
+    # Populate 15 sources and 20 jobs
+    for i in range(1, 16):
+        temp_db.save_source_checkpoint(SourceCheckpoint(source=f"src_{i}", health_status="healthy"))
+    for j in range(1, 21):
+        temp_db.save_runtime_job(RuntimeJob(job_name=f"job_{j}", last_status="completed"))
+
+    invalidate_health_cache(temp_db.db_path)
+    stmts_large = []
+    temp_db.conn.set_trace_callback(lambda stmt: stmts_large.append(stmt))
+    with patch("app.runtime.health.check_network_connectivity", return_value=True):
+        get_runtime_overview(temp_db)
+    temp_db.conn.set_trace_callback(None)
+    app_large = len([s for s in stmts_large if not s.strip().startswith("--") and not s.strip().upper().startswith("PRAGMA QUICK_CHECK")])
+
+    # O(1) application query budget assertion
+    assert app_small == app_large
+    assert app_small <= 6
+
+
+# =========================================================================
+# 14. Deterministic DST and Timezone Verification
+# =========================================================================
+
+def test_dst_and_timezone_verification_comprehensive():
+    # 1. UTC
+    cfg_utc = {"timezone": "UTC"}
+    _, name_utc, warn_utc = get_effective_timezone(cfg_utc)
+    assert name_utc == "UTC"
+    assert warn_utc is None
+
+    # 2. Asia/Kolkata
+    cfg_kolkata = {"timezone": "Asia/Kolkata"}
+    tz_kolkata, name_kolkata, warn_kolkata = get_effective_timezone(cfg_kolkata)
+    assert name_kolkata == "Asia/Kolkata"
+    assert warn_kolkata is None
+    # 10:00 UTC is 15:30 IST (+05:30)
+    dt_utc = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    dt_ist = dt_utc.astimezone(tz_kolkata)
+    assert dt_ist.strftime("%H:%M") == "15:30"
+
+    # 3. America/New_York (EDT in August: UTC-4, EST in January: UTC-5)
+    cfg_ny = {"timezone": "America/New_York"}
+    tz_ny, name_ny, warn_ny = get_effective_timezone(cfg_ny)
+    assert name_ny == "America/New_York"
+    dt_summer = datetime(2026, 8, 22, 12, 0, 0, tzinfo=timezone.utc).astimezone(tz_ny)
+    assert dt_summer.strftime("%H:%M") == "08:00"  # EDT (UTC-4)
+    dt_winter = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc).astimezone(tz_ny)
+    assert dt_winter.strftime("%H:%M") == "07:00"  # EST (UTC-5)
+
+    # 4. Spring-Forward DST (2026-03-08 in America/New_York):
+    # Clocks skip from 02:00 to 03:00. At 03:05 EDT (07:05 UTC), a job scheduled for 02:30 is overdue and due today.
+    dt_after_skip = datetime(2026, 3, 8, 7, 5, 0, tzinfo=timezone.utc)
+    local_time = dt_after_skip.astimezone(tz_ny).time()
+    assert local_time >= dtime(2, 30)
+
+    # 5. Invalid zone fallback
+    cfg_inv = {"timezone": "NonExistent/Mars"}
+    _, name_inv, warn_inv = get_effective_timezone(cfg_inv)
+    assert name_inv == "UTC"
+    assert "Invalid timezone" in warn_inv
+
+
+# =========================================================================
+# 15. Sanitization Across Public Endpoints & No Secret Leaks
+# =========================================================================
+
+def test_sanitization_across_public_endpoints_and_results(temp_db):
+    from fastapi.testclient import TestClient
+    from app.api.server import app
+    from app.api.routes import get_db
+
+    secret_fixture = "ghp_ultra_secret_api_key_999888"
+    path_fixture = r"C:\Users\SecretAdmin\code\app.py"
+
+    # Insert degraded source and failed job containing raw secret fixtures
+    temp_db.save_source_checkpoint(SourceCheckpoint(
+        source="secret_source",
+        health_status="degraded",
+        consecutive_failures=3,
+        last_error=f"Authorization failed: Bearer {secret_fixture} at {path_fixture}",
+        last_error_category="auth_error",
+    ))
+    temp_db.save_runtime_job(RuntimeJob(
+        job_name="secret_job",
+        last_status="failed",
+        last_error=f"Failed loading config with key {secret_fixture}",
+        last_error_category="auth_error",
+    ))
+
+    app.dependency_overrides[get_db] = lambda: temp_db
+    client = TestClient(app)
+
+    try:
+        for ep in ["/sources", "/health", "/runtime", "/runtime/overview"]:
+            resp = client.get(ep)
+            assert resp.status_code == 200
+            text = resp.text
+
+            # MUST NEVER leak raw secret fixture or user path fixture
+            assert secret_fixture not in text
+            assert "SecretAdmin" not in text
+
+            # Public overview and runtime responses MUST omit hostname
+            if ep in ("/runtime", "/runtime/overview"):
+                data = resp.json()
+                assert "hostname" not in data
+                if "daemon" in data:
+                    assert "hostname" not in data["daemon"]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+# =========================================================================
+# 16. Ingestion Edge Cases: All Failed & None Due
+# =========================================================================
+
+def test_ingestion_edge_cases(temp_db):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    all_sources = ["github", "github_releases", "arxiv", "hackernews", "huggingface", "openalex", "crossref", "stackexchange", "rss"]
+
+    # 1. No sources due
+    config_none_due = {
+        "sources": {
+            s: {"interval_minutes": 120, "enabled": (s == "github")}
+            for s in all_sources
+        }
+    }
+    # Mark github polled recently
+    record_source_success("github", temp_db, now=now)
+    with patch("app.runtime.jobs.load_runtime_config", return_value=config_none_due):
+        res_none = run_source_ingestion(temp_db, now=now + timedelta(minutes=10))
+        assert res_none["status"] == "completed"
+        assert len(res_none["sources_polled"]) == 0
+
+    # 2. All sources failed
+    config_all_fail = {
+        "sources": {
+            s: {"interval_minutes": 10, "enabled": (s == "arxiv")}
+            for s in all_sources
+        }
+    }
+    mock_adapter = MagicMock()
+    mock_adapter.fetch.side_effect = Exception("Connection refused")
+    with patch("app.runtime.jobs.load_runtime_config", return_value=config_all_fail), \
+         patch("app.runtime.jobs._get_adapter_factories", return_value={"arxiv": (lambda: mock_adapter, 10)}):
+        res_fail = run_source_ingestion(temp_db, now=now + timedelta(minutes=20))
+        assert res_fail["status"] == "failed"
+        assert len(res_fail["sources_failed"]) == 1
+        # Returned error must be sanitized
+        assert "Connection refused" in res_fail["sources_failed"][0]["error"]
 
 

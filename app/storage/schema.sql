@@ -433,6 +433,8 @@ CREATE TABLE IF NOT EXISTS source_checkpoints (
     last_error TEXT,
     last_error_category TEXT,
     consecutive_failures INTEGER DEFAULT 0,
+    failure_threshold_reached INTEGER DEFAULT 0,
+    max_consecutive_failures INTEGER DEFAULT 5,
     next_retry_at TEXT,
     health_status TEXT NOT NULL DEFAULT 'unknown',
     updated_at TEXT NOT NULL
@@ -446,16 +448,21 @@ CREATE TABLE IF NOT EXISTS runtime_jobs (
     last_started_at TEXT,
     last_completed_at TEXT,
     last_status TEXT NOT NULL DEFAULT 'pending',
+    evaluation_status TEXT NOT NULL DEFAULT 'pending',
+    evaluated_at TEXT,
     last_error TEXT,
     last_error_category TEXT,
     duration_seconds REAL,
     run_count INTEGER,
     failure_count INTEGER,
     next_run_at TEXT,
+    blocked_by TEXT,
+    blocked_reason TEXT,
     updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_runtime_jobs_status ON runtime_jobs(last_status);
+CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status);
 CREATE INDEX IF NOT EXISTS idx_runtime_jobs_next_run ON runtime_jobs(next_run_at);
 
 CREATE TABLE IF NOT EXISTS runtime_job_runs (
@@ -479,5 +486,3 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
     metric_value INTEGER DEFAULT 0,
     updated_at TEXT NOT NULL
 );
-
-

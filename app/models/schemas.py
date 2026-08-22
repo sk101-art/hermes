@@ -546,7 +546,9 @@ class RuntimeJob(BaseModel):
     job_name: str
     last_started_at: Optional[datetime] = None
     last_completed_at: Optional[datetime] = None
-    last_status: str = "pending"  # pending, running, completed, failed, partial, interrupted, blocked, not_due, not_applicable
+    last_status: str = "pending"  # latest execution outcome: pending, running, completed, failed, partial, interrupted
+    evaluation_status: str = "pending"  # latest scheduler evaluation: pending, due, not_due, blocked, not_applicable
+    evaluated_at: Optional[datetime] = None
     last_error: Optional[str] = None
     last_error_category: Optional[str] = None
     duration_seconds: Optional[float] = None
