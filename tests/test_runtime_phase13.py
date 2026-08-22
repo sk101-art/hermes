@@ -1419,3 +1419,84 @@ def test_hostile_recursive_payload_sanitization_at_serialization_boundary(temp_d
     assert "https://[REDACTED]@" in serialized_json
 
 
+# =========================================================================
+# 27. Regression Test: Scheduler Evaluations Create No Job Run Rows
+# =========================================================================
+
+def test_scheduler_evaluations_create_no_job_run_rows_and_preserve_execution_state(temp_db):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    t_completed = now - timedelta(hours=2)
+
+    # Pre-populate a job with a prior completed run
+    temp_db.save_runtime_job(RuntimeJob(
+        job_name="semantic",
+        last_started_at=t_completed - timedelta(minutes=1),
+        last_completed_at=t_completed,
+        last_status="completed",
+        evaluation_status="completed",
+        evaluated_at=t_completed,
+        run_count=5,
+        failure_count=1,
+        updated_at=t_completed,
+    ))
+
+    # Initial runs count in runtime_job_runs table
+    initial_runs = temp_db.get_recent_runtime_job_runs(limit=100)
+    initial_run_count = len(initial_runs)
+
+    # 1. Run scheduler cycle where 'semantic' is BLOCKED (e.g., ingestion prerequisite failed)
+    cycle_results = {"ingestion": "failed"}
+    deps_ok, blocked_by, blocked_reason = check_job_dependencies("semantic", temp_db, cycle_results, now, load_runtime_config())
+    assert deps_ok is False
+    assert blocked_by == "ingestion"
+
+    # Evaluate blocked state via scheduler logic
+    job_rec = temp_db.get_runtime_job("semantic")
+    job_rec.evaluation_status = "blocked"
+    job_rec.evaluated_at = now
+    job_rec.blocked_by = blocked_by
+    job_rec.blocked_reason = blocked_reason
+    job_rec.updated_at = now
+    temp_db.save_runtime_job(job_rec)
+
+    # Verify invariant after BLOCKED evaluation:
+    post_blocked_runs = temp_db.get_recent_runtime_job_runs(limit=100)
+    assert len(post_blocked_runs) == initial_run_count  # NO new runtime_job_runs row
+
+    semantic_job = temp_db.get_runtime_job("semantic")
+    assert semantic_job.last_status == "completed"       # NOT overwritten
+    assert semantic_job.last_completed_at == t_completed # NOT changed
+    assert semantic_job.run_count == 5                   # NOT incremented
+    assert semantic_job.failure_count == 1               # NOT incremented
+    assert semantic_job.evaluation_status == "blocked"   # Updated evaluation field
+    assert semantic_job.blocked_by == "ingestion"
+
+    # 2. Evaluate NOT_DUE / SKIPPED / NOT_APPLICABLE state
+    job_rec.evaluation_status = "not_due"
+    job_rec.evaluated_at = now + timedelta(minutes=5)
+    temp_db.save_runtime_job(job_rec)
+
+    post_not_due_runs = temp_db.get_recent_runtime_job_runs(limit=100)
+    assert len(post_not_due_runs) == initial_run_count  # NO new runtime_job_runs row
+
+    semantic_job2 = temp_db.get_runtime_job("semantic")
+    assert semantic_job2.last_status == "completed"
+    assert semantic_job2.last_completed_at == t_completed
+    assert semantic_job2.run_count == 5
+    assert semantic_job2.failure_count == 1
+    assert semantic_job2.evaluation_status == "not_due"
+
+    # 3. Evaluate NOT_APPLICABLE for context_match with 0 active projects
+    res_cm = execute_job("context_match", temp_db, now=now)
+    assert res_cm["status"] == "not_applicable"
+
+    post_cm_runs = temp_db.get_recent_runtime_job_runs(limit=100)
+    assert len(post_cm_runs) == initial_run_count  # NO new runtime_job_runs row
+
+    # Assert runtime_job_runs.status in DB contains ONLY legitimate execution statuses
+    all_db_runs = temp_db.get_recent_runtime_job_runs(limit=100)
+    for r in all_db_runs:
+        assert r.status in ("running", "completed", "failed", "partial", "interrupted")
+        assert r.status not in ("blocked", "skipped", "not_applicable", "due", "not_due")
+
+

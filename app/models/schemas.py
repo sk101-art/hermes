@@ -565,7 +565,7 @@ class RuntimeJobRun(BaseModel):
     job_name: str
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
-    status: str = "running"  # running, completed, failed, partial, interrupted, blocked, not_applicable
+    status: str = "running"  # execution lifecycle states: running, completed, failed, partial, interrupted
     items_processed: Optional[int] = None
     error_summary: Optional[str] = None
     error_category: Optional[str] = None
