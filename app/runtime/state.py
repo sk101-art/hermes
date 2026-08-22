@@ -378,17 +378,28 @@ def is_heartbeat_alive(
     pid = data.get("pid")
     ts_str = data.get("timestamp")
     if not pid or not ts_str:
+        data["status"] = "malformed"
+        data["is_stale"] = True
         return False, data
 
     if not is_pid_alive(pid):
+        data["status"] = "stopped"
+        data["is_stale"] = True
         return False, data
 
     try:
         hb_time = datetime.fromisoformat(ts_str)
         now = datetime.now(timezone.utc)
-        age = (now - hb_time).total_seconds()
+        age = max(0.0, (now - hb_time).total_seconds())
+        data["age_seconds"] = int(age)
         if age <= max_stale_seconds:
+            data["status"] = "running"
+            data["is_stale"] = False
             return True, data
+        data["status"] = "stale"
+        data["is_stale"] = True
         return False, data
     except Exception:
+        data["status"] = "malformed"
+        data["is_stale"] = True
         return False, data

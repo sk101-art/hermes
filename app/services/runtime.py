@@ -32,7 +32,10 @@ from app.services.schemas import (
 from app.storage.db import Database
 
 
-def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewResponse:
+def get_runtime_overview(
+    db: Optional[Database] = None,
+    now: Optional[datetime] = None,
+) -> RuntimeOverviewResponse:
     """
     Constructs the complete aggregated runtime operational overview in a single call.
     Uses batch database retrievals (<= 6 queries total) and applies read-boundary sanitization.
@@ -41,7 +44,8 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         db = Database()
 
     config = load_runtime_config()
-    now = datetime.now(timezone.utc)
+    if now is None:
+        now = datetime.now(timezone.utc)
 
     # 1. Resolve Timezone
     eff_tz, tz_name, tz_warning = get_effective_timezone(config)
@@ -62,18 +66,17 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
     if hb_data:
         pid = hb_data.get("pid")
         hb_ts_str = hb_data.get("timestamp")
-        if hb_ts_str:
+        hb_age_sec = hb_data.get("age_seconds")
+        if hb_age_sec is None and hb_ts_str:
             try:
                 hb_dt = datetime.fromisoformat(hb_ts_str)
-                hb_age_sec = int((now - hb_dt).total_seconds())
+                hb_age_sec = max(0, int((now - hb_dt).total_seconds()))
             except Exception:
                 pass
 
     if hb_alive:
         daemon_status = "running"
-    elif hb_data and (hb_data.get("is_stale") or hb_data.get("status") == "stale" or (hb_age_sec is not None and hb_age_sec > 30)):
-        daemon_status = "stale"
-        is_stale = True
+        is_stale = False
     elif lock_present and not hb_alive:
         daemon_status = "stale"
         is_stale = True
@@ -83,8 +86,22 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         daemon_status = "disagreement"
         pid = lock_info.get("pid") if lock_info else None
         disagreement_notice = "Lock file exists but no heartbeat file found."
+    elif hb_data:
+        # Heartbeat exists on disk but process is not alive or expired
+        hb_stat = hb_data.get("status")
+        if hb_stat == "malformed":
+            daemon_status = "unknown"
+            is_stale = True
+            disagreement_notice = "Heartbeat timestamp is malformed or invalid."
+        elif hb_stat == "stale" or (hb_age_sec is not None and hb_age_sec > 180):
+            daemon_status = "stale"
+            is_stale = True
+        else:
+            daemon_status = "stopped"
+            is_stale = True
     else:
         daemon_status = "stopped"
+        is_stale = False
 
     daemon_info = RuntimeDaemonInfo(
         status=daemon_status,
@@ -96,16 +113,59 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         disagreement_notice=disagreement_notice,
     )
 
-    # 3. Batch Database Queries
-    checkpoints_map = db.get_all_source_checkpoints_map()
-    jobs_map = db.get_all_runtime_jobs_map()
-    recent_runs = db.get_recent_runtime_job_runs(limit=100)
-    lifetime_metrics = db.get_runtime_metrics()
-    active_projects_count = db.get_active_project_count()
-    latest_briefing = db.get_latest_daily_briefing()
+    # 3. Batch Database Queries with partial failure isolation
+    checkpoints_map: Dict[str, Any] = {}
+    jobs_map: Dict[str, Any] = {}
+    recent_runs: List[Any] = []
+    lifetime_metrics: Dict[str, Any] = {}
+    active_projects_count = 0
+    latest_briefing = None
+    query_failures: List[str] = []
+
+    try:
+        checkpoints_map = db.get_all_source_checkpoints_map()
+    except Exception as e:
+        query_failures.append(f"Source checkpoints query failed: {e}")
+
+    try:
+        jobs_map = db.get_all_runtime_jobs_map()
+    except Exception as e:
+        query_failures.append(f"Runtime jobs query failed: {e}")
+
+    try:
+        recent_runs = db.get_recent_runtime_job_runs(limit=100)
+    except Exception as e:
+        query_failures.append(f"Job runs query failed: {e}")
+
+    try:
+        lifetime_metrics = db.get_runtime_metrics()
+    except Exception as e:
+        query_failures.append(f"Lifetime metrics query failed: {e}")
+
+    try:
+        active_projects_count = db.get_active_project_count()
+    except Exception as e:
+        query_failures.append(f"Projects query failed: {e}")
+
+    try:
+        latest_briefing = db.get_latest_daily_briefing()
+    except Exception as e:
+        query_failures.append(f"Daily briefing query failed: {e}")
 
     # 4. System Diagnostics (via cached probe, passing batch checkpoints)
-    sys_health = check_system_health(db, config=config, now=now, use_cache=True, checkpoints_map=checkpoints_map)
+    try:
+        sys_health = check_system_health(db, config=config, now=now, use_cache=True, checkpoints_map=checkpoints_map)
+    except Exception as e:
+        query_failures.append(f"System health probe failed: {e}")
+        sys_health = {
+            "status": "DEGRADED",
+            "database": "error",
+            "network": "offline",
+            "disk_status": "error",
+            "issues": [f"Health probe error: {e}"],
+            "warnings": [],
+        }
+
     system_diag = RuntimeSystemDiagnostics(
         database=sys_health.get("database", "ok"),
         network=sys_health.get("network", "offline"),
@@ -345,7 +405,7 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         high_priority_count=today_briefing.high_priority_count if today_briefing else None,
         project_relevant_count=today_briefing.project_relevant_count if today_briefing else None,
         generated_at=today_briefing.generated_at.isoformat() if today_briefing else None,
-        markdown_path=today_briefing.markdown_path if today_briefing else None,
+        markdown_path=getattr(today_briefing, "markdown_path", None) if today_briefing else None,
     )
 
     intelligence_freshness = IntelligenceFreshnessRecord(
@@ -357,10 +417,16 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
     warnings = list(sys_health.get("warnings", []))
     issues = list(sys_health.get("issues", []))
 
+    for qf in query_failures:
+        issues.append(qf)
+
     if tz_warning:
         warnings.append(tz_warning)
 
     is_partial_availability = False
+    if query_failures:
+        is_partial_availability = True
+
     if src_counts.total == 0:
         warnings.append("No source adapters configured or active.")
     if job_counts.total == 0:
@@ -374,10 +440,12 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         is_partial_availability = True
 
     overall_status = sys_health.get("status", "HEALTHY")
-    if overall_status == "HEALTHY":
+    if sys_health.get("database") != "ok" or any("integrity" in iss.lower() for iss in issues):
+        overall_status = "UNHEALTHY"
+    elif overall_status == "HEALTHY":
         if src_counts.total == 0 or job_counts.total == 0:
             overall_status = "UNKNOWN"
-        elif is_partial_availability or daemon_status in ("stale", "stopped"):
+        elif is_partial_availability or daemon_status in ("stale", "stopped", "disagreement", "unknown"):
             overall_status = "DEGRADED"
 
     return RuntimeOverviewResponse(

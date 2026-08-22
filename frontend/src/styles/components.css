@@ -2198,11 +2198,16 @@
   border: 1px solid #e5e7eb;
 }
 
-.runtime-status-unavailable,
+.runtime-status-unavailable {
+  background-color: #f8fafc;
+  color: #64748b;
+  border: 1px solid #cbd5e1;
+}
+
 .runtime-status-offline {
   background-color: #f1f5f9;
-  color: #475569;
-  border: 1px solid #cbd5e1;
+  color: #334155;
+  border: 1px solid #94a3b8;
 }
 
 .runtime-status-not-due,

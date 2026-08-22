@@ -8,10 +8,10 @@ PARAM_SECRET_PATTERN = re.compile(
     re.IGNORECASE,
 )
 URL_CRED_PATTERN = re.compile(r'https?://[^:\s@]+:[^@\s]+@', re.IGNORECASE)
-AUTH_HEADER_PATTERN = re.compile(r'(Authorization\s*:\s*)(?:Basic|Digest|Bearer)\s+[^\r\n]+', re.IGNORECASE)
+AUTH_HEADER_PATTERN = re.compile(r'(Authorization\s*:\s*(?:Basic|Digest|Bearer)\s+)[^\s,;]+', re.IGNORECASE)
 
 # File Paths (Windows, UNC, and Linux/macOS user paths)
-WINDOWS_PATH_PATTERN = re.compile(r'[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\r\n:;\'"<>|]+', re.IGNORECASE)
+WINDOWS_PATH_PATTERN = re.compile(r'[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\r\n:;\'"<>|\s]+', re.IGNORECASE)
 UNC_PATH_PATTERN = re.compile(r'\\\\[a-zA-Z0-9._-]+\\[^\r\n:;\'"<>|\s]+', re.IGNORECASE)
 UNIX_PATH_PATTERN = re.compile(r'/(?:home|Users|root)/[^\r\n:;\'"<>|\s]+', re.IGNORECASE)
 

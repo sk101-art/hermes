@@ -5846,3 +5846,75 @@ test('Phase 13: 47. Machine-readable time tags render datetime and handles inval
   assert.ok(!container.innerHTML.includes('Invalid Date'));
   assert.ok(!container.innerHTML.includes('NaN'));
 });
+
+test('Phase 13: 48. Full source state matrix renders distinct classes, tooltips, and accessible labels', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  const mockSources = [
+    { source: 'github', health_status: 'healthy' },
+    { source: 'arxiv', health_status: 'degraded' },
+    { source: 'hackernews', health_status: 'rate_limited' },
+    { source: 'openalex', health_status: 'offline' },
+    { source: 'crossref', health_status: 'disabled' },
+    { source: 'rss', health_status: 'unknown' },
+    { source: 'stackexchange', health_status: 'retrying' },
+    { source: 'custom', health_status: 'unavailable' }
+  ];
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({ sources: mockSources })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+
+  assert.ok(container.innerHTML.includes('runtime-status-healthy'));
+  assert.ok(container.innerHTML.includes('runtime-status-degraded'));
+  assert.ok(container.innerHTML.includes('runtime-status-rate-limited'));
+  assert.ok(container.innerHTML.includes('runtime-status-offline'));
+  assert.ok(container.innerHTML.includes('runtime-status-disabled'));
+  assert.ok(container.innerHTML.includes('runtime-status-unknown'));
+  assert.ok(container.innerHTML.includes('runtime-status-retrying'));
+  assert.ok(container.innerHTML.includes('runtime-status-unavailable'));
+  assert.ok(container.innerHTML.includes('aria-label="Source status: offline"'));
+});
+
+test('Phase 13: 49. Request discipline triggers exactly one overview request on view load', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  let requestCount = 0;
+  fetchMock = async () => {
+    requestCount++;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => getMockRuntimeOverview()
+    };
+  };
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.strictEqual(requestCount, 1);
+});
+
+test('Phase 13: 50. All four source timestamps render distinctly without fallback substitution', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{
+        source: 'arxiv',
+        health_status: 'retrying',
+        last_attempt_at: '2026-08-22T10:00:00Z',
+        last_success_at: '2026-08-20T10:00:00Z',
+        last_event_time: '2026-08-20T09:30:00Z',
+        next_retry_at: '2026-08-22T10:30:00Z'
+      }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('<time datetime="2026-08-22T10:00:00Z">'));
+  assert.ok(container.innerHTML.includes('<time datetime="2026-08-20T10:00:00Z">'));
+});

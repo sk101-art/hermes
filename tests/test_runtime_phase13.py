@@ -1150,3 +1150,272 @@ def test_empty_sources_and_jobs_produce_unknown_status(temp_db):
         assert any("No source adapters" in w for w in overview.warnings)
 
 
+# =========================================================================
+# 22. Heartbeat State Matrix & Contradiction Elimination
+# =========================================================================
+
+def test_heartbeat_state_matrix_and_contradiction_elimination(temp_db, tmp_path):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    
+    # Scenario A: Live, fresh heartbeat
+    hb_live = {"status": "running", "pid": 9999, "timestamp": (now - timedelta(seconds=10)).isoformat(), "age_seconds": 10, "is_stale": False}
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(True, hb_live)), \
+         patch("app.services.runtime.SingleInstanceLock.get_lock_info", return_value={"pid": 9999}):
+        ov = get_runtime_overview(temp_db, now=now)
+        assert ov.daemon.status == "running"
+        assert ov.daemon.is_stale is False
+        assert ov.daemon.pid == 9999
+        assert ov.daemon.lock_present is True
+        assert ov.daemon.disagreement_notice is None
+
+    # Scenario B: Stale heartbeat (age > 180s)
+    hb_stale = {"status": "stale", "pid": 9999, "timestamp": (now - timedelta(seconds=300)).isoformat(), "age_seconds": 300, "is_stale": True}
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(False, hb_stale)), \
+         patch("app.services.runtime.SingleInstanceLock.get_lock_info", return_value=None):
+        ov = get_runtime_overview(temp_db, now=now)
+        assert ov.daemon.status == "stale"
+        assert ov.daemon.is_stale is True
+
+    # Scenario C: Missing heartbeat file
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(False, None)), \
+         patch("app.services.runtime.SingleInstanceLock.get_lock_info", return_value=None):
+        ov = get_runtime_overview(temp_db, now=now)
+        assert ov.daemon.status == "stopped"
+        assert ov.daemon.is_stale is False
+        assert ov.daemon.pid is None
+
+    # Scenario D: Malformed heartbeat timestamp
+    hb_malformed = {"status": "malformed", "pid": 9999, "timestamp": "not-a-valid-timestamp", "is_stale": True}
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(False, hb_malformed)), \
+         patch("app.services.runtime.SingleInstanceLock.get_lock_info", return_value=None):
+        ov = get_runtime_overview(temp_db, now=now)
+        assert ov.daemon.status == "unknown"
+        assert ov.daemon.is_stale is True
+        assert "malformed" in (ov.daemon.disagreement_notice or "").lower()
+
+    # Scenario E: Historical PID with dead process
+    hb_dead = {"status": "stopped", "pid": 1111, "timestamp": (now - timedelta(seconds=20)).isoformat(), "age_seconds": 20, "is_stale": True}
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(False, hb_dead)), \
+         patch("app.services.runtime.SingleInstanceLock.get_lock_info", return_value=None):
+        ov = get_runtime_overview(temp_db, now=now)
+        assert ov.daemon.status == "stopped"
+        assert ov.daemon.is_stale is True
+
+    # Scenario F: Lock present without fresh heartbeat (disagreement)
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(False, hb_stale)), \
+         patch("app.services.runtime.SingleInstanceLock.get_lock_info", return_value={"pid": 8888}):
+        ov = get_runtime_overview(temp_db, now=now)
+        assert ov.daemon.status == "stale"
+        assert ov.daemon.is_stale is True
+        assert ov.daemon.lock_present is True
+        assert "stale" in (ov.daemon.disagreement_notice or "").lower() or "expired" in (ov.daemon.disagreement_notice or "").lower()
+
+    # Scenario G: Fresh heartbeat without lock file
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(True, hb_live)), \
+         patch("app.services.runtime.SingleInstanceLock.get_lock_info", return_value=None):
+        ov = get_runtime_overview(temp_db, now=now)
+        assert ov.daemon.status == "running"
+        assert ov.daemon.lock_present is False
+
+
+# =========================================================================
+# 23. Complete Source State Matrix & Distinct Badging
+# =========================================================================
+
+def test_complete_source_state_matrix_and_distinctness(temp_db):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    t_old = now - timedelta(days=2)
+    t_recent = now - timedelta(minutes=5)
+    
+    # 1. Healthy: polled recently and successfully
+    temp_db.save_source_checkpoint(SourceCheckpoint(
+        source="github",
+        last_success_at=t_recent,
+        last_attempt_at=t_recent,
+        consecutive_failures=0,
+        health_status="healthy",
+        updated_at=t_recent,
+    ))
+    
+    # 2. Degraded & Threshold reached: multiple failures >= 5
+    temp_db.save_source_checkpoint(SourceCheckpoint(
+        source="arxiv",
+        last_success_at=t_old,
+        last_attempt_at=t_recent,
+        consecutive_failures=5,
+        failure_threshold_reached=True,
+        max_consecutive_failures=5,
+        next_retry_at=now + timedelta(hours=4),
+        health_status="degraded",
+        last_error="Connection timed out",
+        last_error_category="network_error",
+        updated_at=t_recent,
+    ))
+    
+    # 3. Rate limited: HTTP 429
+    temp_db.save_source_checkpoint(SourceCheckpoint(
+        source="hackernews",
+        last_success_at=t_old,
+        last_attempt_at=t_recent,
+        consecutive_failures=2,
+        health_status="rate_limited",
+        last_error="HTTP 429 Too Many Requests",
+        last_error_category="rate_limited",
+        next_retry_at=now + timedelta(minutes=30),
+        updated_at=t_recent,
+    ))
+
+    # 4. Offline: Network unreachable
+    temp_db.save_source_checkpoint(SourceCheckpoint(
+        source="openalex",
+        last_success_at=t_old,
+        last_attempt_at=t_recent,
+        consecutive_failures=3,
+        health_status="offline",
+        last_error="Host unreachable",
+        last_error_category="network_error",
+        updated_at=t_recent,
+    ))
+
+    # 5. Disabled: marked disabled
+    temp_db.save_source_checkpoint(SourceCheckpoint(
+        source="crossref",
+        last_success_at=t_old,
+        last_attempt_at=t_old,
+        consecutive_failures=0,
+        health_status="disabled",
+        updated_at=t_old,
+    ))
+
+    # 6. Unknown: Never attempted (no checkpoint saved for rss)
+
+    overview = get_runtime_overview(temp_db, now=now)
+    src_map = {s.source: s for s in overview.sources}
+
+    assert src_map["github"].health_status == "healthy"
+    assert src_map["arxiv"].health_status == "degraded"
+    assert src_map["arxiv"].failure_threshold_reached is True
+    assert src_map["hackernews"].health_status == "rate_limited"
+    assert src_map["openalex"].health_status == "offline"
+    assert src_map["crossref"].health_status == "disabled"
+    assert src_map["rss"].health_status == "unknown"
+    assert src_map["rss"].last_attempt_at is None
+    assert src_map["rss"].last_success_at is None
+
+
+# =========================================================================
+# 24. Authoritative Ingestion Freshness Boundary
+# =========================================================================
+
+def test_authoritative_ingestion_freshness_boundary(temp_db):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    t_ingest = now - timedelta(hours=1)
+
+    # Initial success on github
+    record_source_success("github", temp_db, now=t_ingest)
+    ov1 = get_runtime_overview(temp_db, now=now)
+    assert ov1.intelligence_freshness.last_successful_ingestion == t_ingest.isoformat()
+
+    # 1. Failed polling attempt does NOT advance freshness
+    record_source_failure("arxiv", "Timeout", temp_db, now=now)
+    ov2 = get_runtime_overview(temp_db, now=now)
+    assert ov2.intelligence_freshness.last_successful_ingestion == t_ingest.isoformat()
+
+    # 2. Scheduler evaluation does NOT advance freshness
+    temp_db.save_runtime_job(RuntimeJob(
+        job_name="semantic",
+        last_status="completed",
+        evaluation_status="due",
+        last_completed_at=now,
+        updated_at=now,
+    ))
+    ov3 = get_runtime_overview(temp_db, now=now)
+    assert ov3.intelligence_freshness.last_successful_ingestion == t_ingest.isoformat()
+
+    # 3. Briefing generation does NOT advance freshness
+    temp_db.save_daily_briefing(DailyBriefing(
+        id="briefing-2026-08-22",
+        briefing_date="2026-08-22",
+        generated_at=now,
+        item_count=5,
+        raw_items_json="[]",
+        total_items=5,
+    ))
+    ov4 = get_runtime_overview(temp_db, now=now)
+    assert ov4.intelligence_freshness.last_successful_ingestion == t_ingest.isoformat()
+
+    # 4. Successful source ingestion DOES advance freshness
+    t_new_success = now + timedelta(minutes=5)
+    record_source_success("arxiv", temp_db, now=t_new_success)
+    ov5 = get_runtime_overview(temp_db, now=now + timedelta(minutes=6))
+    assert ov5.intelligence_freshness.last_successful_ingestion == t_new_success.isoformat()
+
+
+# =========================================================================
+# 25. Partial Diagnostic Failures Handling
+# =========================================================================
+
+def test_partial_diagnostic_failures_handling(temp_db):
+    # 1. Source checkpoints query failure
+    with patch.object(temp_db, "get_all_source_checkpoints_map", side_effect=sqlite3.OperationalError("disk I/O error")):
+        ov = get_runtime_overview(temp_db)
+        assert ov.status == "DEGRADED"
+        assert ov.is_partial_availability is True
+        assert any("Source checkpoints query failed" in iss for iss in ov.issues)
+        # Jobs and metrics remain populated
+        assert len(ov.jobs) > 0
+
+    # 2. Database integrity corruption failure
+    with patch("app.services.runtime.check_system_health", return_value={
+        "status": "UNHEALTHY",
+        "database": "corrupt",
+        "network": "online",
+        "disk_status": "ok",
+        "issues": ["Database integrity check failed: file is not a database"],
+        "warnings": [],
+    }):
+        ov_corrupt = get_runtime_overview(temp_db)
+        assert ov_corrupt.status == "UNHEALTHY"
+        assert ov_corrupt.system.database == "corrupt"
+
+
+# =========================================================================
+# 26. Hostile Recursive Payload Sanitization at Serialization Boundary
+# =========================================================================
+
+def test_hostile_recursive_payload_sanitization_at_serialization_boundary(temp_db):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    hostile_error = (
+        r"CRITICAL: Failed connecting to https://admin:SuperSecretPassword123@api.private.corp/v1?token=tok-xyz-999 "
+        r"with Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secretpayload.signature "
+        r"while accessing \\fileserver01\shares\finance\db.sqlite "
+        r"from C:\Users\Administrator\Documents\hermes\repo\app.py "
+        r"and /home/deployer/.ssh/id_rsa and /Users/developer/Library/Keychains/login.keychain-db"
+    )
+
+    temp_db.save_source_checkpoint(SourceCheckpoint(
+        source="github",
+        last_attempt_at=now,
+        consecutive_failures=1,
+        health_status="retrying",
+        last_error=hostile_error,
+        updated_at=now,
+    ))
+
+    overview = get_runtime_overview(temp_db, now=now)
+    serialized_dict = overview.model_dump()
+    serialized_json = json.dumps(serialized_dict, default=str)
+
+    # Assert strict redaction across serialized output
+    assert "SuperSecretPassword123" not in serialized_json
+    assert "tok-xyz-999" not in serialized_json
+    assert "eyJhbGci" not in serialized_json
+    assert "fileserver01" not in serialized_json
+    assert "Administrator" not in serialized_json
+    assert "deployer" not in serialized_json
+    assert "developer" not in serialized_json
+    assert "[LOCAL_PATH]" in serialized_json
+    assert "Bearer [REDACTED]" in serialized_json
+    assert "https://[REDACTED]@" in serialized_json
+
+

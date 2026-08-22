@@ -249,7 +249,7 @@ export async function renderRuntimeView(container, store) {
               return `<tr>
                 <td class="text-semibold">${escapeHtml(s.source)}</td>
                 <td>
-                  <span class="runtime-status-badge ${statusClass}">
+                  <span class="runtime-status-badge ${statusClass}" title="Source status: ${escapeHtml(s.health_status || 'unknown')}" aria-label="Source status: ${escapeHtml(s.health_status || 'unknown')}">
                     ${escapeHtml((s.health_status || 'unknown').replace('_', ' '))}
                   </span>
                   ${s.failure_threshold_reached ? '<span class="runtime-threshold-tag" title="Failure threshold reached; capped at max backoff">THRESHOLD</span>' : ''}
@@ -306,7 +306,7 @@ export async function renderRuntimeView(container, store) {
               return `<tr>
                 <td class="text-semibold">${escapeHtml(j.job_name)}</td>
                 <td>
-                  <span class="runtime-status-badge ${jClass}">
+                  <span class="runtime-status-badge ${jClass}" title="Job status: ${escapeHtml(j.status || 'pending')}" aria-label="Job status: ${escapeHtml(j.status || 'pending')}">
                     ${escapeHtml((j.status || 'pending').replace('_', ' '))}
                   </span>
                 </td>
