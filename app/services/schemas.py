@@ -364,7 +364,7 @@ class CurrentIntelligenceState(BaseModel):
     maturity_stage: Optional[str] = None
     risk_level: Optional[str] = None
     risk_score: Optional[float] = None
-    risk_status: str = "not_assessed"
+    risk_status: Optional[str] = None
     claim_status: Optional[str] = None
     claims_count: int = 0
     events_count: int = 0
@@ -383,7 +383,10 @@ class SavedItemDetail(BaseModel):
     story_cluster_id: Optional[str] = None
     title: str
     verification_score: Optional[float] = None
+    claim_status: Optional[str] = None
     maturity_stage: Optional[str] = None
+    risk_level: Optional[str] = None
+    risk_status: Optional[str] = None
     risk_score: Optional[float] = None
     tags: List[str] = Field(default_factory=list)
     user_note: Optional[str] = None
@@ -396,6 +399,25 @@ class SavedItemDetail(BaseModel):
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
+
+
+class SaveItemRequest(BaseModel):
+    story_cluster_id: str
+    inbox_item_id: Optional[str] = None
+    user_note: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_request(self) -> "SaveItemRequest":
+        if not self.story_cluster_id or not self.story_cluster_id.strip():
+            raise ValueError("story_cluster_id must be provided and non-empty")
+        if self.user_note and len(self.user_note) > 2000:
+            raise ValueError("user_note cannot exceed 2000 characters")
+        if self.tags:
+            for t in self.tags:
+                if len(t) > 50:
+                    raise ValueError("Each tag cannot exceed 50 characters")
+        return self
 
 
 class ProjectSummary(BaseModel):

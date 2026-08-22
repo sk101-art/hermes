@@ -721,10 +721,9 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
         saveBtn.addEventListener('click', async () => {
           try {
             saveBtn.disabled = true;
-            saveBtn.innerHTML = `${getIcon('checkCircle')} Saved`;
-            await api.starInboxItem(storyId);
+            saveBtn.innerHTML = `${getIcon('checkCircle')} Saved to Library`;
+            await api.saveItem({ story_cluster_id: storyId });
           } catch {
-            // Idempotent star
             saveBtn.disabled = false;
           }
         });

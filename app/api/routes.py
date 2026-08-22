@@ -6,6 +6,7 @@ from app.services import intelligence as intel_service
 from app.services import projects as projects_service
 from app.services import runtime as runtime_service
 from app.services import saved as saved_service
+from app.services.schemas import SaveItemRequest
 from app.storage.db import Database
 
 router = APIRouter()
@@ -122,6 +123,36 @@ def get_saved(
 ):
     items = saved_service.get_saved_items(limit=limit, offset=offset, tag=tag, include_current=include_current, db=db)
     return {"count": len(items), "saved_items": items}
+
+
+@router.post("/saved", summary="Save a story cluster to personal library")
+def save_item(
+    req: SaveItemRequest,
+    db: Database = Depends(get_db),
+):
+    success, msg, item = saved_service.save_cluster_item(
+        story_cluster_id=req.story_cluster_id,
+        inbox_item_id=req.inbox_item_id,
+        user_note=req.user_note,
+        tags=req.tags,
+        db=db,
+    )
+    if not success:
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg, "saved_item": item}
+
+
+@router.delete("/saved/{saved_id}", summary="Remove an item from saved personal library")
+def delete_saved(
+    saved_id: str,
+    db: Database = Depends(get_db),
+):
+    success, msg = saved_service.delete_saved_item(saved_id, db=db)
+    if not success:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"message": msg}
 
 
 @router.get("/changes", summary="Recent intelligence changes and claim revisions")

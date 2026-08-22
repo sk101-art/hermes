@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from app.models.schemas import Claim, SavedItem, StoryCluster, TechnologyAssessment, TechnologyState, UserFeedback
+from app.services.intelligence import aggregate_cluster_claim_status
 from app.services.schemas import CurrentIntelligenceState, SavedItemDetail
 from app.storage.db import Database
 
@@ -153,7 +154,7 @@ def get_saved_items(
                     risk_level=risk_level,
                     risk_score=round(risk_score, 4) if risk_score is not None else None,
                     risk_status=risk_status,
-                    claim_status=cl_claims[0].status if cl_claims else None,
+                    claim_status=aggregate_cluster_claim_status(cl_claims),
                     claims_count=len(cl_claims),
                     events_count=ev_count,
                     is_active=True,
@@ -168,7 +169,10 @@ def get_saved_items(
             "story_cluster_id": s.story_cluster_id,
             "title": s.title_snapshot,
             "verification_score": round(s.verification_snapshot, 4) if s.verification_snapshot is not None else None,
+            "claim_status": s.claim_status_snapshot,
             "maturity_stage": s.maturity_snapshot,
+            "risk_level": s.risk_level_snapshot,
+            "risk_status": s.risk_status_snapshot,
             "risk_score": round(s.risk_snapshot, 4) if s.risk_snapshot is not None else None,
             "tags": list(s.tags),
             "user_note": s.user_note,
@@ -213,7 +217,10 @@ def get_saved_item(
         "inbox_item_id": s.inbox_item_id,
         "title": s.title_snapshot,
         "verification_score": round(s.verification_snapshot, 4) if s.verification_snapshot is not None else None,
+        "claim_status": s.claim_status_snapshot,
         "maturity_stage": s.maturity_snapshot,
+        "risk_level": s.risk_level_snapshot,
+        "risk_status": s.risk_status_snapshot,
         "risk_score": round(s.risk_snapshot, 4) if s.risk_snapshot is not None else None,
         "user_note": s.user_note,
         "tags": list(s.tags),
@@ -261,16 +268,37 @@ def star_inbox_item(
     existing_saved = db.get_saved_item(saved_id)
 
     if existing_saved:
+        if not existing_saved.is_active:
+            existing_saved.is_active = True
+            db.save_saved_item(existing_saved)
         return True, "Item is already starred and saved in library", get_saved_item(saved_id, db=db)
 
     # 3. Create persistent SavedItem snapshot with genuine intelligence values
     assessment = db.get_technology_assessment(item.story_cluster_id)
     tech_state = db.get_technology_state(item.story_cluster_id)
     claims = db.get_claims_by_cluster(item.story_cluster_id, current_only=True)
-    claim_scores = [c.verification_score for c in claims]
+    claim_scores = [c.verification_score for c in claims if c.verification_score is not None]
     v_snap = float(sum(claim_scores) / len(claim_scores)) if claim_scores else None
+    claim_status_snap = aggregate_cluster_claim_status(claims)
     m_snap = assessment.maturity_stage if assessment else None
-    r_snap = tech_state.risk_score if tech_state else None
+
+    if tech_state:
+        if not claims and len(item.matched_project_ids) == 0:
+            r_status_snap = "insufficient_data"
+            r_level_snap = None
+        else:
+            r_status_snap = "assessed"
+            r_level_snap = (
+                "critical" if tech_state.risk_score >= 0.7
+                else ("high" if tech_state.risk_score >= 0.4
+                else ("medium" if tech_state.risk_score >= 0.2
+                else "low"))
+            )
+        r_snap = tech_state.risk_score
+    else:
+        r_status_snap = "not_assessed"
+        r_level_snap = None
+        r_snap = None
 
     new_saved = SavedItem(
         id=saved_id,
@@ -283,6 +311,9 @@ def star_inbox_item(
         verification_snapshot=v_snap,
         maturity_snapshot=m_snap,
         risk_snapshot=r_snap,
+        claim_status_snapshot=claim_status_snap,
+        risk_status_snapshot=r_status_snap,
+        risk_level_snapshot=r_level_snap,
         user_note=None,
         tags=["starred"],
         project_ids=list(item.matched_project_ids),
@@ -304,6 +335,144 @@ def star_inbox_item(
     db.save_user_feedback(fb)
 
     return True, "Item starred and saved successfully", get_saved_item(saved_id, db=db)
+
+
+def save_cluster_item(
+    story_cluster_id: str,
+    inbox_item_id: Optional[str] = None,
+    user_note: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    db: Optional[Database] = None,
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """
+    Saves a Story Cluster directly to the Saved Intelligence library with complete snapshot values.
+    Idempotent: Re-saving an existing active item preserves snapshot and merges notes/tags.
+    Reactivating a deactivated item restores it without duplicate rows.
+    """
+    if db is None:
+        db = Database()
+
+    if not story_cluster_id or not isinstance(story_cluster_id, str) or not story_cluster_id.strip():
+        return False, "story_cluster_id must be provided and non-empty", None
+
+    cid_clean = story_cluster_id.strip()
+
+    # Validate inbox_item_id association if provided
+    if inbox_item_id:
+        inbox_item = db.get_inbox_item(inbox_item_id.strip())
+        if not inbox_item:
+            return False, f"Inbox item '{inbox_item_id}' not found", None
+        if inbox_item.story_cluster_id != cid_clean:
+            return False, f"Inbox item '{inbox_item_id}' does not belong to story_cluster_id '{cid_clean}'", None
+
+    cluster = db.get_cluster(cid_clean)
+    if not cluster:
+        return False, f"Story cluster '{cid_clean}' not found", None
+
+    saved_id = f"saved:{cid_clean}"
+    existing_saved = db.get_saved_item(saved_id)
+
+    clean_tags = [re.sub(r"[^a-zA-Z0-9_\-]", "", t.strip().lower()) for t in (tags or []) if t and t.strip()]
+    clean_tags = [t for t in clean_tags if t and len(t) <= 50]
+
+    if existing_saved:
+        was_inactive = not existing_saved.is_active
+        existing_saved.is_active = True
+        if user_note and user_note.strip():
+            existing_saved.user_note = user_note.strip()[:2000]
+        if clean_tags:
+            for t in clean_tags:
+                if t not in existing_saved.tags:
+                    existing_saved.tags.append(t)
+        db.save_saved_item(existing_saved)
+
+        if inbox_item_id:
+            star_inbox_item(inbox_item_id, db=db)
+
+        msg = "Item reactivated in saved library" if was_inactive else "Item is already saved in library"
+        return True, msg, get_saved_item(saved_id, db=db)
+
+    now = datetime.now(timezone.utc)
+    assessment = db.get_technology_assessment(cid_clean)
+    tech_state = db.get_technology_state(cid_clean)
+    claims = db.get_claims_by_cluster(cid_clean, current_only=True)
+    claim_scores = [c.verification_score for c in claims if c.verification_score is not None]
+    v_snap = float(sum(claim_scores) / len(claim_scores)) if claim_scores else None
+    claim_status_snap = aggregate_cluster_claim_status(claims)
+    m_snap = assessment.maturity_stage if assessment else None
+
+    ev_count = len(cluster.event_ids) if hasattr(cluster, "event_ids") else 0
+    if tech_state:
+        if not claims and ev_count == 0:
+            r_status_snap = "insufficient_data"
+            r_level_snap = None
+        else:
+            r_status_snap = "assessed"
+            r_level_snap = (
+                "critical" if tech_state.risk_score >= 0.7
+                else ("high" if tech_state.risk_score >= 0.4
+                else ("medium" if tech_state.risk_score >= 0.2
+                else "low"))
+            )
+        r_snap = tech_state.risk_score
+    else:
+        r_status_snap = "not_assessed"
+        r_level_snap = None
+        r_snap = None
+
+    new_saved = SavedItem(
+        id=saved_id,
+        entity_type="cluster",
+        entity_id=cid_clean,
+        story_cluster_id=cid_clean,
+        inbox_item_id=inbox_item_id.strip() if inbox_item_id else None,
+        title_snapshot=cluster.canonical_title,
+        saved_at=now,
+        verification_snapshot=v_snap,
+        maturity_snapshot=m_snap,
+        risk_snapshot=r_snap,
+        claim_status_snapshot=claim_status_snap,
+        risk_status_snapshot=r_status_snap,
+        risk_level_snapshot=r_level_snap,
+        user_note=user_note.strip()[:2000] if user_note else None,
+        tags=clean_tags if clean_tags else ["saved"],
+        project_ids=[],
+        is_active=True,
+        link_status="resolved",
+        event_ids_snapshot=list(cluster.event_ids) if hasattr(cluster, "event_ids") else [],
+    )
+    db.save_saved_item(new_saved)
+
+    if inbox_item_id:
+        star_inbox_item(inbox_item_id, db=db)
+
+    return True, "Story saved successfully", get_saved_item(saved_id, db=db)
+
+
+def delete_saved_item(
+    saved_id: str,
+    db: Optional[Database] = None,
+) -> Tuple[bool, str]:
+    """
+    Deactivates a SavedItem by its canonical SavedItem ID.
+    Preserves historical retention in the database while removing it from active lists.
+    """
+    if db is None:
+        db = Database()
+
+    if not saved_id or not isinstance(saved_id, str) or not saved_id.strip():
+        return False, "saved_id must be provided and non-empty"
+
+    sid_clean = saved_id.strip()
+    s = db.get_saved_item(sid_clean)
+    if not s or not s.is_active:
+        return False, f"Saved item '{sid_clean}' not found"
+
+    db.deactivate_saved_item(s.id)
+    if s.inbox_item_id:
+        unstar_inbox_item(s.inbox_item_id, db=db)
+
+    return True, f"Saved item '{sid_clean}' removed successfully"
 
 
 def unstar_inbox_item(

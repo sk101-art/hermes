@@ -1247,6 +1247,36 @@ test('Search URL state serialization and restoration preserve all query and filt
 
 function createMockContainer() {
   const elements = {};
+  function makeMockElement() {
+    return {
+      value: '',
+      checked: false,
+      disabled: false,
+      style: {},
+      _html: '',
+      _attrs: {},
+      getAttribute(attr) { return this._attrs[attr] || null; },
+      setAttribute(attr, val) { this._attrs[attr] = String(val); },
+      get innerHTML() { return this._html; },
+      set innerHTML(v) { this._html = v; },
+      _listeners: {},
+      addEventListener(event, handler) {
+        if (!this._listeners[event]) this._listeners[event] = [];
+        this._listeners[event].push(handler);
+      },
+      async click() {
+        const handlers = this._listeners['click'] || [];
+        for (const h of handlers) {
+          await h({ target: this, preventDefault() {}, closest: (s) => this });
+        }
+      },
+      closest() { return this; },
+      appendChild() {},
+      focus() {},
+      remove() {}
+    };
+  }
+
   const container = {
     _html: '',
     get innerHTML() {
@@ -1257,16 +1287,7 @@ function createMockContainer() {
     },
     querySelector: (sel) => {
       if (!elements[sel]) {
-        elements[sel] = {
-          value: '',
-          checked: false,
-          _html: '',
-          get innerHTML() { return this._html; },
-          set innerHTML(v) { this._html = v; },
-          addEventListener: () => {},
-          appendChild: () => {},
-          focus: () => {}
-        };
+        elements[sel] = makeMockElement();
       }
       return elements[sel];
     },
@@ -1491,6 +1512,456 @@ test('Source control renders only returned sources on /sources success and no fa
 
   fetchMock = null;
 });
+
+
+// =========================================================================
+// Phase 8: Saved Intelligence Library & Snapshot Contract Tests
+// =========================================================================
+
+test('Phase 8: Saved view requests include_current=true on initial load', async () => {
+  const { renderSavedView } = await import('../src/views/saved.js');
+  let requestedUrl = null;
+
+  fetchMock = async (url) => {
+    requestedUrl = url;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ count: 0, saved_items: [] })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderSavedView(container, store);
+
+  assert.ok(requestedUrl !== null);
+  assert.ok(requestedUrl.includes('/saved'));
+  assert.ok(requestedUrl.includes('include_current=true'));
+
+  fetchMock = null;
+});
+
+test('Phase 8: Saved card renders historical THEN snapshot without inferring status from scores', async () => {
+  const { renderSavedCard } = await import('../src/views/saved.js');
+
+  // Legacy item: has numeric scores but null snapshot statuses
+  const legacyItem = {
+    id: 'saved:legacy_1',
+    story_cluster_id: 'cl_legacy_1',
+    title_snapshot: 'Legacy Quantum Algorithm',
+    saved_at: '2026-01-01T10:00:00Z',
+    verification_score: 0.64,
+    claim_status: null, // NOT RECORDED
+    maturity_stage: 'prototype',
+    risk_score: 0.31,
+    risk_status: null, // NOT RECORDED
+    risk_level: null,  // NOT RECORDED
+    tags: ['quantum'],
+    current_state: {
+      title: 'Legacy Quantum Algorithm',
+      cluster_score: 0.8,
+      verification_score: 0.9,
+      claim_status: 'supported',
+      maturity_stage: 'established',
+      risk_status: 'assessed',
+      risk_level: 'low',
+      risk_score: 0.15,
+      claims_count: 5,
+      events_count: 3,
+      is_active: true
+    }
+  };
+
+  const html = renderSavedCard(legacyItem);
+
+  // Must show historical score and explicit "Claim status: Not recorded historically"
+  assert.ok(html.includes('Saved verification: 64%'));
+  assert.ok(html.includes('Claim status: Not recorded historically'));
+  assert.ok(html.includes('Saved risk: 31%'));
+  assert.ok(html.includes('Risk status: Not recorded historically'));
+
+  // Must NOT infer Supported or Medium risk for the THEN snapshot
+  const thenSection = html.split('NOW (Current Intelligence)')[0];
+  assert.ok(!thenSection.includes('badge-verification-supported'));
+  assert.ok(!thenSection.includes('Medium risk'));
+  assert.ok(!thenSection.includes('badge-risk-assessed'));
+  assert.ok(!thenSection.includes('Unverified'));
+
+  assert.ok(html.includes('THEN (Saved Snapshot)'));
+  assert.ok(html.includes('NOW (Current Intelligence)'));
+});
+
+test('Phase 8: Saved card renders live NOW state and evolution diff accurately', async () => {
+  const { renderSavedCard, computeEvolutionDiff } = await import('../src/views/saved.js');
+
+  const evolvedItem = {
+    id: 'saved:evolved_1',
+    story_cluster_id: 'cl_evolved_1',
+    title_snapshot: 'High-Temperature Superconductivity',
+    saved_at: '2026-01-01T10:00:00Z',
+    verification_score: 0.85,
+    claim_status: 'supported',
+    maturity_stage: 'concept',
+    risk_score: 0.6,
+    risk_status: 'assessed',
+    risk_level: 'high',
+    tags: ['physics'],
+    current_state: {
+      title: 'High-Temperature Superconductivity',
+      cluster_score: 0.9,
+      verification_score: 0.25,
+      claim_status: 'contradicted',
+      maturity_stage: 'early_adoption',
+      risk_status: 'assessed',
+      risk_level: 'critical',
+      risk_score: 0.85,
+      claims_count: 12,
+      events_count: 8,
+      is_active: true
+    }
+  };
+
+  const diff = computeEvolutionDiff(evolvedItem);
+  assert.strictEqual(diff.status, 'changed');
+  assert.ok(diff.diffs.some(d => d.label.includes('Maturity: Concept → Early Adoption')));
+  assert.ok(diff.diffs.some(d => d.label.includes('Claims: Supported → Contradicted')));
+  assert.ok(diff.diffs.some(d => d.label.includes('Risk: High risk → Critical risk')));
+  assert.ok(diff.diffs.some(d => d.label.includes('Verification shift: -60%')));
+
+  const html = renderSavedCard(evolvedItem);
+  assert.ok(html.includes('Maturity: Concept → Early Adoption'));
+  assert.ok(html.includes('Claims: Supported → Contradicted'));
+  assert.ok(html.includes('12 claims · 8 events'));
+});
+
+test('Phase 8 regression: Saved comparison rendering strictly enforces canonical maturity terminology and never outputs noncanonical labels', async () => {
+  const { renderSavedCard, computeEvolutionDiff, getMaturityLabel, CANONICAL_MATURITY_LABELS } = await import('../src/views/saved.js');
+
+  // Verify canonical dictionary contains all 7 canonical stages
+  const expectedCanonical = ['concept', 'research', 'prototype', 'experimental', 'early_adoption', 'production_candidate', 'established'];
+  assert.strictEqual(Object.keys(CANONICAL_MATURITY_LABELS).length, 7);
+  expectedCanonical.forEach(k => {
+    assert.ok(CANONICAL_MATURITY_LABELS[k] !== undefined, `Missing canonical key ${k}`);
+  });
+
+  // Verify transitions between canonical stages
+  const canonicalTransitions = [
+    { from: 'concept', to: 'research', label: 'Maturity: Concept → Research' },
+    { from: 'prototype', to: 'experimental', label: 'Maturity: Prototype → Experimental' },
+    { from: 'experimental', to: 'early_adoption', label: 'Maturity: Experimental → Early Adoption' },
+    { from: 'early_adoption', to: 'production_candidate', label: 'Maturity: Early Adoption → Production Candidate' },
+    { from: 'production_candidate', to: 'established', label: 'Maturity: Production Candidate → Established' },
+  ];
+
+  const forbiddenNoncanonical = ['Growth', 'Mature', 'Stable', 'Proposal', 'Production Ready'];
+
+  for (const trans of canonicalTransitions) {
+    const item = {
+      id: `saved:${trans.from}_${trans.to}`,
+      story_cluster_id: `cl_${trans.from}_${trans.to}`,
+      title_snapshot: `Canonical Test ${trans.from} to ${trans.to}`,
+      saved_at: '2026-01-01T10:00:00Z',
+      maturity_stage: trans.from,
+      current_state: {
+        title: `Canonical Test ${trans.from} to ${trans.to}`,
+        maturity_stage: trans.to,
+        is_active: true
+      }
+    };
+
+    const diff = computeEvolutionDiff(item);
+    assert.strictEqual(diff.status, 'changed');
+    assert.ok(diff.diffs.some(d => d.label === trans.label), `Expected "${trans.label}" but got ${JSON.stringify(diff.diffs)}`);
+
+    const html = renderSavedCard(item);
+    assert.ok(html.includes(trans.label), `Expected rendered card to include "${trans.label}"`);
+
+    // Verify none of the forbidden noncanonical labels are present in the output
+    for (const forbidden of forbiddenNoncanonical) {
+      assert.ok(!html.includes(`Maturity: ${forbidden}`), `Found forbidden noncanonical label "${forbidden}" in HTML`);
+      assert.ok(!diff.diffs.some(d => d.label.includes(forbidden)), `Found forbidden noncanonical label "${forbidden}" in diffs`);
+    }
+  }
+});
+
+test('Phase 8: Saved card renders Current intelligence unavailable when current_state is null', async () => {
+  const { renderSavedCard, computeEvolutionDiff } = await import('../src/views/saved.js');
+
+  const inactiveItem = {
+    id: 'saved:inactive_1',
+    story_cluster_id: 'cl_inactive_1',
+    title_snapshot: 'Defunct Project Research',
+    saved_at: '2026-01-01T10:00:00Z',
+    verification_score: 0.5,
+    claim_status: 'unverified',
+    maturity_stage: 'concept',
+    risk_score: 0.2,
+    risk_status: 'assessed',
+    risk_level: 'low',
+    tags: [],
+    current_state: null
+  };
+
+  const diff = computeEvolutionDiff(inactiveItem);
+  assert.strictEqual(diff.status, 'unavailable');
+
+  const html = renderSavedCard(inactiveItem);
+  assert.ok(html.includes('Current intelligence unavailable'));
+  assert.ok(html.includes('Underlying story cluster is no longer active'));
+});
+
+test('Phase 8: Unsave action dispatches DELETE /saved/{savedId} with SavedItem ID', async () => {
+  const { renderSavedView } = await import('../src/views/saved.js');
+  let deleteUrl = null;
+  let deleteMethod = null;
+
+  fetchMock = async (url, opts) => {
+    if (opts && opts.method === 'DELETE') {
+      deleteUrl = url;
+      deleteMethod = opts.method;
+      return { ok: true, status: 200, json: async () => ({ message: 'Saved item removed successfully' }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 1,
+        saved_items: [{
+          id: 'saved:cl_test_del',
+          story_cluster_id: 'cl_test_del',
+          title_snapshot: 'Test Story to Delete',
+          saved_at: '2026-02-01T10:00:00Z',
+          verification_score: 0.8,
+          claim_status: 'supported',
+          tags: ['test'],
+          current_state: null
+        }]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderSavedView(container, store);
+
+  const unsaveBtn = container.querySelector('[data-action="unsave"]');
+  assert.ok(unsaveBtn !== null);
+  unsaveBtn.setAttribute('data-saved-id', 'saved:cl_test_del');
+  assert.strictEqual(unsaveBtn.getAttribute('data-saved-id'), 'saved:cl_test_del');
+
+  // Trigger delegated click on items container
+  const itemsContainer = container.querySelector('#saved-items-container');
+  const handlers = itemsContainer._listeners['click'] || [];
+  for (const h of handlers) {
+    await h({ target: unsaveBtn, preventDefault() {}, closest: (sel) => sel.includes('unsave') ? unsaveBtn : null });
+  }
+
+  assert.ok(deleteUrl !== null);
+  assert.ok(deleteUrl.includes('/saved/saved%3Acl_test_del') || deleteUrl.includes('/saved/saved:cl_test_del'));
+  assert.strictEqual(deleteMethod, 'DELETE');
+
+  fetchMock = null;
+});
+
+test('Phase 8: Unsave action failure preserves card in DOM, re-enables action button, and surfaces accessible error announcement in live-region', async () => {
+  const { renderSavedView } = await import('../src/views/saved.js');
+
+  fetchMock = async (url, opts) => {
+    if (opts && opts.method === 'DELETE') {
+      return {
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => ({ detail: 'Database connection failed during delete' })
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 1,
+        saved_items: [{
+          id: 'saved:cl_fail_del',
+          story_cluster_id: 'cl_fail_del',
+          title_snapshot: 'Test Story Retained on Failure',
+          saved_at: '2026-02-01T10:00:00Z',
+          verification_score: 0.8,
+          claim_status: 'supported',
+          tags: ['test'],
+          current_state: null
+        }]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  let savedItemsInStore = null;
+  const store = {
+    state: {},
+    getState: () => store.state,
+    setState: (s) => Object.assign(store.state, s),
+    setConnection: () => {},
+    setViewData: (view, data) => {
+      if (view === 'saved') savedItemsInStore = data;
+    }
+  };
+
+  await renderSavedView(container, store);
+
+  const unsaveBtn = container.querySelector('[data-action="unsave"]');
+  assert.ok(unsaveBtn !== null);
+  unsaveBtn.setAttribute('data-saved-id', 'saved:cl_fail_del');
+  unsaveBtn.setAttribute('data-title', 'Test Story Retained on Failure');
+
+  // Trigger delegated click on items container
+  const itemsContainer = container.querySelector('#saved-items-container');
+  const handlers = itemsContainer._listeners['click'] || [];
+  for (const h of handlers) {
+    await h({ target: unsaveBtn, preventDefault() {}, closest: (sel) => sel.includes('unsave') ? unsaveBtn : null });
+  }
+
+  // Button must be re-enabled after failure
+  assert.strictEqual(unsaveBtn.disabled, false);
+  assert.ok(unsaveBtn.innerHTML.includes('Remove'));
+
+  // Live region must announce error
+  const liveRegion = container.querySelector('#saved-live-region');
+  assert.ok(liveRegion.textContent.includes('Failed to remove item'));
+
+  // Store data array must still contain the item
+  assert.strictEqual(savedItemsInStore.length, 1);
+  assert.strictEqual(savedItemsInStore[0].id, 'saved:cl_fail_del');
+
+  fetchMock = null;
+});
+
+test('Phase 8: Story Dossier save button calls POST /saved with story_cluster_id', async () => {
+  const { renderStoryDetailView } = await import('../src/views/story-detail.js');
+  let postUrl = null;
+  let postBody = null;
+
+  fetchMock = async (url, opts) => {
+    if (opts && opts.method === 'POST' && url.includes('/saved')) {
+      postUrl = url;
+      postBody = JSON.parse(opts.body);
+      return { ok: true, status: 200, json: async () => ({ message: 'Story saved successfully', saved_item: {} }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'cl_save_test',
+        canonical_title: 'Dossier to Save',
+        cluster_score: 0.85,
+        sources: ['github'],
+        claims: [],
+        events: []
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: { selectedStoryId: 'cl_save_test' }, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {} };
+
+  await renderStoryDetailView(container, store, { storyId: 'cl_save_test' });
+
+  const saveBtn = container.querySelector('#btn-save-dossier');
+  assert.ok(saveBtn !== null);
+
+  await saveBtn.click();
+
+  assert.ok(postUrl !== null);
+  assert.ok(postUrl.includes('/saved'));
+  assert.strictEqual(postBody.story_cluster_id, 'cl_save_test');
+
+  fetchMock = null;
+});
+
+test('Phase 8: Exact request counts for initial Saved view and zero story requests', async () => {
+  const { renderSavedView } = await import('../src/views/saved.js');
+  const capturedRequests = [];
+
+  fetchMock = async (url, opts) => {
+    capturedRequests.push({ url, method: opts?.method || 'GET' });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 2,
+        saved_items: [
+          {
+            id: 'saved:cl_req_1',
+            story_cluster_id: 'cl_req_1',
+            title_snapshot: 'Req Test 1',
+            saved_at: '2026-02-01T10:00:00Z',
+            verification_score: 0.8,
+            claim_status: 'supported',
+            tags: ['test'],
+            current_state: {
+              title: 'Req Test 1 Live',
+              cluster_score: 0.8,
+              verification_score: 0.85,
+              claim_status: 'supported',
+              maturity_stage: 'established',
+              risk_status: 'assessed',
+              risk_level: 'low',
+              risk_score: 0.1,
+              claims_count: 3,
+              events_count: 2,
+              is_active: true
+            }
+          },
+          {
+            id: 'saved:cl_req_2',
+            story_cluster_id: 'cl_req_2',
+            title_snapshot: 'Req Test 2',
+            saved_at: '2026-02-01T10:00:00Z',
+            verification_score: 0.5,
+            claim_status: 'unverified',
+            tags: ['test'],
+            current_state: {
+              title: 'Req Test 2 Live',
+              cluster_score: 0.6,
+              verification_score: 0.5,
+              claim_status: 'unverified',
+              maturity_stage: 'prototype',
+              risk_status: 'assessed',
+              risk_level: 'medium',
+              risk_score: 0.35,
+              claims_count: 2,
+              events_count: 1,
+              is_active: true
+            }
+          }
+        ]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderSavedView(container, store);
+
+  // Exact request assertions:
+  // 1. Exactly 1 request to /saved?include_current=true
+  const savedRequests = capturedRequests.filter(r => r.url.includes('/saved'));
+  assert.strictEqual(savedRequests.length, 1);
+  assert.ok(savedRequests[0].url.includes('include_current=true'));
+
+  // 2. Exactly 0 requests to /stories/ or individual cluster hydration
+  const storyRequests = capturedRequests.filter(r => r.url.includes('/stories/'));
+  assert.strictEqual(storyRequests.length, 0);
+
+  // Total request count for initial view load is exactly 1
+  assert.strictEqual(capturedRequests.length, 1);
+
+  fetchMock = null;
+});
+
 
 
 

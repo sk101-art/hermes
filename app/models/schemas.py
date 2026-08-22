@@ -472,6 +472,9 @@ class SavedItem(BaseModel):
     verification_snapshot: Optional[float] = None
     maturity_snapshot: Optional[str] = None
     risk_snapshot: Optional[float] = None
+    claim_status_snapshot: Optional[str] = None
+    risk_status_snapshot: Optional[str] = None
+    risk_level_snapshot: Optional[str] = None
     user_note: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     project_ids: List[str] = Field(default_factory=list)

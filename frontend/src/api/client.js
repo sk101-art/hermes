@@ -72,13 +72,15 @@ export async function request(endpoint, options = {}) {
   }
 
   try {
+    const isJsonBody = fetchOptions.body && typeof fetchOptions.body === 'object' && (typeof FormData === 'undefined' || !(fetchOptions.body instanceof FormData));
+    const serializedBody = isJsonBody ? JSON.stringify(fetchOptions.body) : fetchOptions.body;
+
     const response = await fetch(url, {
       ...fetchOptions,
+      body: serializedBody,
       headers: {
         'Accept': 'application/json',
-        ...(fetchOptions.body && typeof fetchOptions.body === 'object' && !(fetchOptions.body instanceof FormData)
-          ? { 'Content-Type': 'application/json' }
-          : {}),
+        ...(isJsonBody ? { 'Content-Type': 'application/json' } : {}),
         ...fetchOptions.headers,
       },
       signal: controller.signal,

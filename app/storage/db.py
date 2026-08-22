@@ -191,6 +191,20 @@ class Database:
                     pass
                 break
 
+        saved_info = self.conn.execute("PRAGMA table_info(saved_items)").fetchall()
+        existing_saved_cols = {r["name"] for r in saved_info}
+        saved_additions = [
+            ("claim_status_snapshot", "TEXT"),
+            ("risk_status_snapshot", "TEXT"),
+            ("risk_level_snapshot", "TEXT"),
+        ]
+        for col_name, col_def in saved_additions:
+            if col_name not in existing_saved_cols:
+                try:
+                    self.conn.execute(f"ALTER TABLE saved_items ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
+
         self.conn.commit()
 
     # --- Event Methods ---
@@ -1841,6 +1855,11 @@ class Database:
     # --- SavedItem Methods ---
 
     def _row_to_saved_item(self, r: sqlite3.Row) -> SavedItem:
+        keys = r.keys() if hasattr(r, "keys") else []
+        claim_status_snap = r["claim_status_snapshot"] if "claim_status_snapshot" in keys and r["claim_status_snapshot"] is not None else None
+        risk_status_snap = r["risk_status_snapshot"] if "risk_status_snapshot" in keys and r["risk_status_snapshot"] is not None else None
+        risk_level_snap = r["risk_level_snapshot"] if "risk_level_snapshot" in keys and r["risk_level_snapshot"] is not None else None
+
         return SavedItem(
             id=r["id"],
             entity_type=r["entity_type"],
@@ -1852,6 +1871,9 @@ class Database:
             verification_snapshot=r["verification_snapshot"] if r["verification_snapshot"] is not None else None,
             maturity_snapshot=r["maturity_snapshot"] if r["maturity_snapshot"] is not None else None,
             risk_snapshot=r["risk_snapshot"] if r["risk_snapshot"] is not None else None,
+            claim_status_snapshot=claim_status_snap,
+            risk_status_snapshot=risk_status_snap,
+            risk_level_snapshot=risk_level_snap,
             user_note=r["user_note"],
             tags=json.loads(r["tags_json"]) if r["tags_json"] else [],
             project_ids=json.loads(r["project_ids_json"]) if r["project_ids_json"] else [],
@@ -1865,9 +1887,10 @@ class Database:
         INSERT OR REPLACE INTO saved_items (
             id, entity_type, entity_id, story_cluster_id, inbox_item_id,
             title_snapshot, saved_at, verification_snapshot, maturity_snapshot,
-            risk_snapshot, user_note, tags_json, project_ids_json, is_active,
+            risk_snapshot, claim_status_snapshot, risk_status_snapshot, risk_level_snapshot,
+            user_note, tags_json, project_ids_json, is_active,
             link_status, event_ids_snapshot_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -1882,6 +1905,9 @@ class Database:
                 item.verification_snapshot,
                 item.maturity_snapshot,
                 item.risk_snapshot,
+                item.claim_status_snapshot,
+                item.risk_status_snapshot,
+                item.risk_level_snapshot,
                 item.user_note,
                 json.dumps(item.tags),
                 json.dumps(item.project_ids),

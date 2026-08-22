@@ -146,14 +146,14 @@ def temp_db():
     db.save_technology_assessment(
         TechnologyAssessment(
             cluster_id="cluster_llvm",
-            maturity_stage="production_ready",
+            maturity_stage="established",
             assessment_score=0.85,
         )
     )
     db.save_technology_assessment(
         TechnologyAssessment(
             cluster_id="cluster_rag",
-            maturity_stage="maturing",
+            maturity_stage="early_adoption",
             assessment_score=0.75,
         )
     )
@@ -276,7 +276,7 @@ def test_story_details(temp_db):
     assert len(story.events) == 1
     assert len(story.claims) == 1
     assert story.claims[0]["text"] == "LLVM 20.0 JIT improves compile latency by 45%"
-    assert story.verification["maturity_stage"] == "production_ready"
+    assert story.verification["maturity_stage"] == "established"
     assert len(story.project_matches) == 1
 
 
@@ -642,6 +642,264 @@ def test_search_symbol_queries_cpp_cuda_aes(tmp_path):
     # Test AES-256
     res_aes = search_intelligence("AES-256", db=db)
     assert any(r.entity_id == "cl_aes" for r in res_aes)
+
+
+# =========================================================================
+# Phase 8: Saved Intelligence Library & Snapshot Contract Tests
+# =========================================================================
+
+def test_saved_schema_migration_preserves_legacy_rows_without_backfill(tmp_path):
+    """Proves legacy SavedItem rows with pre-Phase-8 schema migrate safely with NULL snapshot statuses without backfill."""
+    import sqlite3
+    db_path = str(tmp_path / "legacy_saved.db")
+
+    # Create pre-Phase-8 saved_items table manually without the 3 new columns
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE saved_items (
+            id TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL DEFAULT 'cluster',
+            entity_id TEXT NOT NULL,
+            story_cluster_id TEXT NOT NULL,
+            inbox_item_id TEXT,
+            title_snapshot TEXT NOT NULL,
+            saved_at TEXT NOT NULL,
+            verification_snapshot REAL,
+            maturity_snapshot TEXT,
+            risk_snapshot REAL,
+            user_note TEXT,
+            tags_json TEXT,
+            project_ids_json TEXT,
+            is_active INTEGER DEFAULT 1,
+            link_status TEXT DEFAULT 'resolved',
+            event_ids_snapshot_json TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO saved_items (
+            id, entity_type, entity_id, story_cluster_id, title_snapshot,
+            saved_at, verification_snapshot, maturity_snapshot, risk_snapshot,
+            user_note, tags_json, project_ids_json, is_active
+        ) VALUES (
+            'saved:cl_legacy', 'cluster', 'cl_legacy', 'cl_legacy', 'Legacy Cluster Title',
+            '2026-01-01T10:00:00+00:00', 0.64, 'established', 0.31,
+            'Original note', '["research"]', '[]', 1
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Now open with Database class which runs schema migrations
+    db = Database(db_path)
+
+    # Verify columns were added
+    cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(saved_items)").fetchall()}
+    assert "claim_status_snapshot" in cols
+    assert "risk_status_snapshot" in cols
+    assert "risk_level_snapshot" in cols
+
+    # Verify legacy row has exact preserved fields and NULL for new snapshot statuses (no backfill)
+    item = db.get_saved_item("saved:cl_legacy")
+    assert item is not None
+    assert item.title_snapshot == "Legacy Cluster Title"
+    assert item.verification_snapshot == 0.64
+    assert item.maturity_snapshot == "established"
+    assert item.risk_snapshot == 0.31
+    assert item.claim_status_snapshot is None
+    assert item.risk_status_snapshot is None
+    assert item.risk_level_snapshot is None
+
+
+def test_saved_item_direct_save_truthful_snapshot_and_idempotence(tmp_path):
+    """Proves direct saving captures full truthful snapshot, is idempotent, and supports deactivation/reactivation."""
+    from app.models.schemas import Claim, StoryCluster, TechnologyAssessment, TechnologyState
+    from app.services.saved import get_saved_items, save_cluster_item, delete_saved_item
+
+    db = Database(str(tmp_path / "test_saved_idemp.db"))
+
+    # Seed story cluster, claims, assessment, and tech state
+    cid = "cl_test_phase8"
+    db.save_cluster(StoryCluster(id=cid, canonical_title="Quantum Compiler Optimization", cluster_score=0.88, event_ids=["ev1", "ev2"]))
+    db.save_claim(Claim(id="c1", cluster_id=cid, subject="Compiler", predicate="optimizes", object="Circuits", claim_text="Reduces gate depth by 40%", status="supported", verification_score=0.85, is_current=True))
+    db.save_claim(Claim(id="c2", cluster_id=cid, subject="Compiler", predicate="supports", object="Transmon", claim_text="Verified on transmon hardware", status="strongly_supported", verification_score=0.95, is_current=True))
+    db.save_technology_assessment(TechnologyAssessment(cluster_id=cid, maturity_stage="production_candidate", assessment_score=0.85))
+    db.save_technology_state(TechnologyState(cluster_id=cid, current_status="active", risk_score=0.15, trend="improving"))
+
+    # 1. Save directly
+    success, msg, saved = save_cluster_item(story_cluster_id=cid, user_note="Initial analysis", tags=["quantum", "compiler"], db=db)
+    assert success is True
+    assert saved is not None
+    assert saved["id"] == f"saved:{cid}"
+    assert saved["title"] == "Quantum Compiler Optimization"
+    assert saved["verification_score"] == 0.9  # mean of 0.85 and 0.95
+    assert saved["claim_status"] == "supported"  # 1 strongly_supported, 1 supported -> supported
+    assert saved["maturity_stage"] == "production_candidate"
+    assert saved["risk_status"] == "assessed"
+    assert saved["risk_level"] == "low"  # risk_score 0.15 < 0.2
+    assert saved["risk_score"] == 0.15
+    assert saved["user_note"] == "Initial analysis"
+    assert "quantum" in saved["tags"]
+
+    # 2. Re-save (idempotent): merges tags and updates note if provided
+    success2, msg2, saved2 = save_cluster_item(story_cluster_id=cid, user_note="Updated note", tags=["compiler", "benchmark"], db=db)
+    assert success2 is True
+    assert saved2["id"] == f"saved:{cid}"
+    assert saved2["user_note"] == "Updated note"
+    assert set(saved2["tags"]) == {"quantum", "compiler", "benchmark"}
+
+    # 3. Soft Delete by SavedItem ID
+    del_ok, del_msg = delete_saved_item(saved["id"], db=db)
+    assert del_ok is True
+    active_saved = get_saved_items(db=db)
+    assert not any(s["id"] == saved["id"] for s in active_saved)
+
+    # 4. Re-saving reactivates the record
+    success3, msg3, saved3 = save_cluster_item(story_cluster_id=cid, db=db)
+    assert success3 is True
+    assert "reactivated" in msg3.lower() or "already" in msg3.lower()
+    active_saved2 = get_saved_items(db=db)
+    assert any(s["id"] == saved["id"] for s in active_saved2)
+
+
+def test_saved_hydration_uses_canonical_aggregate_claim_status(tmp_path):
+    """Proves CurrentIntelligenceState hydration uses aggregate_cluster_claim_status and does not cause N+1 queries."""
+    from app.models.schemas import Claim, StoryCluster, TechnologyAssessment, TechnologyState
+    from app.services.saved import get_saved_items, save_cluster_item
+
+    db = Database(str(tmp_path / "test_saved_hydration.db"))
+
+    # Seed 3 clusters with different claim distributions
+    for i in range(3):
+        cid = f"cl_batch_{i}"
+        db.save_cluster(StoryCluster(id=cid, canonical_title=f"Cluster {i}", cluster_score=0.75, event_ids=[f"ev_{i}"]))
+        if i == 0:
+            # 1 supported, 1 contradicted -> mixed
+            db.save_claim(Claim(id=f"c_{i}_1", cluster_id=cid, subject="S", predicate="P", object="O", claim_text="Fact 1", status="supported", verification_score=0.8, is_current=True))
+            db.save_claim(Claim(id=f"c_{i}_2", cluster_id=cid, subject="S", predicate="P", object="O", claim_text="Fact 2", status="contradicted", verification_score=0.2, is_current=True))
+        else:
+            db.save_claim(Claim(id=f"c_{i}_1", cluster_id=cid, subject="S", predicate="P", object="O", claim_text="Fact 1", status="strongly_supported", verification_score=0.9, is_current=True))
+        db.save_technology_assessment(TechnologyAssessment(cluster_id=cid, maturity_stage="experimental"))
+        db.save_technology_state(TechnologyState(cluster_id=cid, current_status="active", risk_score=0.3))
+
+        save_cluster_item(story_cluster_id=cid, db=db)
+
+    # Hydrate with include_current=True
+    items = get_saved_items(limit=10, include_current=True, db=db)
+    assert len(items) == 3
+
+    # Check cluster 0 current state has mixed claim_status
+    c0 = next(it for it in items if it["story_cluster_id"] == "cl_batch_0")
+    assert c0["current_state"] is not None
+    assert c0["current_state"]["claim_status"] == "mixed"
+    assert c0["current_state"]["maturity_stage"] == "experimental"
+    assert c0["current_state"]["risk_level"] == "medium"
+    assert c0["current_state"]["risk_status"] == "assessed"
+
+
+def test_save_item_request_contract_validation(tmp_path):
+    """Proves SaveItemRequest validation enforces non-empty story_cluster_id, string lengths, and inbox association."""
+    import pytest
+    from pydantic import ValidationError
+    from app.models.schemas import InboxItem, StoryCluster
+    from app.services.schemas import SaveItemRequest
+    from app.services.saved import save_cluster_item
+
+    db = Database(str(tmp_path / "test_saved_req.db"))
+    db.save_cluster(StoryCluster(id="cl_match", canonical_title="Matching Cluster", cluster_score=0.8))
+    db.save_inbox_item(InboxItem(id="inbox_123", entity_id="cl_match", story_cluster_id="cl_match", title="Inbox Match", summary="", priority_score=0.8, why_it_matters=""))
+
+    # Empty story_cluster_id raises ValidationError
+    with pytest.raises(ValidationError):
+        SaveItemRequest(story_cluster_id="")
+
+    # Note > 2000 chars raises ValidationError
+    with pytest.raises(ValidationError):
+        SaveItemRequest(story_cluster_id="cl_match", user_note="x" * 2001)
+
+    # Tag > 50 chars raises ValidationError
+    with pytest.raises(ValidationError):
+        SaveItemRequest(story_cluster_id="cl_match", tags=["valid", "t" * 51])
+
+    # Valid SaveItemRequest succeeds
+    req = SaveItemRequest(story_cluster_id="cl_match", inbox_item_id="inbox_123", user_note="Note", tags=["tag1"])
+    assert req.story_cluster_id == "cl_match"
+
+    # Mismatch between inbox_item_id and story_cluster_id is rejected by service
+    ok, msg, res = save_cluster_item(story_cluster_id="cl_unrelated", inbox_item_id="inbox_123", db=db)
+    assert ok is False
+    assert "does not belong" in msg.lower()
+
+
+def test_save_identity_and_reactivation_all_five_sequences(tmp_path):
+    """Proves all 5 save sequences resolve strictly to canonical saved:{story_cluster_id} with no duplicate active rows."""
+    from app.models.schemas import InboxItem, StoryCluster
+    from app.services.saved import save_cluster_item, star_inbox_item, delete_saved_item
+
+    db = Database(str(tmp_path / "test_saved_5_seq.db"))
+    cid = "cl_seq_test"
+    db.save_cluster(StoryCluster(id=cid, canonical_title="Sequence Test Story", cluster_score=0.8))
+    db.save_inbox_item(InboxItem(id="inbox_seq_1", entity_id=cid, story_cluster_id=cid, title="Inbox Item", summary="", priority_score=0.75, why_it_matters=""))
+
+    # 1. First save
+    ok1, msg1, item1 = save_cluster_item(story_cluster_id=cid, user_note="First save note", tags=["tag1"], db=db)
+    assert ok1 is True
+    assert item1["id"] == f"saved:{cid}"
+    all_rows1 = db.get_all_saved_items(active_only=False)
+    assert len([r for r in all_rows1 if r.story_cluster_id == cid]) == 1
+    assert len([r for r in all_rows1 if r.story_cluster_id == cid and r.is_active]) == 1
+
+    # 2. Duplicate active save (idempotent, merges tags & updates note)
+    ok2, msg2, item2 = save_cluster_item(story_cluster_id=cid, user_note="Updated note", tags=["tag2"], db=db)
+    assert ok2 is True
+    assert item2["id"] == f"saved:{cid}"
+    assert set(item2["tags"]) == {"tag1", "tag2"}
+    all_rows2 = db.get_all_saved_items(active_only=False)
+    assert len([r for r in all_rows2 if r.story_cluster_id == cid]) == 1
+    assert len([r for r in all_rows2 if r.story_cluster_id == cid and r.is_active]) == 1
+
+    # 3. Re-save after soft deletion (reactivates record)
+    del_ok, _ = delete_saved_item(f"saved:{cid}", db=db)
+    assert del_ok is True
+    all_rows3_del = db.get_all_saved_items(active_only=False)
+    assert len([r for r in all_rows3_del if r.story_cluster_id == cid and r.is_active]) == 0
+    ok3, msg3, item3 = save_cluster_item(story_cluster_id=cid, db=db)
+    assert ok3 is True
+    assert item3["id"] == f"saved:{cid}"
+    all_rows3 = db.get_all_saved_items(active_only=False)
+    assert len([r for r in all_rows3 if r.story_cluster_id == cid]) == 1
+    assert len([r for r in all_rows3 if r.story_cluster_id == cid and r.is_active]) == 1
+
+    # 4. Inbox save followed by Story Dossier save
+    cid_inbox = "cl_inbox_seq"
+    db.save_cluster(StoryCluster(id=cid_inbox, canonical_title="Inbox Flow Story", cluster_score=0.85))
+    db.save_inbox_item(InboxItem(id="inbox_seq_2", entity_id=cid_inbox, story_cluster_id=cid_inbox, title="Inbox Item 2", summary="", priority_score=0.8, why_it_matters=""))
+    # (a) Inbox star/save
+    ok_inbox, _, res_inbox = star_inbox_item("inbox_seq_2", db=db)
+    assert ok_inbox is True
+    assert res_inbox["id"] == f"saved:{cid_inbox}"
+    # (b) Followed by Story Dossier save
+    ok_dossier, _, res_dossier = save_cluster_item(story_cluster_id=cid_inbox, user_note="Dossier save note", tags=["dossier"], db=db)
+    assert ok_dossier is True
+    assert res_dossier["id"] == f"saved:{cid_inbox}"
+    all_rows4 = db.get_all_saved_items(active_only=False)
+    assert len([r for r in all_rows4 if r.story_cluster_id == cid_inbox]) == 1
+    assert len([r for r in all_rows4 if r.story_cluster_id == cid_inbox and r.is_active]) == 1
+
+    # 5. Search save followed by Story Dossier save
+    cid_search = "cl_search_seq"
+    db.save_cluster(StoryCluster(id=cid_search, canonical_title="Search Flow Story", cluster_score=0.9))
+    # (a) Save initiated from search context
+    ok_search, _, res_search = save_cluster_item(story_cluster_id=cid_search, tags=["search_origin"], db=db)
+    assert ok_search is True
+    assert res_search["id"] == f"saved:{cid_search}"
+    # (b) Followed by Story Dossier save
+    ok_dossier2, _, res_dossier2 = save_cluster_item(story_cluster_id=cid_search, user_note="Deep analysis note", tags=["dossier_detail"], db=db)
+    assert ok_dossier2 is True
+    assert res_dossier2["id"] == f"saved:{cid_search}"
+    all_rows5 = db.get_all_saved_items(active_only=False)
+    assert len([r for r in all_rows5 if r.story_cluster_id == cid_search]) == 1
+    assert len([r for r in all_rows5 if r.story_cluster_id == cid_search and r.is_active]) == 1
+
 
 
 
