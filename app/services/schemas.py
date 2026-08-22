@@ -450,3 +450,47 @@ class ProjectIntelligence(BaseModel):
     risks: List[Dict[str, Any]] = Field(default_factory=list)
     recent_changes: List[Dict[str, Any]] = Field(default_factory=list)
     intelligence_available: bool
+
+
+class BriefingItemDetail(BaseModel):
+    briefing_id: str
+    inbox_item_id: str
+    story_cluster_id: Optional[str] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    section: str
+    position: int
+    item_type: Optional[str] = None
+    reason_codes: List[str] = Field(default_factory=list)
+    inbox_score: Optional[float] = None
+    rank_score: Optional[float] = None
+    project_impact_score: Optional[float] = None
+    matched_project_ids: List[str] = Field(default_factory=list)
+    snapshot_status: str = "complete"  # "complete" vs "legacy_incomplete"
+    snapshot_version: Optional[str] = None
+    story_available: bool = False
+
+    def __getitem__(self, item: str) -> Any:
+        return getattr(self, item)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+class DailyBriefingResponse(BaseModel):
+    id: str
+    briefing_date: str
+    generated_at: str
+    total_items: int = 0
+    high_priority_count: int = 0
+    project_relevant_count: int = 0
+    content_hash: str = ""
+    summary_text: Optional[str] = None
+    sections: Dict[str, List[BriefingItemDetail]] = Field(default_factory=dict)
+    ordered_sections: List[str] = Field(default_factory=list)
+
+    def __getitem__(self, item: str) -> Any:
+        return getattr(self, item)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)

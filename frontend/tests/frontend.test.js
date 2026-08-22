@@ -4171,3 +4171,236 @@ test('Phase 11: Missing advisory recommendation produces no Advisory Context in 
     api.getProjectIntelligence = originalGetIntel;
   }
 });
+
+// ==========================================
+// Phase 12: Morning Briefing & Historical Intelligence Tests
+// ==========================================
+
+import { api } from '../src/api/endpoints.js';
+import { router } from '../src/state/router.js';
+
+test('Phase 12: Router parses date query parameter from #/briefing?date=2026-08-20', () => {
+  const r = new (router.constructor)();
+  let capturedRoute = null;
+  r.on('briefing', (route) => {
+    capturedRoute = route;
+  });
+
+  globalThis.window.location.hash = '#/briefing?date=2026-08-20';
+  r._handleHashChange();
+
+  assert.ok(capturedRoute !== null);
+  assert.strictEqual(capturedRoute.path, 'briefing');
+  assert.strictEqual(capturedRoute.params.date, '2026-08-20');
+});
+
+test('Phase 12: Briefing view renders date picker and toolbar controls', async () => {
+  const testStore = {
+    state: { view: 'briefing', routeParams: { date: '2026-08-20' } },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async (params) => {
+    assert.strictEqual(params.date, '2026-08-20');
+    return {
+      id: 'briefing:2026-08-20',
+      briefing_date: '2026-08-20',
+      generated_at: '2026-08-20T08:00:00Z',
+      total_items: 2,
+      high_priority_count: 1,
+      project_relevant_count: 1,
+      content_hash: 'abcdef0123456789',
+      summary_text: 'Engineering summary of the day.',
+      sections: {
+        must_know: [
+          {
+            inbox_item_id: 'inbox:1',
+            story_cluster_id: 'cluster:1',
+            title: 'Must Know Title',
+            summary: 'Must Know Summary',
+            section: 'must_know',
+            position: 1,
+            item_type: 'deep_dive',
+            reason_codes: ['critical_system'],
+            inbox_score: 0.95,
+            rank_score: 0.90,
+            project_impact_score: 0.85,
+            matched_project_ids: ['cuda-compiler-lab'],
+            snapshot_status: 'complete',
+            snapshot_version: 'v1',
+            story_available: true,
+          }
+        ]
+      },
+      ordered_sections: ['must_know'],
+    };
+  };
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-20' });
+    const html = container.innerHTML;
+
+    // Check toolbar elements
+    assert.ok(html.includes('id="briefing-date-input"'));
+    assert.ok(html.includes('value="2026-08-20"'));
+    assert.ok(html.includes('class="btn btn-secondary btn-sm briefing-prev-btn"'));
+    assert.ok(html.includes('class="btn btn-secondary btn-sm briefing-next-btn"'));
+    assert.ok(html.includes('class="btn btn-secondary btn-sm briefing-today-btn"'));
+
+    // Check executive summary & hash
+    assert.ok(html.includes('Engineering summary of the day.'));
+    assert.ok(html.includes('Hash: abcdef01…'));
+
+    // Check section header & item
+    assert.ok(html.includes('Must Know'));
+    assert.ok(html.includes('Must Know Title'));
+    assert.ok(html.includes('Priority: 0.95'));
+    assert.ok(html.includes('Rank: 0.90'));
+    assert.ok(html.includes('Project Impact: 0.85'));
+    assert.ok(html.includes('critical_system'));
+    assert.ok(html.includes('href="#/projects/cuda-compiler-lab"'));
+
+    // Check Story link (story_available: true)
+    assert.ok(html.includes('href="#/story/cluster%3A1"'));
+    assert.ok(html.includes('Open Story Dossier →'));
+
+    // Check screen reader live announcement
+    assert.ok(html.includes('Briefing for 2026-08-20 loaded with 2 items.'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Briefing view suppresses Story Dossier link when story_available is false', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => ({
+    id: 'briefing:2026-08-20',
+    briefing_date: '2026-08-20',
+    generated_at: '2026-08-20T08:00:00Z',
+    total_items: 1,
+    high_priority_count: 0,
+    project_relevant_count: 0,
+    summary_text: 'Summary',
+    sections: {
+      ai_ml: [
+        {
+          inbox_item_id: 'inbox:missing_story',
+          story_cluster_id: 'cluster:deleted_story',
+          title: 'Historical Item Missing Story',
+          section: 'ai_ml',
+          position: 1,
+          inbox_score: 0.70,
+          snapshot_status: 'complete',
+          story_available: false,
+        }
+      ]
+    },
+    ordered_sections: ['ai_ml'],
+  });
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-20' });
+    const html = container.innerHTML;
+
+    // Must NOT have link to #/story/cluster:deleted_story
+    assert.ok(!html.includes('href="#/story/cluster%3Adeleted_story"'));
+    assert.ok(!html.includes('Open Story Dossier →'));
+    assert.ok(html.includes('Story cluster not currently active'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Briefing view renders Legacy Snapshot badge when snapshot_status is legacy_incomplete', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => ({
+    id: 'briefing:2026-08-01',
+    briefing_date: '2026-08-01',
+    generated_at: '2026-08-01T08:00:00Z',
+    total_items: 1,
+    summary_text: 'Legacy digest',
+    sections: {
+      ai_ml: [
+        {
+          inbox_item_id: 'inbox:legacy',
+          title: 'Legacy Captured Item',
+          section: 'ai_ml',
+          position: 1,
+          inbox_score: null,
+          snapshot_status: 'legacy_incomplete',
+          snapshot_version: null,
+          story_available: false,
+        }
+      ]
+    },
+    ordered_sections: ['ai_ml'],
+  });
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-01' });
+    const html = container.innerHTML;
+
+    assert.ok(html.includes('Legacy Snapshot'));
+    assert.ok(html.includes('Priority: unrated'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Briefing view renders 404 empty state with date navigation intact', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => {
+    const err = new Error('No briefing found for date 2026-01-01');
+    err.status = 404;
+    throw err;
+  };
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-01-01' });
+    const html = container.innerHTML;
+
+    assert.ok(html.includes('No Briefing Snapshot Found'));
+    assert.ok(html.includes('2026-01-01'));
+    assert.ok(html.includes('id="briefing-date-input"'));
+    assert.ok(html.includes('value="2026-01-01"'));
+    assert.ok(html.includes('Go to Today'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});

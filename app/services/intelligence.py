@@ -871,7 +871,7 @@ def get_morning_brief(
     date_str: Optional[str] = None,
     db: Optional[Database] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Retrieves the daily morning briefing for a given date."""
+    """Retrieves the daily morning briefing for a given date as an immutable stored snapshot."""
     if db is None:
         db = Database()
 
@@ -883,26 +883,47 @@ def get_morning_brief(
         return None
 
     briefing_items = db.get_daily_briefing_items(briefing.id)
-    items_by_section: Dict[str, List[Dict[str, Any]]] = {}
+
+    # Batch check cluster existence for present-day Story Dossier navigation
+    cluster_ids = [bi.story_cluster_id for bi in briefing_items if bi.story_cluster_id]
+    existing_cluster_ids = db.get_existing_cluster_ids(cluster_ids)
+
+    from app.inbox.briefing import SECTION_ORDER
+
+    items_by_section: Dict[str, List[Dict[str, Any]]] = {sec: [] for sec in SECTION_ORDER}
 
     for bi in briefing_items:
-        inbox_item = db.get_inbox_item(bi.inbox_item_id)
-        if inbox_item:
-            cluster = db.get_cluster(inbox_item.story_cluster_id) if inbox_item.story_cluster_id else None
-            summary = cluster.canonical_title if cluster else inbox_item.title
-            claims = db.get_claims_by_cluster(inbox_item.story_cluster_id, current_only=True) if inbox_item.story_cluster_id else []
-            claim_scores = [c.verification_score for c in claims]
-            verif_score = float(np.mean(claim_scores)) if claim_scores else None
-            item_data = {
-                "inbox_item_id": inbox_item.id,
-                "cluster_id": inbox_item.story_cluster_id,
-                "title": inbox_item.title,
-                "summary": summary,
-                "priority": round(inbox_item.rank_score, 4),
-                "verification_score": round(verif_score, 4) if verif_score is not None else None,
-                "position": bi.position,
-            }
-            items_by_section.setdefault(bi.section, []).append(item_data)
+        is_legacy = (bi.snapshot_version is None or bi.title is None)
+        story_avail = bool(bi.story_cluster_id and bi.story_cluster_id in existing_cluster_ids)
+
+        item_data = {
+            "briefing_id": bi.briefing_id,
+            "inbox_item_id": bi.inbox_item_id,
+            "story_cluster_id": bi.story_cluster_id,
+            "title": bi.title,
+            "summary": bi.summary,
+            "section": bi.section,
+            "position": bi.position,
+            "item_type": bi.item_type,
+            "reason_codes": bi.reason_codes or [],
+            "inbox_score": bi.inbox_score,
+            "rank_score": bi.rank_score,
+            "project_impact_score": bi.project_impact_score,
+            "matched_project_ids": bi.matched_project_ids or [],
+            "snapshot_status": "legacy_incomplete" if is_legacy else "complete",
+            "snapshot_version": bi.snapshot_version,
+            "story_available": story_avail,
+        }
+
+        sec = bi.section if bi.section in items_by_section else "watchlist"
+        items_by_section.setdefault(sec, []).append(item_data)
+
+    final_sections: Dict[str, List[Dict[str, Any]]] = {}
+    ordered_sections: List[str] = []
+    for sec in SECTION_ORDER:
+        if items_by_section.get(sec):
+            final_sections[sec] = items_by_section[sec]
+            ordered_sections.append(sec)
 
     return {
         "id": briefing.id,
@@ -911,6 +932,8 @@ def get_morning_brief(
         "total_items": briefing.total_items,
         "high_priority_count": briefing.high_priority_count,
         "project_relevant_count": briefing.project_relevant_count,
-        "sections": items_by_section,
+        "content_hash": briefing.content_hash,
         "summary_text": briefing.summary_text,
+        "sections": final_sections,
+        "ordered_sections": ordered_sections,
     }

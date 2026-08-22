@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -202,6 +203,27 @@ class Database:
             if col_name not in existing_saved_cols:
                 try:
                     self.conn.execute(f"ALTER TABLE saved_items ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
+
+        dbi_info = self.conn.execute("PRAGMA table_info(daily_briefing_items)").fetchall()
+        existing_dbi_cols = {r["name"] for r in dbi_info}
+        dbi_additions = [
+            ("title", "TEXT"),
+            ("summary", "TEXT"),
+            ("story_cluster_id", "TEXT"),
+            ("item_type", "TEXT"),
+            ("reason_codes_json", "TEXT"),
+            ("inbox_score", "REAL"),
+            ("rank_score", "REAL"),
+            ("project_impact_score", "REAL"),
+            ("matched_project_ids_json", "TEXT"),
+            ("snapshot_version", "TEXT"),
+        ]
+        for col_name, col_def in dbi_additions:
+            if col_name not in existing_dbi_cols:
+                try:
+                    self.conn.execute(f"ALTER TABLE daily_briefing_items ADD COLUMN {col_name} {col_def}")
                 except Exception:
                     pass
 
@@ -688,6 +710,41 @@ class Database:
             (cluster_id,),
         )
         return [self._row_to_event(r) for r in cursor.fetchall()]
+
+    def get_cluster_events_batch(self, cluster_ids: List[str]) -> Dict[str, List[Event]]:
+        """Batch load events for multiple cluster IDs to avoid N+1 queries."""
+        if not cluster_ids:
+            return {}
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        placeholders = ",".join("?" for _ in clean_ids)
+        sql = f"""
+        SELECT ce.cluster_id, e.*
+        FROM events e
+        JOIN cluster_events ce ON e.id = ce.event_id
+        WHERE ce.cluster_id IN ({placeholders})
+        ORDER BY e.final_score DESC
+        """
+        cursor.execute(sql, clean_ids)
+        out = defaultdict(list)
+        for r in cursor.fetchall():
+            cid = r["cluster_id"]
+            out[cid].append(self._row_to_event(r))
+        return dict(out)
+
+    def get_existing_cluster_ids(self, cluster_ids: List[str]) -> Set[str]:
+        """Batch check existence of story cluster IDs."""
+        if not cluster_ids:
+            return set()
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return set()
+        cursor = self.conn.cursor()
+        placeholders = ",".join("?" for _ in clean_ids)
+        cursor.execute(f"SELECT id FROM story_clusters WHERE id IN ({placeholders})", clean_ids)
+        return {r["id"] for r in cursor.fetchall()}
 
     def clear_clusters_and_relationships(self) -> None:
         """Clear story_clusters, cluster_events, and event_relationships."""
@@ -2157,31 +2214,136 @@ class Database:
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
+    def save_daily_briefing_with_items(self, briefing: DailyBriefing, items: List[DailyBriefingItem]) -> bool:
+        """Atomically saves daily briefing header and its item snapshots in a single transaction."""
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN TRANSACTION")
+        try:
+            sql_briefing = """
+            INSERT OR REPLACE INTO daily_briefings (
+                id, briefing_date, generated_at, total_items, high_priority_count,
+                project_relevant_count, content_hash, summary_text, sections_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            cursor.execute(
+                sql_briefing,
+                (
+                    briefing.id,
+                    briefing.briefing_date,
+                    briefing.generated_at.isoformat(),
+                    briefing.total_items,
+                    briefing.high_priority_count,
+                    briefing.project_relevant_count,
+                    briefing.content_hash,
+                    briefing.summary_text,
+                    json.dumps(briefing.sections),
+                    briefing.created_at.isoformat(),
+                ),
+            )
+            cursor.execute("DELETE FROM daily_briefing_items WHERE briefing_id = ?", (briefing.id,))
+            sql_item = """
+            INSERT OR REPLACE INTO daily_briefing_items (
+                briefing_id, inbox_item_id, position, section,
+                title, summary, story_cluster_id, item_type,
+                reason_codes_json, inbox_score, rank_score,
+                project_impact_score, matched_project_ids_json, snapshot_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            for it in items:
+                cursor.execute(
+                    sql_item,
+                    (
+                        it.briefing_id,
+                        it.inbox_item_id,
+                        it.position,
+                        it.section,
+                        it.title,
+                        it.summary,
+                        it.story_cluster_id,
+                        it.item_type,
+                        json.dumps(it.reason_codes) if it.reason_codes else None,
+                        it.inbox_score,
+                        it.rank_score,
+                        it.project_impact_score,
+                        json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
+                        getattr(it, "snapshot_version", "v1") or "v1",
+                    ),
+                )
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def save_daily_briefing_items(self, items: List[DailyBriefingItem]) -> bool:
         if not items:
             return True
         briefing_id = items[0].briefing_id
-        self.conn.execute("DELETE FROM daily_briefing_items WHERE briefing_id = ?", (briefing_id,))
-        for it in items:
-            self.conn.execute(
-                "INSERT OR REPLACE INTO daily_briefing_items (briefing_id, inbox_item_id, position, section) VALUES (?, ?, ?, ?)",
-                (it.briefing_id, it.inbox_item_id, it.position, it.section),
-            )
-        self.conn.commit()
-        return True
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN TRANSACTION")
+        try:
+            cursor.execute("DELETE FROM daily_briefing_items WHERE briefing_id = ?", (briefing_id,))
+            sql_item = """
+            INSERT OR REPLACE INTO daily_briefing_items (
+                briefing_id, inbox_item_id, position, section,
+                title, summary, story_cluster_id, item_type,
+                reason_codes_json, inbox_score, rank_score,
+                project_impact_score, matched_project_ids_json, snapshot_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            for it in items:
+                cursor.execute(
+                    sql_item,
+                    (
+                        it.briefing_id,
+                        it.inbox_item_id,
+                        it.position,
+                        it.section,
+                        it.title,
+                        it.summary,
+                        it.story_cluster_id,
+                        it.item_type,
+                        json.dumps(it.reason_codes) if it.reason_codes else None,
+                        it.inbox_score,
+                        it.rank_score,
+                        it.project_impact_score,
+                        json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
+                        getattr(it, "snapshot_version", "v1") or "v1",
+                    ),
+                )
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def get_daily_briefing_items(self, briefing_id: str) -> List[DailyBriefingItem]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM daily_briefing_items WHERE briefing_id = ? ORDER BY position ASC", (briefing_id,))
-        return [
-            DailyBriefingItem(
-                briefing_id=r["briefing_id"],
-                inbox_item_id=r["inbox_item_id"],
-                position=r["position"],
-                section=r["section"],
+        items = []
+        for r in cursor.fetchall():
+            keys = r.keys()
+            rc = json.loads(r["reason_codes_json"]) if "reason_codes_json" in keys and r["reason_codes_json"] else []
+            mp = json.loads(r["matched_project_ids_json"]) if "matched_project_ids_json" in keys and r["matched_project_ids_json"] else []
+            items.append(
+                DailyBriefingItem(
+                    briefing_id=r["briefing_id"],
+                    inbox_item_id=r["inbox_item_id"],
+                    position=r["position"],
+                    section=r["section"],
+                    title=r["title"] if "title" in keys else None,
+                    summary=r["summary"] if "summary" in keys else None,
+                    story_cluster_id=r["story_cluster_id"] if "story_cluster_id" in keys else None,
+                    item_type=r["item_type"] if "item_type" in keys else None,
+                    reason_codes=rc,
+                    inbox_score=r["inbox_score"] if "inbox_score" in keys else None,
+                    rank_score=r["rank_score"] if "rank_score" in keys else None,
+                    project_impact_score=r["project_impact_score"] if "project_impact_score" in keys else None,
+                    matched_project_ids=mp,
+                    snapshot_version=r["snapshot_version"] if "snapshot_version" in keys else None,
+                )
             )
-            for r in cursor.fetchall()
-        ]
+        return items
 
     # --- Session 9: Autonomous Runtime, Checkpoints, and Recovery ---
 

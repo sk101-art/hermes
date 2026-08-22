@@ -374,6 +374,13 @@ def test_morning_briefing_does_not_relabel_ranking_as_verification(clean_db):
         inbox_item_id="inbox:brief_1",
         position=1,
         section="ai_ml",
+        title="Briefing Truth Test",
+        summary="Briefing Truth Test",
+        story_cluster_id=cl.id,
+        item_type="new_story",
+        inbox_score=0.88,
+        rank_score=0.85,
+        snapshot_version="v1",
     )
 
     clean_db.save_cluster(cl)
@@ -388,7 +395,8 @@ def test_morning_briefing_does_not_relabel_ranking_as_verification(clean_db):
     assert brief_data is not None
     section_items = brief_data["sections"]["ai_ml"]
     assert len(section_items) == 1
-    # verification_score must be 0.74 (from claim), NOT 0.88 (from cluster_score)
-    assert section_items[0]["verification_score"] == 0.74
-    assert section_items[0]["priority"] == 0.85
-
+    # inbox_score/rank_score must be preserved as prioritization, without recomputing current claims
+    assert section_items[0]["inbox_score"] == 0.88
+    assert section_items[0]["rank_score"] == 0.85
+    assert section_items[0]["story_cluster_id"] == "cluster:brief_test"
+    assert section_items[0]["story_available"] is True

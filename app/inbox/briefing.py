@@ -1,6 +1,8 @@
 import hashlib
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.inbox.generator import extract_repository_identity, generate_daily_inbox, load_inbox_config
@@ -35,13 +37,16 @@ SECTION_ORDER = [
 
 def build_briefing_text(
     briefing_date: str,
-    grouped_items: Dict[str, List[InboxItem]],
-    db: Database,
+    grouped_items: Dict[str, List[Any]],
+    db: Optional[Database] = None,
 ) -> str:
-    """Constructs deterministic, grounded morning briefing markdown."""
+    """
+    Constructs deterministic, grounded morning briefing markdown directly from
+    the stored snapshot items without issuing extra database queries or mislabeling priority.
+    """
     lines = []
     lines.append("=" * 65)
-    lines.append(f"HERMES — MORNING INTELLIGENCE BRIEFING")
+    lines.append("HERMES — MORNING INTELLIGENCE BRIEFING")
     lines.append(f"Date: {briefing_date}")
     lines.append("=" * 65)
 
@@ -51,15 +56,12 @@ def build_briefing_text(
         lines.append(f"\n{SECTION_HEADERS['corrections_updates']}")
         lines.append("-" * 65)
         for idx, it in enumerate(corr_items, 1):
-            claims = db.get_claims_by_cluster(it.story_cluster_id)
-            events = db.get_cluster_events(it.story_cluster_id)
-            v_str = f"{claims[0].status.upper()} ({claims[0].verification_score:.2f})" if claims else "NO CLAIMS EXTRACTED"
-            lines.append(f"{idx:02d}. [{it.inbox_score:.2f}] \"{it.title}\"")
-            lines.append(f"    Verification: {v_str}")
+            score_str = f"[{it.inbox_score:.2f}]" if it.inbox_score is not None else "[Priority: unrated]"
+            lines.append(f"{idx:02d}. {score_str} \"{it.title}\"")
+            if it.item_type:
+                lines.append(f"    Type: {it.item_type}")
             if it.reason_codes:
-                lines.append(f"    Why: {', '.join(it.reason_codes[:3])}")
-            if events:
-                lines.append(f"    Source: [{events[0].source.upper()}] {events[0].url}")
+                lines.append(f"    Why included: {', '.join(it.reason_codes[:3])}")
             lines.append("")
 
     # 2. Must Know
@@ -68,20 +70,13 @@ def build_briefing_text(
         lines.append(f"\n{SECTION_HEADERS['must_know']}")
         lines.append("-" * 65)
         for idx, it in enumerate(must_know_items, 1):
-            claims = db.get_claims_by_cluster(it.story_cluster_id)
-            events = db.get_cluster_events(it.story_cluster_id)
-            assessment = db.get_technology_assessment(it.story_cluster_id)
-            mat_str = assessment.maturity_stage.upper() if assessment and assessment.maturity_stage else "NOT ASSESSED"
-
-            lines.append(f"{idx:02d}. [{it.inbox_score:.2f}] \"{it.title}\"")
-            lines.append(f"    Maturity: {mat_str} | Priority: HIGH")
-            if claims:
-                strongest = claims[0]
-                lines.append(f"    Claim: \"{strongest.claim_text}\" (Status: {strongest.status.upper()} | Score: {strongest.verification_score:.2f})")
+            score_str = f"[{it.inbox_score:.2f}]" if it.inbox_score is not None else "[Priority: unrated]"
+            lines.append(f"{idx:02d}. {score_str} \"{it.title}\"")
+            lines.append(f"    Priority: HIGH")
+            if it.summary and it.summary != it.title:
+                lines.append(f"    Summary: {it.summary}")
             if it.reason_codes:
-                lines.append(f"    Why it matters: {', '.join(it.reason_codes[:4])}")
-            if events:
-                lines.append(f"    Source: [{events[0].source.upper()}] {events[0].url}")
+                lines.append(f"    Why included: {', '.join(it.reason_codes[:4])}")
             lines.append("")
 
     # 3. Project Relevant
@@ -99,18 +94,14 @@ def build_briefing_text(
                 by_project["general"].append(it)
 
         for pid, pitems in by_project.items():
-            proj = db.get_project(pid)
-            pname = proj.name if proj else pid
-            lines.append(f"\n  Project: {pname}")
+            lines.append(f"\n  Project: {pid}")
             for idx, it in enumerate(pitems, 1):
-                events = db.get_cluster_events(it.story_cluster_id)
-                claims = db.get_claims_by_cluster(it.story_cluster_id)
-                lines.append(f"  {idx:02d}. [{it.inbox_score:.2f}] \"{it.title}\"")
-                if claims:
-                    lines.append(f"      Verification: {claims[0].status.upper()} ({claims[0].verification_score:.2f})")
-                lines.append(f"      Why it matters: {', '.join(it.reason_codes[:4])}")
-                if events:
-                    lines.append(f"      Source: {events[0].url}")
+                score_str = f"[{it.inbox_score:.2f}]" if it.inbox_score is not None else "[Priority: unrated]"
+                lines.append(f"  {idx:02d}. {score_str} \"{it.title}\"")
+                if it.project_impact_score is not None:
+                    lines.append(f"      Project Impact: {it.project_impact_score:.2f}")
+                if it.reason_codes:
+                    lines.append(f"      Why included: {', '.join(it.reason_codes[:4])}")
                 lines.append("")
 
     # 4. Domain & Watch Sections
@@ -128,19 +119,32 @@ def build_briefing_text(
             lines.append(f"\n{header}")
             lines.append("-" * 65)
             for idx, it in enumerate(sec_items, 1):
-                events = db.get_cluster_events(it.story_cluster_id)
-                claims = db.get_claims_by_cluster(it.story_cluster_id)
-                lines.append(f"{idx:02d}. [{it.inbox_score:.2f}] \"{it.title}\"")
-                if claims:
-                    lines.append(f"    Verification: {claims[0].status.upper()} ({claims[0].verification_score:.2f})")
+                score_str = f"[{it.inbox_score:.2f}]" if it.inbox_score is not None else "[Priority: unrated]"
+                lines.append(f"{idx:02d}. {score_str} \"{it.title}\"")
                 if it.reason_codes:
-                    lines.append(f"    Why: {', '.join(it.reason_codes[:3])}")
-                if events:
-                    lines.append(f"    Source: [{events[0].source.upper()}] {events[0].url}")
+                    lines.append(f"    Why included: {', '.join(it.reason_codes[:3])}")
                 lines.append("")
 
     lines.append("=" * 65)
     return "\n".join(lines)
+
+
+def export_briefing_markdown(
+    briefing_date: str,
+    text: str,
+    export_dir: str = "data/briefings",
+) -> str:
+    """
+    Safely exports morning briefing text to disk using a temporary file
+    and atomic rename to prevent partial/corrupted writes.
+    """
+    os.makedirs(export_dir, exist_ok=True)
+    target_file = Path(export_dir) / f"briefing_{briefing_date}.md"
+    tmp_file = Path(export_dir) / f"briefing_{briefing_date}.tmp.{os.getpid()}"
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp_file, target_file)
+    return str(target_file)
 
 
 def generate_morning_briefing(
@@ -151,7 +155,8 @@ def generate_morning_briefing(
 ) -> DailyBriefing:
     """
     Generates or retrieves the deterministic Daily Briefing for target_date.
-    Idempotent unless refresh=True. Enforces strict section caps, score floors, and repository diversity.
+    Idempotent unless refresh=True. Enforces strict section caps, score floors,
+    repository diversity, and atomic persistence of immutable item snapshots.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -186,12 +191,28 @@ def generate_morning_briefing(
     if not inbox_items:
         inbox_items = generate_daily_inbox(db=db, now=now)
 
-    # Filter by minimum briefing score
-    qualifying_items = [it for it in inbox_items if it.inbox_score >= min_brief_score or it.is_starred]
-    # Sort by inbox score DESC, project impact DESC
-    qualifying_items.sort(key=lambda it: (it.inbox_score, it.project_impact_score), reverse=True)
+    # Filter by minimum briefing score or star
+    qualifying_items = [
+        it for it in inbox_items
+        if (it.inbox_score is not None and it.inbox_score >= min_brief_score) or it.is_starred
+    ]
 
-    # 3. Select balanced briefing items with repository deduplication
+    # Deterministic sorting:
+    # 1. inbox_score DESC (None sorts last as -1.0 in-memory)
+    # 2. project_impact_score DESC (None sorts last as -1.0 in-memory)
+    # 3. id ASC for stable deterministic tie-breaking
+    def item_sort_key(it: InboxItem) -> Tuple[float, float, str]:
+        s = it.inbox_score if it.inbox_score is not None else -1.0
+        p = it.project_impact_score if it.project_impact_score is not None else -1.0
+        return (-s, -p, it.id)
+
+    qualifying_items.sort(key=item_sort_key)
+
+    # 3. Batch load cluster events for repository deduplication
+    cluster_ids = [it.story_cluster_id for it in qualifying_items if it.story_cluster_id]
+    events_by_cluster = db.get_cluster_events_batch(cluster_ids)
+
+    # 4. Select balanced briefing items with repository deduplication
     grouped: Dict[str, List[InboxItem]] = defaultdict(list)
     selected_briefing_items: List[InboxItem] = []
     seen_briefing_repos: Set[str] = set()
@@ -201,13 +222,13 @@ def generate_morning_briefing(
         if total_briefing_count >= max_total_items:
             break
 
-        sec = it.section
+        sec = it.section or "ai_ml"
         sec_cap = section_caps.get(sec, 4)
 
         if len(grouped[sec]) >= sec_cap:
             continue
 
-        events = db.get_cluster_events(it.story_cluster_id)
+        events = events_by_cluster.get(it.story_cluster_id, [])
         repo_id = extract_repository_identity(events)
 
         # Skip duplicate minor releases from the same repository in the briefing
@@ -221,24 +242,51 @@ def generate_morning_briefing(
         if repo_id:
             seen_briefing_repos.add(repo_id)
 
+    # 5. Build snapshot items in canonical SECTION_ORDER
+    briefing_id = f"briefing:{target_date}"
+    briefing_items: List[DailyBriefingItem] = []
+    grouped_snapshot_items: Dict[str, List[DailyBriefingItem]] = defaultdict(list)
+    pos = 1
+
+    for sec in SECTION_ORDER:
+        for it in grouped.get(sec, []):
+            dbi = DailyBriefingItem(
+                briefing_id=briefing_id,
+                inbox_item_id=it.id,
+                position=pos,
+                section=sec,
+                title=it.title,
+                summary=it.title,
+                story_cluster_id=it.story_cluster_id,
+                item_type=it.item_type,
+                reason_codes=list(it.reason_codes) if it.reason_codes else [],
+                inbox_score=it.inbox_score,
+                rank_score=it.rank_score,
+                project_impact_score=it.project_impact_score,
+                matched_project_ids=list(it.matched_project_ids) if it.matched_project_ids else [],
+                snapshot_version="v1",
+            )
+            briefing_items.append(dbi)
+            grouped_snapshot_items[sec].append(dbi)
+            pos += 1
+
     # Count high-priority & project-relevant
     high_priority_count = len(grouped.get("must_know", []))
     project_relevant_count = len(grouped.get("project_relevant", []))
 
-    # 4. Build text
-    summary_text = build_briefing_text(target_date, grouped, db)
+    # 6. Build text directly from snapshot items
+    summary_text = build_briefing_text(target_date, grouped_snapshot_items, db=db)
 
-    # 5. Compute content hash
+    # 7. Compute content hash
     content_hash = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
 
-    sections_dict = {sec: [it.id for it in it_list] for sec, it_list in grouped.items()}
-    briefing_id = f"briefing:{target_date}"
+    sections_dict = {sec: [it.inbox_item_id for it in it_list] for sec, it_list in grouped_snapshot_items.items()}
 
     briefing = DailyBriefing(
         id=briefing_id,
         briefing_date=target_date,
         generated_at=now,
-        total_items=len(selected_briefing_items),
+        total_items=len(briefing_items),
         high_priority_count=high_priority_count,
         project_relevant_count=project_relevant_count,
         content_hash=content_hash,
@@ -247,22 +295,6 @@ def generate_morning_briefing(
         created_at=existing.created_at if existing else now,
     )
 
-    db.save_daily_briefing(briefing)
-
-    # Save briefing items
-    briefing_items = []
-    pos = 1
-    for sec in SECTION_ORDER:
-        for it in grouped.get(sec, []):
-            briefing_items.append(
-                DailyBriefingItem(
-                    briefing_id=briefing_id,
-                    inbox_item_id=it.id,
-                    position=pos,
-                    section=sec,
-                )
-            )
-            pos += 1
-
-    db.save_daily_briefing_items(briefing_items)
+    # 8. Atomically persist briefing header and snapshot items in a single transaction
+    db.save_daily_briefing_with_items(briefing, briefing_items)
     return briefing

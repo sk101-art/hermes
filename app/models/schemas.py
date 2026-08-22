@@ -514,6 +514,16 @@ class DailyBriefingItem(BaseModel):
     inbox_item_id: str
     position: int
     section: str
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    story_cluster_id: Optional[str] = None
+    item_type: Optional[str] = None
+    reason_codes: List[str] = Field(default_factory=list)
+    inbox_score: Optional[float] = None
+    rank_score: Optional[float] = None
+    project_impact_score: Optional[float] = None
+    matched_project_ids: List[str] = Field(default_factory=list)
+    snapshot_version: Optional[str] = None
 
 
 class SourceCheckpoint(BaseModel):

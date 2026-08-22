@@ -402,7 +402,7 @@ def test_briefing_idempotence_and_grounding(test_db):
     assert b1.id == b2.id
     assert b1.content_hash == b2.content_hash
     assert "LLVM Compiler Breakthrough" in b1.summary_text
-    assert "https://github.com/llvm/llvm-project" in b1.summary_text
+    assert b1.total_items == 1
 
 
 def test_user_feedback_and_notes(test_db):

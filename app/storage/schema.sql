@@ -408,6 +408,16 @@ CREATE TABLE IF NOT EXISTS daily_briefing_items (
     inbox_item_id TEXT NOT NULL,
     position INTEGER NOT NULL,
     section TEXT NOT NULL,
+    title TEXT,
+    summary TEXT,
+    story_cluster_id TEXT,
+    item_type TEXT,
+    reason_codes_json TEXT,
+    inbox_score REAL,
+    rank_score REAL,
+    project_impact_score REAL,
+    matched_project_ids_json TEXT,
+    snapshot_version TEXT,
     PRIMARY KEY (briefing_id, inbox_item_id)
 );
 

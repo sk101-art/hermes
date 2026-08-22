@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -51,12 +52,24 @@ def get_inbox(
 
 @router.get("/briefing", summary="Daily morning briefing")
 def get_briefing(
-    date: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date in YYYY-MM-DD format"),
+    date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format"),
     db: Database = Depends(get_db),
 ):
-    briefing = intel_service.get_morning_brief(date_str=date, db=db)
+    if date is not None:
+        date_clean = date.strip()
+        try:
+            parsed = datetime.strptime(date_clean, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != date_clean:
+                raise ValueError()
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid date format '{date}'. Expected valid calendar date in YYYY-MM-DD format.")
+        target_date = date_clean
+    else:
+        target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    briefing = intel_service.get_morning_brief(date_str=target_date, db=db)
     if not briefing:
-        raise HTTPException(status_code=404, detail=f"No briefing found for date '{date or 'today'}'")
+        raise HTTPException(status_code=404, detail=f"No briefing found for date '{target_date}'")
     return briefing
 
 
