@@ -363,6 +363,10 @@ class IntelligenceChange(BaseModel):
     origin: str = "live_update"  # live_update, source_refresh, backfill_initialization, migration, recompute, manual_rebuild, new_evidence, new_release, actual_revision
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    @property
+    def detected_at(self) -> datetime:
+        return self.created_at
+
 
 # --- Session 7: Reference / Context Folder Personalization Models ---
 

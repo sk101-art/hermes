@@ -687,6 +687,32 @@ def get_story(cluster_id: str, db: Optional[Database] = None) -> Optional[StoryD
     )
 
 
+def _normalize_importance_rank(imp: Any) -> int:
+    if isinstance(imp, (int, float)):
+        if imp >= 0.85:
+            return 4  # critical
+        if imp >= 0.65:
+            return 3  # high
+        if imp >= 0.35:
+            return 2  # medium
+        return 1  # low
+    if isinstance(imp, str):
+        imp_lower = imp.strip().lower()
+        if imp_lower == "critical":
+            return 4
+        if imp_lower == "high":
+            return 3
+        if imp_lower == "medium":
+            return 2
+        return 1
+    return 1
+
+
+def _format_importance_level(imp: Any) -> str:
+    rank = _normalize_importance_rank(imp)
+    return {1: "low", 2: "medium", 3: "high", 4: "critical"}.get(rank, "low")
+
+
 def get_recent_changes(
     hours: int = 24,
     importance_min: Optional[str] = None,
@@ -694,48 +720,72 @@ def get_recent_changes(
     limit: int = 20,
     db: Optional[Database] = None,
 ) -> List[Dict[str, Any]]:
-    """Retrieves recent intelligence changes and claim revisions."""
+    """Retrieves recent intelligence changes and claim revisions with truthful provenance."""
     if db is None:
         db = Database()
 
-    limit = max(1, min(limit, 50))
+    limit = max(1, min(limit, 100))
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=hours)
 
     target_project_id = None
+    matched_entity_ids = set()
     if project:
         p_clean = project.strip()
         proj = db.get_project(p_clean) or db.get_project(f"project:{p_clean.lower()}") or db.get_project_by_name(p_clean)
         if proj:
             target_project_id = proj.id
+            matches = db.get_project_matches(target_project_id)
+            matched_entity_ids = {m.entity_id for m in matches}
 
-    changes = db.get_recent_intelligence_changes(days=int(max(1, hours / 24)), limit=100)
+    changes = db.get_recent_intelligence_changes(hours=hours, limit=200)
     filtered = []
 
-    importance_order = {"low": 1, "medium": 2, "high": 3, "critical": 4}
-    min_imp_rank = importance_order.get((importance_min or "low").lower(), 1)
+    min_imp_rank = _normalize_importance_rank(importance_min or "low")
+
+    # Cache claims lookup to avoid repetitive queries
+    claims_cache = {}
 
     for ch in changes:
-        if ch.detected_at < cutoff:
+        if ch.created_at < cutoff:
             continue
-        imp_rank = importance_order.get((ch.importance or "low").lower(), 1)
+        imp_rank = _normalize_importance_rank(ch.importance)
         if imp_rank < min_imp_rank:
             continue
 
+        # Resolve cluster_id for linking to Story Dossier
+        cluster_id = None
+        if ch.entity_type in ("cluster", "technology_assessment", "technology_state"):
+            cluster_id = ch.entity_id
+        elif ch.entity_type == "claim":
+            if ch.entity_id not in claims_cache:
+                claims_cache[ch.entity_id] = db.get_claim(ch.entity_id)
+            claim_obj = claims_cache[ch.entity_id]
+            if claim_obj:
+                cluster_id = claim_obj.cluster_id
+
         if target_project_id:
-            matches = db.get_project_matches(target_project_id)
-            if not any(m.entity_id == ch.cluster_id for m in matches):
+            is_matched = (
+                (cluster_id and cluster_id in matched_entity_ids)
+                or (ch.entity_id in matched_entity_ids)
+            )
+            if not is_matched:
                 continue
 
         filtered.append({
             "id": ch.id,
-            "cluster_id": ch.cluster_id,
+            "entity_type": ch.entity_type,
+            "entity_id": ch.entity_id,
+            "cluster_id": cluster_id,
             "change_type": ch.change_type,
             "importance": ch.importance,
-            "description": ch.description,
+            "importance_level": _format_importance_level(ch.importance),
+            "reason": ch.reason,
+            "origin": getattr(ch, "origin", "live_update") or "live_update",
             "old_value": ch.old_value,
             "new_value": ch.new_value,
-            "detected_at": ch.detected_at.isoformat(),
+            "detected_at": ch.created_at.isoformat(),
+            "created_at": ch.created_at.isoformat(),
         })
 
     return filtered[:limit]

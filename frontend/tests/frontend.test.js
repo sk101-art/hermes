@@ -1246,7 +1246,7 @@ test('Search URL state serialization and restoration preserve all query and filt
 });
 
 function createMockContainer() {
-  const elements = {};
+  let elements = {};
   function makeMockElement() {
     return {
       value: '',
@@ -1255,6 +1255,7 @@ function createMockContainer() {
       style: {},
       _html: '',
       _attrs: {},
+      textContent: '',
       getAttribute(attr) { return this._attrs[attr] || null; },
       setAttribute(attr, val) { this._attrs[attr] = String(val); },
       get innerHTML() { return this._html; },
@@ -1265,7 +1266,7 @@ function createMockContainer() {
         this._listeners[event].push(handler);
       },
       async click() {
-        const handlers = this._listeners['click'] || [];
+        const handlers = [...(this._listeners['click'] || [])];
         for (const h of handlers) {
           await h({ target: this, preventDefault() {}, closest: (s) => this });
         }
@@ -1280,10 +1281,17 @@ function createMockContainer() {
   const container = {
     _html: '',
     get innerHTML() {
-      return this._html;
+      let combined = this._html;
+      for (const key of Object.keys(elements)) {
+        if (elements[key]._html) {
+          combined += '\n' + elements[key]._html;
+        }
+      }
+      return combined;
     },
     set innerHTML(val) {
       this._html = val;
+      elements = {};
     },
     querySelector: (sel) => {
       if (!elements[sel]) {
@@ -2061,6 +2069,642 @@ test('Phase 8: Exact request counts for initial Saved view and zero story reques
 
   fetchMock = null;
 });
+
+
+// =========================================================================
+// Phase 9: Changes & Longitudinal Intelligence Experience Tests
+// =========================================================================
+
+test('Phase 9: Initial Changes request uses actual endpoint parameters (hours=168, limit=100)', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+  let requestedUrl = null;
+
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    if (url.includes('/changes')) {
+      requestedUrl = url;
+      return { ok: true, status: 200, json: async () => ({ count: 0, changes: [] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderChangesView(container, store);
+
+  assert.ok(requestedUrl !== null);
+  assert.ok(requestedUrl.includes('/changes'));
+  assert.ok(requestedUrl.includes('hours=168'));
+  assert.ok(requestedUrl.includes('limit=100'));
+
+  fetchMock = null;
+});
+
+test('Phase 9: Change importance is labeled as Importance/Priority and never Verification/Confidence/Accuracy', async () => {
+  const { renderChangeCard, formatImportance } = await import('../src/views/changes.js');
+
+  const impCritical = formatImportance(0.9, 'critical');
+  assert.strictEqual(impCritical.label, 'Importance: Critical');
+  assert.strictEqual(impCritical.badgeClass, 'importance-critical');
+
+  const impHigh = formatImportance(0.75, 'high');
+  assert.strictEqual(impHigh.label, 'Importance: High');
+
+  const impMed = formatImportance(0.5, 'medium');
+  assert.strictEqual(impMed.label, 'Importance: Medium');
+
+  const impLow = formatImportance(0.2, 'low');
+  assert.strictEqual(impLow.label, 'Importance: Low');
+
+  const cardHtml = renderChangeCard({
+    id: 'ch_test_imp',
+    entity_type: 'claim',
+    entity_id: 'claim_123',
+    change_type: 'verification_weakened',
+    importance: 0.95,
+    importance_level: 'critical',
+    reason: 'Independent reproduction failed.',
+    origin: 'actual_revision',
+    old_value: 'supported (0.8500)',
+    new_value: 'contradicted (0.1500)',
+    detected_at: '2026-08-22T10:00:00Z',
+  });
+
+  assert.ok(cardHtml.includes('Importance: Critical'));
+  assert.ok(!cardHtml.includes('Confidence'));
+  assert.ok(!cardHtml.includes('Accuracy'));
+  // The word Verification should only appear in change type titles if applicable, never as a label for importance/priority
+  assert.ok(!cardHtml.includes('Verification: Critical'));
+});
+
+test('Phase 9: Canonical detected timestamp is displayed and event publication/discovery timestamps are not substituted', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const change = {
+    id: 'ch_time_test',
+    entity_type: 'cluster',
+    entity_id: 'cl_opt',
+    cluster_id: 'cl_opt',
+    change_type: 'maturity_stage_changed',
+    importance: 0.7,
+    reason: 'Production candidate benchmark passed.',
+    origin: 'new_release',
+    old_value: 'experimental',
+    new_value: 'production_candidate',
+    detected_at: '2026-08-20T14:30:00Z',
+    created_at: '2026-08-20T14:30:00Z',
+  };
+
+  const html = renderChangeCard(change);
+
+  assert.ok(html.includes('Detected:'));
+  assert.ok(html.includes('2026'));
+  assert.ok(!html.includes('Published:'));
+  assert.ok(!html.includes('Discovered:'));
+});
+
+test('Phase 9: Claim transition renders old and new canonical states accurately', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const change = {
+    id: 'ch_claim_trans',
+    entity_type: 'claim',
+    entity_id: 'c_trans_1',
+    cluster_id: 'cl_trans_1',
+    change_type: 'claim_status_changed',
+    importance: 0.8,
+    importance_level: 'high',
+    reason: 'Corroboration confirmed from third-party audit.',
+    origin: 'new_evidence',
+    old_value: 'unverified (0.4500)',
+    new_value: 'strongly_supported (0.9500)',
+    detected_at: '2026-08-21T09:00:00Z',
+  };
+
+  const html = renderChangeCard(change);
+
+  assert.ok(html.includes('Unverified'));
+  assert.ok(html.includes('(45%)'));
+  assert.ok(html.includes('Strongly Supported'));
+  assert.ok(html.includes('(95%)'));
+  assert.ok(html.includes('&rarr;'));
+});
+
+test('Phase 9: Null old value remains historically unknown (Previous state not recorded historically)', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const initialChange = {
+    id: 'ch_init_1',
+    entity_type: 'claim',
+    entity_id: 'c_init_1',
+    cluster_id: 'cl_init_1',
+    change_type: 'claim_created',
+    importance: 0.5,
+    reason: 'Initial claim ingestion.',
+    origin: 'live_update',
+    old_value: null, // Historically unrecorded
+    new_value: 'supported',
+    detected_at: '2026-08-21T10:00:00Z',
+  };
+
+  const html = renderChangeCard(initialChange);
+
+  assert.ok(html.includes('Previous state not recorded historically'));
+  assert.ok(!html.includes('Previous state: 0'));
+  assert.ok(!html.includes('Previous state: Not assessed'));
+});
+
+test('Phase 9: supported -> mixed and supported -> contradicted render with neutral visibility', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const mixedChange = {
+    id: 'ch_mixed',
+    entity_type: 'claim',
+    entity_id: 'c_mixed',
+    change_type: 'claim_status_changed',
+    importance: 0.75,
+    reason: 'Conflicting replication results observed.',
+    origin: 'new_evidence',
+    old_value: 'supported',
+    new_value: 'mixed',
+    detected_at: '2026-08-22T08:00:00Z',
+  };
+
+  const contradictedChange = {
+    id: 'ch_contra',
+    entity_type: 'claim',
+    entity_id: 'c_contra',
+    change_type: 'verification_weakened',
+    importance: 0.85,
+    reason: 'Direct refutation published.',
+    origin: 'actual_revision',
+    old_value: 'supported',
+    new_value: 'contradicted',
+    detected_at: '2026-08-22T08:30:00Z',
+  };
+
+  const htmlMixed = renderChangeCard(mixedChange);
+  assert.ok(htmlMixed.includes('Supported'));
+  assert.ok(htmlMixed.includes('Mixed'));
+
+  const htmlContra = renderChangeCard(contradictedChange);
+  assert.ok(htmlContra.includes('Supported'));
+  assert.ok(htmlContra.includes('Contradicted'));
+});
+
+test('Phase 9: retracted claim transition remains visibly distinct', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const retractedChange = {
+    id: 'ch_retract',
+    entity_type: 'claim',
+    entity_id: 'c_retract',
+    change_type: 'claim_retracted',
+    importance: 0.95,
+    importance_level: 'critical',
+    reason: 'Author retracted study due to measurement error.',
+    origin: 'actual_revision',
+    old_value: 'strongly_supported',
+    new_value: 'retracted',
+    detected_at: '2026-08-22T07:00:00Z',
+  };
+
+  const html = renderChangeCard(retractedChange);
+  assert.ok(html.includes('Strongly Supported'));
+  assert.ok(html.includes('Retracted'));
+  assert.ok(html.includes('Importance: Critical'));
+});
+
+test('Phase 9: All seven canonical maturity stages display correctly without noncanonical terms', async () => {
+  const { formatTransitionValue, CANONICAL_MATURITY_STAGES } = await import('../src/views/changes.js');
+
+  const stages = [
+    'concept',
+    'research',
+    'prototype',
+    'experimental',
+    'early_adoption',
+    'production_candidate',
+    'established'
+  ];
+
+  for (const s of stages) {
+    const formatted = formatTransitionValue(s);
+    assert.ok(formatted.includes(CANONICAL_MATURITY_STAGES[s]));
+  }
+
+  // Noncanonical lifecycle terms must not be synthesized
+  assert.strictEqual(CANONICAL_MATURITY_STAGES['growth'], undefined);
+  assert.strictEqual(CANONICAL_MATURITY_STAGES['mature'], undefined);
+  assert.strictEqual(CANONICAL_MATURITY_STAGES['stable'], undefined);
+  assert.strictEqual(CANONICAL_MATURITY_STAGES['proposal'], undefined);
+  assert.strictEqual(CANONICAL_MATURITY_STAGES['production_ready'], undefined);
+});
+
+test('Phase 9: Unknown maturity stages degrade neutrally', async () => {
+  const { formatTransitionValue } = await import('../src/views/changes.js');
+
+  const formatted = formatTransitionValue('unknown_custom_stage');
+  assert.ok(formatted.includes('unknown_custom_stage') || formatted.includes('Unknown Custom Stage'));
+});
+
+test('Phase 9: Risk status and level remain distinct without inferring missing historical RiskStatus', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const riskChange = {
+    id: 'ch_risk_1',
+    entity_type: 'technology_state',
+    entity_id: 'cl_risk_1',
+    change_type: 'risk_level_changed',
+    importance: 0.8,
+    reason: 'Vulnerability CVE published.',
+    origin: 'new_evidence',
+    old_value: 'not_assessed',
+    new_value: 'assessed/high',
+    detected_at: '2026-08-22T06:00:00Z',
+  };
+
+  const html = renderChangeCard(riskChange);
+  assert.ok(html.includes('not_assessed'));
+  assert.ok(html.includes('assessed/high'));
+});
+
+test('Phase 9: Change origin renders separately from change meaning (new_evidence, actual_revision, new_release, live_update)', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const origins = ['new_evidence', 'actual_revision', 'new_release', 'live_update'];
+  for (const orig of origins) {
+    const card = renderChangeCard({
+      id: `ch_${orig}`,
+      entity_type: 'claim',
+      entity_id: 'c1',
+      change_type: 'claim_status_changed',
+      importance: 0.5,
+      reason: 'Testing origin separation',
+      origin: orig,
+      old_value: 'unverified',
+      new_value: 'supported',
+      detected_at: '2026-08-22T05:00:00Z',
+    });
+
+    assert.ok(card.includes('change-origin-badge'));
+    assert.ok(card.includes(`data-origin="${orig}"`));
+    // Verify WHAT changed is separated from WHY change exists
+    assert.ok(card.includes('change-transition-box'));
+    assert.ok(card.includes('Intelligence Rationale'));
+  }
+});
+
+test('Phase 9: System provenance origins (migration, backfill_initialization, recompute) are clearly identified as system records', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  const sysOrigins = ['migration', 'backfill_initialization', 'recompute', 'source_refresh'];
+  for (const orig of sysOrigins) {
+    const card = renderChangeCard({
+      id: `ch_sys_${orig}`,
+      entity_type: 'cluster',
+      entity_id: 'cl_sys_1',
+      change_type: 'cluster_recomputed',
+      importance: 0.3,
+      reason: 'Schema migration normalization',
+      origin: orig,
+      old_value: 'prototype',
+      new_value: 'experimental',
+      detected_at: '2026-08-20T00:00:00Z',
+    });
+
+    assert.ok(card.includes('change-card-system'));
+    assert.ok(card.includes('badge-origin-system') || card.includes('badge-origin-recompute'));
+  }
+});
+
+test('Phase 9: Server-side filters (hours, importance_min, project) transmit actual backend parameters', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+  const capturedUrls = [];
+
+  fetchMock = async (url) => {
+    capturedUrls.push(url);
+    if (url.includes('/projects')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          projects: [{ id: 'proj_ai', name: 'AI Core Project' }]
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ count: 0, changes: [] }) };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderChangesView(container, store);
+
+  // Trigger hours change
+  const hoursSelect = container.querySelector('#changes-hours-select');
+  hoursSelect.value = '72';
+  const hoursHandlers = hoursSelect._listeners['change'] || [];
+  for (const h of hoursHandlers) await h({ target: hoursSelect });
+
+  // Trigger importance change
+  const impSelect = container.querySelector('#changes-importance-select');
+  impSelect.value = 'high';
+  const impHandlers = impSelect._listeners['change'] || [];
+  for (const h of impHandlers) await h({ target: impSelect });
+
+  // Trigger project change
+  const projSelect = container.querySelector('#changes-project-select');
+  projSelect.value = 'proj_ai';
+  const projHandlers = projSelect._listeners['change'] || [];
+  for (const h of projHandlers) await h({ target: projSelect });
+
+  const lastChangeReq = capturedUrls.filter(u => u.includes('/changes')).pop();
+  assert.ok(lastChangeReq !== undefined);
+  assert.ok(lastChangeReq.includes('hours=72'));
+  assert.ok(lastChangeReq.includes('importance_min=high'));
+  assert.ok(lastChangeReq.includes('project=proj_ai'));
+
+  fetchMock = null;
+});
+
+test('Phase 9: Filter reset restores default parameters and reloads view', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+  const capturedUrls = [];
+
+  fetchMock = async (url) => {
+    capturedUrls.push(url);
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return { ok: true, status: 200, json: async () => ({ count: 0, changes: [] }) };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderChangesView(container, store);
+
+  // Modify filters
+  const hoursSelect = container.querySelector('#changes-hours-select');
+  hoursSelect.value = '24';
+  const hoursHandlers = hoursSelect._listeners['change'] || [];
+  for (const h of hoursHandlers) await h({ target: hoursSelect });
+
+  // Click Reset Filters
+  const resetBtn = container.querySelector('#btn-reset-changes-filters');
+  const resetHandlers = resetBtn._listeners['click'] || [];
+  for (const h of resetHandlers) await h({ target: resetBtn });
+
+  const lastChangeReq = capturedUrls.filter(u => u.includes('/changes')).pop();
+  assert.ok(lastChangeReq.includes('hours=168'));
+
+  fetchMock = null;
+});
+
+test('Phase 9: Empty, network offline, and backend error states render with accessible recovery cues', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+
+  // Case 1: Empty state
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return { ok: true, status: 200, json: async () => ({ count: 0, changes: [] }) };
+  };
+  const container1 = createMockContainer();
+  const store1 = { state: {}, getState: () => store1.state, setState: (s) => Object.assign(store1.state, s), setConnection: () => {}, setViewData: () => {} };
+  await renderChangesView(container1, store1);
+  assert.ok(container1.innerHTML.includes('No Changes Found'));
+
+  // Case 2: Backend error
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return { ok: false, status: 500, statusText: 'Internal Error', json: async () => ({ detail: 'Database error' }) };
+  };
+  const container2 = createMockContainer();
+  const store2 = { state: {}, getState: () => store2.state, setState: (s) => Object.assign(store2.state, s), setConnection: () => {}, setViewData: () => {} };
+  await renderChangesView(container2, store2);
+  assert.ok(container2.innerHTML.includes('Failed to Load Longitudinal Changes'));
+
+  fetchMock = null;
+});
+
+test('Phase 9: Resolvable Story change renders Open Story Dossier link to #/story/{cluster_id} and unresolvable entity produces no broken route', async () => {
+  const { renderChangeCard } = await import('../src/views/changes.js');
+
+  // Case 1: Resolvable Story cluster
+  const resolvableChange = {
+    id: 'ch_res_1',
+    entity_type: 'cluster',
+    entity_id: 'cl_quantum_core',
+    cluster_id: 'cl_quantum_core',
+    change_type: 'maturity_stage_changed',
+    importance: 0.8,
+    reason: 'Maturity advanced to experimental.',
+    origin: 'actual_revision',
+    old_value: 'prototype',
+    new_value: 'experimental',
+    detected_at: '2026-08-22T04:00:00Z',
+  };
+
+  const resolvableHtml = renderChangeCard(resolvableChange);
+  assert.ok(resolvableHtml.includes('href="#/story/cl_quantum_core"'));
+  assert.ok(resolvableHtml.includes('Open Story Dossier &rarr;'));
+
+  // Case 2: Unresolvable standalone entity (e.g. event without cluster)
+  const unresolvableChange = {
+    id: 'ch_unres_1',
+    entity_type: 'event',
+    entity_id: 'ev_standalone_99',
+    cluster_id: null,
+    change_type: 'event_ingested',
+    importance: 0.4,
+    reason: 'Event ingested.',
+    origin: 'source_refresh',
+    old_value: null,
+    new_value: 'ingested',
+    detected_at: '2026-08-22T04:00:00Z',
+  };
+
+  const unresolvableHtml = renderChangeCard(unresolvableChange);
+  assert.ok(!unresolvableHtml.includes('href="#/story/'));
+  assert.ok(unresolvableHtml.includes('Entity: ev_standalone_99'));
+});
+
+test('Phase 9: No N+1 Story requests during Changes view rendering', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+  const capturedUrls = [];
+
+  fetchMock = async (url) => {
+    capturedUrls.push(url);
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    if (url.includes('/changes')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          count: 5,
+          changes: [
+            { id: 'ch1', entity_type: 'cluster', entity_id: 'cl1', cluster_id: 'cl1', change_type: 'state_changed', importance: 0.8, reason: 'r1', origin: 'actual_revision', old_value: 'prototype', new_value: 'experimental', detected_at: '2026-08-22T00:00:00Z' },
+            { id: 'ch2', entity_type: 'cluster', entity_id: 'cl2', cluster_id: 'cl2', change_type: 'state_changed', importance: 0.8, reason: 'r2', origin: 'actual_revision', old_value: 'prototype', new_value: 'experimental', detected_at: '2026-08-22T00:00:00Z' },
+            { id: 'ch3', entity_type: 'claim', entity_id: 'c1', cluster_id: 'cl1', change_type: 'state_changed', importance: 0.8, reason: 'r3', origin: 'new_evidence', old_value: 'supported', new_value: 'mixed', detected_at: '2026-08-22T00:00:00Z' },
+            { id: 'ch4', entity_type: 'claim', entity_id: 'c2', cluster_id: 'cl2', change_type: 'state_changed', importance: 0.8, reason: 'r4', origin: 'new_evidence', old_value: 'supported', new_value: 'mixed', detected_at: '2026-08-22T00:00:00Z' },
+            { id: 'ch5', entity_type: 'cluster', entity_id: 'cl3', cluster_id: 'cl3', change_type: 'state_changed', importance: 0.8, reason: 'r5', origin: 'actual_revision', old_value: 'prototype', new_value: 'experimental', detected_at: '2026-08-22T00:00:00Z' },
+          ]
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderChangesView(container, store);
+
+  const storyRequests = capturedUrls.filter(u => u.includes('/stories/'));
+  assert.strictEqual(storyRequests.length, 0);
+
+  const changesRequests = capturedUrls.filter(u => u.includes('/changes'));
+  assert.strictEqual(changesRequests.length, 1);
+
+  fetchMock = null;
+});
+
+test('Phase 9: Stale response protection prevents out-of-order race conditions', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+  let requestCounter = 0;
+  let resolveSlowReq;
+  const slowPromise = new Promise(resolve => { resolveSlowReq = resolve; });
+
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    if (url.includes('/changes')) {
+      requestCounter++;
+      const thisReq = requestCounter;
+      if (thisReq === 1) {
+        // Initial request is slow
+        await slowPromise;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            count: 1,
+            changes: [{ id: 'ch_slow', entity_type: 'claim', entity_id: 'c_slow', change_type: 'claim_status_changed', importance: 0.5, reason: 'Slow response', origin: 'live_update', old_value: 'unverified', new_value: 'supported', detected_at: '2026-08-22T00:00:00Z' }]
+          })
+        };
+      } else {
+        // Second request resolves immediately
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            count: 1,
+            changes: [{ id: 'ch_fast', entity_type: 'claim', entity_id: 'c_fast', change_type: 'claim_status_changed', importance: 0.9, reason: 'Fast response', origin: 'actual_revision', old_value: 'supported', new_value: 'contradicted', detected_at: '2026-08-22T00:00:00Z' }]
+          })
+        };
+      }
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  // Initial load starts and triggers slow request 1
+  const p1 = renderChangesView(container, store);
+
+  // Yield microtask to allow projects lookup and renderViewShell to attach listeners
+  await new Promise(resolve => setTimeout(resolve, 5));
+
+  // Trigger filter change while slow request 1 is still in flight
+  const hoursSelect = container.querySelector('#changes-hours-select');
+  hoursSelect.value = '24';
+  const hoursHandlers = hoursSelect._listeners['change'] || [];
+  for (const h of hoursHandlers) await h({ target: hoursSelect });
+
+  // Now let the slow first request finish
+  resolveSlowReq();
+  await p1;
+
+  // Faster (second) response must win and not be overwritten by slow first response
+  assert.ok(container.innerHTML.includes('ch_fast') || container.innerHTML.includes('Fast response'));
+  assert.ok(!container.innerHTML.includes('ch_slow'));
+
+  fetchMock = null;
+});
+
+test('Phase 9: Accessible live region announces change results count', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 2,
+        changes: [
+          { id: 'ch1', entity_type: 'claim', entity_id: 'c1', change_type: 'claim_status_changed', importance: 0.5, reason: 'r1', origin: 'live_update', old_value: 'unverified', new_value: 'supported', detected_at: '2026-08-22T00:00:00Z' },
+          { id: 'ch2', entity_type: 'claim', entity_id: 'c2', change_type: 'claim_status_changed', importance: 0.5, reason: 'r2', origin: 'live_update', old_value: 'unverified', new_value: 'supported', detected_at: '2026-08-22T00:00:00Z' },
+        ]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderChangesView(container, store);
+
+  const liveRegion = container.querySelector('#changes-live-region');
+  assert.ok(liveRegion !== null);
+  assert.ok(container.innerHTML.includes('id="changes-live-region"'));
+  assert.ok(container.innerHTML.includes('role="status"'));
+  assert.ok(container.innerHTML.includes('aria-live="polite"'));
+  assert.ok(liveRegion.textContent.includes('Showing 2 longitudinal changes.'));
+
+  fetchMock = null;
+});
+
+test('Phase 9: Client-side noise control toggle hides system maintenance records', async () => {
+  const { renderChangesView } = await import('../src/views/changes.js');
+
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 2,
+        changes: [
+          { id: 'ch_intel', entity_type: 'claim', entity_id: 'c_intel', change_type: 'claim_status_changed', importance: 0.8, reason: 'Real intelligence revision', origin: 'actual_revision', old_value: 'supported', new_value: 'contradicted', detected_at: '2026-08-22T00:00:00Z' },
+          { id: 'ch_sys', entity_type: 'cluster', entity_id: 'cl_sys', change_type: 'cluster_migrated', importance: 0.2, reason: 'Schema migration', origin: 'migration', old_value: 'prototype', new_value: 'experimental', detected_at: '2026-08-22T00:00:00Z' },
+        ]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderChangesView(container, store);
+
+  // Both should be visible initially
+  assert.ok(container.innerHTML.includes('ch_intel'));
+  assert.ok(container.innerHTML.includes('ch_sys'));
+
+  // Toggle Hide System Maintenance
+  const hideSysChk = container.querySelector('#chk-hide-system');
+  hideSysChk.checked = true;
+  const hideSysHandlers = hideSysChk._listeners['change'] || [];
+  for (const h of hideSysHandlers) await h({ target: hideSysChk });
+
+  // Only genuine intelligence revision should be shown
+  assert.ok(container.innerHTML.includes('ch_intel'));
+  assert.ok(!container.innerHTML.includes('ch_sys'));
+
+  fetchMock = null;
+});
+
 
 
 

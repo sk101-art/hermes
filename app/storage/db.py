@@ -1354,9 +1354,17 @@ class Database:
             created_at=datetime.fromisoformat(r["created_at"]),
         )
 
-    def get_recent_intelligence_changes(self, days: Optional[int] = None, limit: int = 100) -> List[IntelligenceChange]:
+    def get_recent_intelligence_changes(
+        self, days: Optional[int] = None, hours: Optional[int] = None, limit: int = 100
+    ) -> List[IntelligenceChange]:
         cursor = self.conn.cursor()
-        if days is not None:
+        if hours is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            cursor.execute(
+                "SELECT * FROM intelligence_changes WHERE created_at >= ? ORDER BY importance DESC, created_at DESC LIMIT ?",
+                (cutoff, limit),
+            )
+        elif days is not None:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
             cursor.execute(
                 "SELECT * FROM intelligence_changes WHERE created_at >= ? ORDER BY importance DESC, created_at DESC LIMIT ?",

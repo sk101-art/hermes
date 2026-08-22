@@ -901,5 +901,121 @@ def test_save_identity_and_reactivation_all_five_sequences(tmp_path):
     assert len([r for r in all_rows5 if r.story_cluster_id == cid_search and r.is_active]) == 1
 
 
+def test_changes_contract_detected_at_and_provenance(tmp_path):
+    """Proves Changes service exposes canonical detected_at, preserves provenance, and filters accurately."""
+    from datetime import datetime, timezone, timedelta
+    from app.models.schemas import IntelligenceChange, StoryCluster, Claim, Project, ProjectMatch
+    from app.services.intelligence import get_recent_changes
+
+    db = Database(str(tmp_path / "test_changes_p9.db"))
+    now = datetime.now(timezone.utc)
+
+    # 1. Seed Story Clusters and Claims
+    cid1 = "cl_p9_1"
+    cid2 = "cl_p9_2"
+    db.save_cluster(StoryCluster(id=cid1, canonical_title="Quantum Speedup", cluster_score=0.9))
+    db.save_cluster(StoryCluster(id=cid2, canonical_title="Database Scaling", cluster_score=0.7))
+
+    db.save_claim(Claim(id="claim_q1", cluster_id=cid1, subject="Quantum", predicate="proves", object="Speedup", claim_text="100x speedup verified", status="supported", is_current=True))
+
+    # 2. Seed Project and Match
+    db.save_project(Project(id="proj_quantum", name="Quantum Core Project", path="/quantum"))
+    db.save_project_match(ProjectMatch(id="pm_1", project_id="proj_quantum", entity_id=cid1, entity_type="cluster", relevance_score=0.95, reasoning="Core quantum tech"))
+
+    # 3. Seed Changes with various timestamps and origins
+    # (a) Critical revision within 2h
+    db.save_intelligence_change(IntelligenceChange(
+        id="ch_1",
+        entity_type="claim",
+        entity_id="claim_q1",
+        change_type="verification_weakened",
+        old_value="supported (0.8500)",
+        new_value="contradicted (0.1500)",
+        importance=0.95,
+        reason="Independent reproduction failed.",
+        origin="actual_revision",
+        created_at=now - timedelta(hours=2),
+    ))
+
+    # (b) Migration system record within 5h
+    db.save_intelligence_change(IntelligenceChange(
+        id="ch_2",
+        entity_type="cluster",
+        entity_id=cid2,
+        change_type="cluster_migrated",
+        old_value="prototype",
+        new_value="experimental",
+        importance=0.30,
+        reason="Database migration backfill.",
+        origin="migration",
+        created_at=now - timedelta(hours=5),
+    ))
+
+    # (c) High-importance new evidence within 10h
+    db.save_intelligence_change(IntelligenceChange(
+        id="ch_3",
+        entity_type="cluster",
+        entity_id=cid1,
+        change_type="maturity_stage_changed",
+        old_value="concept",
+        new_value="prototype",
+        importance=0.75,
+        reason="Prototype released publicly.",
+        origin="new_evidence",
+        created_at=now - timedelta(hours=10),
+    ))
+
+    # (d) Older change outside 24h cutoff (e.g. 48h ago)
+    db.save_intelligence_change(IntelligenceChange(
+        id="ch_4",
+        entity_type="cluster",
+        entity_id=cid2,
+        change_type="risk_level_changed",
+        old_value="not_assessed",
+        new_value="assessed/medium",
+        importance=0.60,
+        reason="Threat model completed.",
+        origin="live_update",
+        created_at=now - timedelta(hours=48),
+    ))
+
+    # Test Case 1: Default 24h lookup
+    recent_24 = get_recent_changes(hours=24, db=db)
+    assert len(recent_24) == 3
+    # Check canonical fields
+    c1 = next(c for c in recent_24 if c["id"] == "ch_1")
+    assert c1["detected_at"] is not None
+    assert c1["created_at"] is not None
+    assert c1["detected_at"] == c1["created_at"]
+    assert c1["origin"] == "actual_revision"
+    assert c1["importance_level"] == "critical"
+    assert c1["cluster_id"] == cid1  # resolved from claim_q1 -> cl_p9_1
+    assert c1["old_value"] == "supported (0.8500)"
+    assert c1["new_value"] == "contradicted (0.1500)"
+
+    # Test Case 2: Minimum importance filter
+    high_plus = get_recent_changes(hours=24, importance_min="high", db=db)
+    assert len(high_plus) == 2  # ch_1 (0.95 critical) and ch_3 (0.75 high)
+    assert not any(c["id"] == "ch_2" for c in high_plus)
+
+    critical_only = get_recent_changes(hours=24, importance_min="critical", db=db)
+    assert len(critical_only) == 1
+    assert critical_only[0]["id"] == "ch_1"
+
+    # Test Case 3: Project relevance filter
+    proj_filtered = get_recent_changes(hours=24, project="proj_quantum", db=db)
+    assert len(proj_filtered) == 2
+    assert all(c["id"] in ("ch_1", "ch_3") for c in proj_filtered)
+    assert not any(c["id"] == "ch_2" for c in proj_filtered)
+
+    # Test Case 4: Extended 72h window includes ch_4
+    recent_72 = get_recent_changes(hours=72, db=db)
+    assert len(recent_72) == 4
+    c4 = next(c for c in recent_72 if c["id"] == "ch_4")
+    assert c4["origin"] == "live_update"
+    assert c4["old_value"] == "not_assessed"
+    assert c4["new_value"] == "assessed/medium"
+
+
 
 
