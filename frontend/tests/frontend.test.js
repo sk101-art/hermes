@@ -3644,3 +3644,35 @@ test('Phase 10 remediation: intel_change:verification_strengthened renders as Cl
   assert.ok(!html.includes('badge-verification'));
   assert.ok(html.includes('data-reason-code="intel_change:verification_strengthened"'));
 });
+
+test('Phase 10 remediation: SearchResult and StoryCard omit unavailable score and project relevance without rendering 0%', async () => {
+  const { renderSearchResultCard } = await import('../src/views/search.js');
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+
+  // Search card with null score & null project_relevance
+  const searchNull = {
+    entity_id: 'cl_null_sr',
+    title: 'Null Scores Result',
+    score: null,
+    project_relevance: null,
+    sources: ['github'],
+  };
+  const searchNullHtml = renderSearchResultCard(searchNull);
+  assert.ok(!searchNullHtml.includes('Relevance Score: 0%'));
+  assert.ok(!searchNullHtml.includes('Project Relevance: 0%'));
+  assert.ok(!searchNullHtml.includes('search-result-meta-pill'));
+
+  // Story card with null score & null project_impact_score
+  const storyNull = {
+    id: 'cl_null_sc',
+    title: 'Null Scores Story',
+    score: null,
+    cluster_score: null,
+    relevance_score: null,
+    project_impact_score: null,
+    sources: ['arxiv'],
+  };
+  const storyNullHtml = renderStoryCard(storyNull);
+  assert.ok(!storyNullHtml.includes('badge-ranking'));
+  assert.ok(!storyNullHtml.includes('badge-project-match'));
+});

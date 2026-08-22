@@ -371,7 +371,7 @@ def search_intelligence(
         embedder.unload()
 
     # Sort results by final score descending and clamp to limit
-    results.sort(key=lambda x: x.score, reverse=True)
+    results.sort(key=lambda x: (x.score if x.score is not None else -1.0), reverse=True)
     return results[:limit]
 
 
@@ -442,14 +442,14 @@ def get_top_developments(
             entity_id=it.id,
             title=it.title,
             summary=summary_text,
-            score=round(it.rank_score, 4) if it.rank_score is not None else 0.0,
+            score=round(it.rank_score, 4) if it.rank_score is not None else None,
             sources=list(cl.sources),
             published_at=it.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
             verification_score=round(verif_score, 4) if verif_score is not None else None,
             maturity=maturity,
             risk=risk,
             risk_status=risk_status,
-            project_relevance=round(it.project_impact_score, 4) if it.project_impact_score is not None else 0.0,
+            project_relevance=round(it.project_impact_score, 4) if it.project_impact_score is not None else None,
             reason_codes=list(it.reason_codes),
             urls=urls,
         )

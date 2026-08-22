@@ -25,14 +25,14 @@ class SearchResult(BaseModel):
     summary: Optional[str] = None
     is_synthesized: bool = False
     claim_status: Optional[str] = None
-    score: float
+    score: Optional[float] = None
     sources: List[str] = Field(default_factory=list)
     published_at: Optional[str] = None
     verification_score: Optional[float] = None
     maturity: Optional[str] = None
     risk: Optional[str] = None
     risk_status: Optional[str] = None
-    project_relevance: float = 0.0
+    project_relevance: Optional[float] = None
     reason_codes: List[str] = Field(default_factory=list)
     urls: List[str] = Field(default_factory=list)
     explain: Optional[Dict[str, float]] = None

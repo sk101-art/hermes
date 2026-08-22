@@ -52,7 +52,7 @@ export function renderStoryCard(story) {
     : (typeof story.score === 'number' ? story.score : (typeof story.relevance_score === 'number' ? story.relevance_score : null));
 
   // Project Match / Context
-  const isProjectMatched = Boolean(story.project_match || story.project_impact_score > 0 || (story.matched_project_ids && story.matched_project_ids.length));
+  const isProjectMatched = Boolean(story.project_match || (typeof story.project_impact_score === 'number' && story.project_impact_score > 0) || (story.matched_project_ids && story.matched_project_ids.length));
   const matchType = story.match_type || (isProjectMatched ? 'Project context' : null);
 
   return `<article class="story-card" data-story-id="${escapeHtml(id)}" role="button" tabindex="0" aria-label="Story: ${escapeHtml(title)}">

@@ -1371,3 +1371,105 @@ def test_inbox_complete_candidate_filtering_beyond_100_rows(tmp_path):
     assert ai_results[0]["id"] == "ib_common_0"
     assert ai_results[9]["id"] == "ib_common_9"
 
+
+def test_top_developments_null_score_and_genuine_zero_preservation(tmp_path):
+    from app.storage.db import Database
+    from app.services.intelligence import get_top_developments
+    from app.models.schemas import InboxItem, StoryCluster, Event
+
+    db_path = tmp_path / "test_top_devs_null_zero.db"
+    db = Database(str(db_path))
+
+    now = datetime.now(timezone.utc)
+
+    # Setup Clusters
+    cl1 = StoryCluster(id="cl_null", canonical_title="Null Scores Cluster", score=0.8)
+    cl2 = StoryCluster(id="cl_zero", canonical_title="Zero Scores Cluster", score=0.8)
+    cl3 = StoryCluster(id="cl_norm", canonical_title="Normal Scores Cluster", score=0.8)
+    db.save_cluster(cl1)
+    db.save_cluster(cl2)
+    db.save_cluster(cl3)
+
+    # Setup Events
+    ev1 = Event(id="ev_null", title="Null Scores Event", source="github", url="https://github.com/null/null")
+    ev2 = Event(id="ev_zero", title="Zero Scores Event", source="github", url="https://github.com/zero/zero")
+    ev3 = Event(id="ev_norm", title="Normal Scores Event", source="github", url="https://github.com/norm/norm")
+    db.save_event(ev1)
+    db.save_event(ev2)
+    db.save_event(ev3)
+    db.add_event_to_cluster(cl1.id, ev1.id)
+    db.add_event_to_cluster(cl2.id, ev2.id)
+    db.add_event_to_cluster(cl3.id, ev3.id)
+
+    # Inbox item 1: Missing scores (None)
+    db.save_inbox_item(InboxItem(
+        id="ib_null",
+        entity_type="cluster",
+        entity_id=cl1.id,
+        story_cluster_id=cl1.id,
+        title="Null Scores Cluster",
+        section="ai_ml",
+        inbox_score=0.9,
+        rank_score=None,
+        project_impact_score=None,
+        state="unseen",
+        created_at=now,
+    ))
+
+    # Inbox item 2: Genuine numeric zero scores (0.0)
+    db.save_inbox_item(InboxItem(
+        id="ib_zero",
+        entity_type="cluster",
+        entity_id=cl2.id,
+        story_cluster_id=cl2.id,
+        title="Zero Scores Cluster",
+        section="ai_ml",
+        inbox_score=0.8,
+        rank_score=0.0,
+        project_impact_score=0.0,
+        state="unseen",
+        created_at=now,
+    ))
+
+    # Inbox item 3: Genuine positive scores
+    db.save_inbox_item(InboxItem(
+        id="ib_norm",
+        entity_type="cluster",
+        entity_id=cl3.id,
+        story_cluster_id=cl3.id,
+        title="Normal Scores Cluster",
+        section="ai_ml",
+        inbox_score=0.7,
+        rank_score=0.87654,
+        project_impact_score=0.43219,
+        state="unseen",
+        created_at=now,
+    ))
+
+    results = get_top_developments(limit=10, db=db)
+    assert len(results) == 3
+
+    by_id = {r.entity_id: r for r in results}
+
+    # 1. Null preservation
+    r_null = by_id["ib_null"]
+    assert r_null.score is None
+    assert r_null.project_relevance is None
+    dump_null = r_null.model_dump()
+    assert dump_null["score"] is None
+    assert dump_null["project_relevance"] is None
+
+    # 2. Genuine numeric zero preservation
+    r_zero = by_id["ib_zero"]
+    assert r_zero.score == 0.0
+    assert r_zero.project_relevance == 0.0
+    assert isinstance(r_zero.score, float)
+    assert isinstance(r_zero.project_relevance, float)
+    dump_zero = r_zero.model_dump()
+    assert dump_zero["score"] == 0.0
+    assert dump_zero["project_relevance"] == 0.0
+
+    # 3. Non-null rounding
+    r_norm = by_id["ib_norm"]
+    assert r_norm.score == 0.8765
+    assert r_norm.project_relevance == 0.4322
