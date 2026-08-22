@@ -1,104 +1,432 @@
 /**
- * HERMES Runtime & Source Health View
- * Operational surface displaying daemon status, source checkpoint metrics, and system diagnostics.
+ * HERMES Runtime & Source Health View (Phase 13)
+ * Authoritative single-request operational surface displaying daemon heartbeat,
+ * scheduler jobs, source adapter health, structured diagnostics, and sanitized failure logs.
  */
 
 import { api } from '../api/endpoints.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, formatTime, ensureArray, toTitleCase } from '../utils/adapters.js';
 
+let _activeRuntimeRequestId = 0;
+
+function formatNullOrVal(val, fallback = '—') {
+  if (val === null || val === undefined) {
+    return fallback;
+  }
+  return String(val);
+}
+
+function formatNullOrSeconds(val) {
+  if (val === null || val === undefined) {
+    return '—';
+  }
+  return `${Number(val).toFixed(2)}s`;
+}
+
+function formatNullOrTime(isoStr) {
+  if (!isoStr) return 'Not recorded';
+  return `${formatDate(isoStr)} ${formatTime(isoStr)}`;
+}
+
+function getSourceStatusClass(status) {
+  switch (status) {
+    case 'healthy':
+      return 'runtime-status-healthy';
+    case 'retrying':
+      return 'runtime-status-retrying';
+    case 'rate_limited':
+      return 'runtime-status-rate-limited';
+    case 'degraded':
+      return 'runtime-status-degraded';
+    case 'disabled':
+      return 'runtime-status-disabled';
+    case 'unavailable':
+      return 'runtime-status-unavailable';
+    case 'unknown':
+    default:
+      return 'runtime-status-unknown';
+  }
+}
+
+function getJobStatusClass(status) {
+  switch (status) {
+    case 'completed':
+      return 'runtime-status-completed';
+    case 'running':
+      return 'runtime-status-running';
+    case 'failed':
+      return 'runtime-status-failed';
+    case 'partial':
+      return 'runtime-status-partial';
+    case 'interrupted':
+      return 'runtime-status-interrupted';
+    case 'blocked':
+      return 'runtime-status-blocked';
+    case 'not_due':
+    case 'skipped':
+      return 'runtime-status-not-due';
+    case 'not_applicable':
+      return 'runtime-status-not-applicable';
+    case 'pending':
+    default:
+      return 'runtime-status-pending';
+  }
+}
+
 export async function renderRuntimeView(container, store) {
-  container.innerHTML = renderLoadingState('Loading runtime health & source checkpoints…');
+  const requestId = ++_activeRuntimeRequestId;
+  container.innerHTML = renderLoadingState('Loading runtime health & operational overview…');
 
   try {
-    const [health, runtime, sourcesResp] = await Promise.all([
-      api.health().catch((e) => ({ status: 'unhealthy', error: e.message })),
-      api.runtime().catch(() => ({})),
-      api.sources().catch(() => ({ sources: [] })),
-    ]);
+    // Single aggregated operational overview request
+    const overview = await api.runtime();
 
-    const sourceRows = ensureArray(sourcesResp.sources || sourcesResp);
-    store.setViewData('runtime', { health, runtime, sources: sourceRows });
+    if (requestId !== _activeRuntimeRequestId) {
+      return; // Discard stale response on rapid view navigation
+    }
 
-    const isHealthy = health.status === 'healthy' || health.status === 'ok';
-    store.setConnection(isHealthy ? 'healthy' : 'degraded');
+    store.setViewData('runtime', overview);
+
+    const overallStatus = (overview.status || 'UNKNOWN').toUpperCase();
+    const isHealthy = overallStatus === 'HEALTHY';
+    const isDegraded = overallStatus === 'DEGRADED';
+    store.setConnection(isHealthy ? 'healthy' : (isDegraded ? 'degraded' : 'offline'));
+
+    const daemon = overview.daemon || {};
+    const system = overview.system || {};
+    const sources = ensureArray(overview.sources || []);
+    const jobs = ensureArray(overview.jobs || []);
+    const failures = ensureArray(overview.recent_failures || []);
+    const sourceIssues = ensureArray(overview.current_source_issues || []);
+    const srcCounts = overview.source_summary || {};
+    const jobCounts = overview.job_summary || {};
+    const freshness = overview.intelligence_freshness || {};
+    const todayBriefing = freshness.today_briefing || {};
 
     let html = `
       <div class="page-header-container">
         <div>
-          <span class="eyebrow">Operational Surface</span>
+          <span class="eyebrow">Operational Transparency</span>
           <h1>Runtime & Source Health</h1>
-          <p class="lead">A compact view of whether the local intelligence engine is fresh, healthy, and explainable.</p>
+          <p class="lead">Trustworthy operational telemetry for the HERMES daemon, scheduler pipeline, and intelligence providers.</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:var(--space-2);">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-runtime" aria-label="Refresh operational health">
+            Refresh
+          </button>
         </div>
       </div>
 
-      <div class="hero-stats-grid">
-        <div class="stat-card">
-          <div class="stat-label">API Health</div>
-          <div class="stat-value" style="font-size:var(--text-xl);display:flex;align-items:center;gap:8px;">
-            <span class="status-dot ${isHealthy ? 'healthy' : 'degraded'}" aria-hidden="true"></span>
-            <span>${escapeHtml(health.status || 'unknown')}</span>
+      <!-- Accessible Live Region -->
+      <div class="sr-only" aria-live="polite">
+        Operational overview status is ${overallStatus}. Daemon is ${daemon.status || 'stopped'}.
+      </div>
+    `;
+
+    // Warnings & Notices
+    if (overview.warnings && overview.warnings.length) {
+      html += `
+        <div class="runtime-notice-banner warning" role="region" aria-label="Operational Notices">
+          <span style="font-weight:700;">Notice:</span>
+          <div>
+            ${overview.warnings.map((w) => `<div>${escapeHtml(w)}</div>`).join('')}
           </div>
-          <div class="stat-detail">local FastAPI service</div>
+        </div>
+      `;
+    }
+
+    if (overview.issues && overview.issues.length) {
+      html += `
+        <div class="runtime-notice-banner error" role="region" aria-label="Operational Issues">
+          <span style="font-weight:700;">Critical Issues:</span>
+          <div>
+            ${overview.issues.map((iss) => `<div>${escapeHtml(iss)}</div>`).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Diagnostics Hero Grid
+    html += `
+      <div class="runtime-grid-diagnostics">
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">System Health</div>
+          <div class="runtime-diag-value">
+            <span class="runtime-status-badge ${isHealthy ? 'runtime-status-healthy' : (isDegraded ? 'runtime-status-degraded' : 'runtime-status-unhealthy')}">
+              ${escapeHtml(overallStatus)}
+            </span>
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            ${system.is_cached ? `Cached (${system.cache_age_seconds}s ago)` : 'Live probe'}
+          </div>
         </div>
 
-        <div class="stat-card">
-          <div class="stat-label">Last Ingestion</div>
-          <div class="stat-value" style="font-size:var(--text-xl);">
-            ${formatTime(runtime.last_ingestion_at || runtime.last_run_at)}
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">HERMES Daemon</div>
+          <div class="runtime-diag-value">
+            <span class="runtime-status-badge ${daemon.status === 'running' ? 'runtime-status-running' : (daemon.status === 'stale' ? 'runtime-status-degraded' : 'runtime-status-disabled')}">
+              ${escapeHtml((daemon.status || 'stopped').toUpperCase())}
+            </span>
+            ${daemon.pid ? `<span class="mono text-xs text-muted">PID ${daemon.pid}</span>` : ''}
           </div>
-          <div class="stat-detail">${formatDate(runtime.last_ingestion_at || runtime.last_run_at)}</div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            ${daemon.heartbeat_timestamp ? `Heartbeat: ${daemon.heartbeat_age_seconds !== null ? `${daemon.heartbeat_age_seconds}s ago` : formatNullOrTime(daemon.heartbeat_timestamp)}` : 'No heartbeat file'}
+          </div>
         </div>
 
-        <div class="stat-card">
-          <div class="stat-label">Configured Sources</div>
-          <div class="stat-value">${sourceRows.length}</div>
-          <div class="stat-detail">adapters active</div>
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Effective Timezone</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-base);">
+            ${escapeHtml(overview.effective_timezone || 'UTC')}
+          </div>
+          <div class="text-xs text-muted mono" style="margin-top:4px;">
+            ${escapeHtml(overview.scheduler_time || '')}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Database & Storage</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-base);">
+            ${escapeHtml(system.database || 'ok')}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Disk: ${system.disk_free_mb !== null ? `${system.disk_free_mb} MB free` : '—'} (${escapeHtml(system.disk_status || 'ok')})
+          </div>
         </div>
       </div>
+    `;
 
-      <div class="section-header">
+    // Section 1: Source Adapters Checkpoints
+    html += `
+      <div class="runtime-section-header">
         <div>
-          <h2>Source Adapter Checkpoints</h2>
-          <p class="text-muted text-sm" style="margin:0;">Health, success timestamps, and failure counts per intelligence provider.</p>
+          <h2 class="runtime-section-title">Source Adapter Checkpoints</h2>
+          <span class="text-xs text-muted">Per-provider poll intervals, attempt timestamps, backoff schedule, and failure tracking.</span>
+        </div>
+        <div class="runtime-summary-chips">
+          <span class="runtime-status-badge runtime-status-healthy">${srcCounts.healthy || 0} Healthy</span>
+          ${srcCounts.retrying ? `<span class="runtime-status-badge runtime-status-retrying">${srcCounts.retrying} Retrying</span>` : ''}
+          ${srcCounts.rate_limited ? `<span class="runtime-status-badge runtime-status-rate-limited">${srcCounts.rate_limited} Rate-Limited</span>` : ''}
+          ${srcCounts.degraded ? `<span class="runtime-status-badge runtime-status-degraded">${srcCounts.degraded} Degraded</span>` : ''}
+          ${srcCounts.disabled ? `<span class="runtime-status-badge runtime-status-disabled">${srcCounts.disabled} Disabled</span>` : ''}
         </div>
       </div>
 
       <div class="table-wrapper">
-        <table class="data-table">
+        <table class="runtime-table" aria-label="Source Adapter Checkpoints">
           <thead>
             <tr>
-              <th scope="col">Source Provider</th>
-              <th scope="col">Health Status</th>
+              <th scope="col">Source</th>
+              <th scope="col">Status</th>
+              <th scope="col">Last Attempt</th>
               <th scope="col">Last Success</th>
-              <th scope="col">Consecutive Failures</th>
+              <th scope="col">Failures</th>
+              <th scope="col">Next Retry / Schedule</th>
+              <th scope="col">Latest Sanitized Error</th>
             </tr>
           </thead>
           <tbody>
-            ${sourceRows.length ? sourceRows.map((s) => {
-              const srcName = s.source || s.name || 'Unknown Source';
-              const hStatus = s.health_status || s.status || 'unknown';
-              const isSrcHealthy = hStatus === 'healthy' || hStatus === 'ok';
-              const isSrcOffline = hStatus === 'offline' || hStatus === 'failing';
-
+            ${sources.length ? sources.map((s) => {
+              const statusClass = getSourceStatusClass(s.health_status);
               return `<tr>
-                <td class="text-semibold">${escapeHtml(srcName)}</td>
+                <td class="text-semibold">${escapeHtml(s.source)}</td>
                 <td>
-                  <span class="semantic-badge ${isSrcHealthy ? 'badge-verification-supported' : (isSrcOffline ? 'badge-verification-contradicted' : 'badge-verification-unverified')}">
-                    ${escapeHtml(toTitleCase(hStatus))}
+                  <span class="runtime-status-badge ${statusClass}">
+                    ${escapeHtml((s.health_status || 'unknown').replace('_', ' '))}
                   </span>
+                  ${s.failure_threshold_reached ? '<span class="runtime-threshold-tag" title="Failure threshold reached; capped at max backoff">THRESHOLD</span>' : ''}
                 </td>
-                <td class="mono text-xs">${formatDate(s.last_success_at)}</td>
-                <td class="mono text-xs">${s.consecutive_failures ?? 0}</td>
+                <td class="mono text-xs">${formatNullOrTime(s.last_attempt_at)}</td>
+                <td class="mono text-xs">${formatNullOrTime(s.last_success_at)}</td>
+                <td class="mono text-xs">${formatNullOrVal(s.consecutive_failures)}</td>
+                <td class="text-xs">
+                  ${s.next_retry_at ? `<span class="mono">${formatTime(s.next_retry_at)}</span> (${s.backoff_seconds ? `${Math.ceil(s.backoff_seconds / 60)}m backoff` : 'due'})` : escapeHtml(s.due_reason || '—')}
+                </td>
+                <td>
+                  ${s.sanitized_error ? `<span class="runtime-sanitized-error" title="${escapeHtml(s.sanitized_error)}">${s.error_category ? `[${escapeHtml(s.error_category)}] ` : ''}${escapeHtml(s.sanitized_error)}</span>` : '<span class="text-muted text-xs">—</span>'}
+                </td>
               </tr>`;
-            }).join('') : `<tr><td colspan="4" class="text-muted" style="text-align:center;padding:var(--space-8);">No source adapters registered.</td></tr>`}
+            }).join('') : '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:var(--space-6);">No source adapters configured.</td></tr>'}
           </tbody>
         </table>
       </div>
     `;
 
+    // Section 2: Scheduled Pipeline Jobs
+    html += `
+      <div class="runtime-section-header">
+        <div>
+          <h2 class="runtime-section-title">Scheduled Runtime Jobs</h2>
+          <span class="text-xs text-muted">Autonomous background jobs, prerequisite satisfaction, and execution history.</span>
+        </div>
+        <div class="runtime-summary-chips">
+          <span class="runtime-status-badge runtime-status-completed">${jobCounts.completed || 0} Completed</span>
+          ${jobCounts.running ? `<span class="runtime-status-badge runtime-status-running">${jobCounts.running} Running</span>` : ''}
+          ${jobCounts.partial ? `<span class="runtime-status-badge runtime-status-partial">${jobCounts.partial} Partial</span>` : ''}
+          ${jobCounts.failed ? `<span class="runtime-status-badge runtime-status-failed">${jobCounts.failed} Failed</span>` : ''}
+          ${jobCounts.interrupted ? `<span class="runtime-status-badge runtime-status-interrupted">${jobCounts.interrupted} Interrupted</span>` : ''}
+          ${jobCounts.blocked ? `<span class="runtime-status-badge runtime-status-blocked">${jobCounts.blocked} Blocked</span>` : ''}
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="runtime-table" aria-label="Scheduled Runtime Jobs">
+          <thead>
+            <tr>
+              <th scope="col">Job Name</th>
+              <th scope="col">Status</th>
+              <th scope="col">Last Completed</th>
+              <th scope="col">Duration</th>
+              <th scope="col">Runs / Fails</th>
+              <th scope="col">Next Schedule / Blocked Reason</th>
+              <th scope="col">Telemetry Timeout</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${jobs.length ? jobs.map((j) => {
+              const jClass = getJobStatusClass(j.status);
+              return `<tr>
+                <td class="text-semibold">${escapeHtml(j.job_name)}</td>
+                <td>
+                  <span class="runtime-status-badge ${jClass}">
+                    ${escapeHtml((j.status || 'pending').replace('_', ' '))}
+                  </span>
+                </td>
+                <td class="mono text-xs">${formatNullOrTime(j.last_completed_at)}</td>
+                <td class="mono text-xs">${formatNullOrSeconds(j.duration_seconds)}</td>
+                <td class="mono text-xs">${formatNullOrVal(j.run_count)} / ${formatNullOrVal(j.failure_count)}</td>
+                <td class="text-xs">
+                  ${j.blocked_by ? `<span class="text-danger" style="font-weight:600;">Blocked by ${escapeHtml(j.blocked_by)}</span>: ${escapeHtml(j.blocked_reason || '')}` : escapeHtml(j.next_schedule || '—')}
+                </td>
+                <td class="text-xs text-muted">
+                  ${j.configured_timeout_minutes ? `${j.configured_timeout_minutes}m (not enforced)` : '—'}
+                </td>
+              </tr>`;
+            }).join('') : '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:var(--space-6);">No jobs scheduled.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    // Section 3: Recent Operational Failures & Current Source Issues
+    if (failures.length > 0 || sourceIssues.length > 0) {
+      html += `
+        <div class="runtime-section-header">
+          <div>
+            <h2 class="runtime-section-title">Operational Issues & Recent Failures</h2>
+            <span class="text-xs text-muted">Isolated execution failures and degraded intelligence providers with sanitized summaries.</span>
+          </div>
+        </div>
+
+        <div class="table-wrapper">
+          <table class="runtime-table" aria-label="Recent Operational Issues">
+            <thead>
+              <tr>
+                <th scope="col">Target</th>
+                <th scope="col">Type</th>
+                <th scope="col">Status</th>
+                <th scope="col">Observed / Started</th>
+                <th scope="col">Error Category</th>
+                <th scope="col">Sanitized Summary</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sourceIssues.map((si) => `
+                <tr>
+                  <td class="text-semibold">${escapeHtml(si.source)}</td>
+                  <td><span class="text-xs text-muted">SOURCE</span></td>
+                  <td><span class="runtime-status-badge ${getSourceStatusClass(si.health_status)}">${escapeHtml(si.health_status)}</span></td>
+                  <td class="mono text-xs">${formatNullOrTime(si.last_attempt_at)}</td>
+                  <td class="mono text-xs">${escapeHtml(si.error_category || 'unknown')}</td>
+                  <td><span class="runtime-sanitized-error">${escapeHtml(si.sanitized_error || 'No summary')}</span></td>
+                </tr>
+              `).join('')}
+              ${failures.map((f) => `
+                <tr>
+                  <td class="text-semibold">${escapeHtml(f.job_name)}</td>
+                  <td><span class="text-xs text-muted">JOB RUN</span></td>
+                  <td><span class="runtime-status-badge ${getJobStatusClass(f.status)}">${escapeHtml(f.status)}</span></td>
+                  <td class="mono text-xs">${formatNullOrTime(f.started_at)}</td>
+                  <td class="mono text-xs">${escapeHtml(f.error_category || 'unknown')}</td>
+                  <td><span class="runtime-sanitized-error">${escapeHtml(f.sanitized_error || 'No summary')}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    // Section 4: Intelligence Freshness & Lifetime Telemetry
+    html += `
+      <div class="runtime-section-header">
+        <div>
+          <h2 class="runtime-section-title">Intelligence Freshness & Lifetime Metrics</h2>
+          <span class="text-xs text-muted">Daily morning briefing state and lifetime engine execution counters.</span>
+        </div>
+      </div>
+
+      <div class="runtime-grid-diagnostics" style="margin-bottom:var(--space-8);">
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Today's Morning Briefing</div>
+          <div class="runtime-diag-value">
+            <span class="runtime-status-badge ${todayBriefing.generated ? 'runtime-status-healthy' : 'runtime-status-pending'}">
+              ${todayBriefing.generated ? 'GENERATED' : 'NOT GENERATED'}
+            </span>
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            ${todayBriefing.generated ? `${todayBriefing.total_items ?? '—'} items snapshot on ${todayBriefing.date}` : `Scheduled for ${todayBriefing.date}`}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Last Ingestion Run</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-base);">
+            ${freshness.last_successful_ingestion ? formatNullOrTime(freshness.last_successful_ingestion) : 'Never completed'}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Sources Polled: ${overview.lifetime_metrics?.sources_polled ?? 0}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Lifetime Events Ingested</div>
+          <div class="runtime-diag-value">
+            ${overview.lifetime_metrics?.events_ingested ?? 0}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Inbox Items: ${overview.lifetime_metrics?.inbox_items_generated ?? 0}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Lifetime Job Outcomes</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-sm);">
+            <span class="text-success">${overview.lifetime_metrics?.jobs_completed ?? 0} ok</span> ·
+            <span class="text-danger">${overview.lifetime_metrics?.jobs_failed ?? 0} fails</span> ·
+            <span class="text-muted">${overview.lifetime_metrics?.jobs_interrupted ?? 0} intr</span>
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Briefings: ${overview.lifetime_metrics?.briefings_generated ?? 0}
+          </div>
+        </div>
+      </div>
+    `;
+
     container.innerHTML = html;
+
+    // Attach read-only refresh button handler
+    const btnRefresh = container.querySelector('#btn-refresh-runtime');
+    if (btnRefresh) {
+      btnRefresh.addEventListener('click', () => {
+        renderRuntimeView(container, store);
+      });
+    }
   } catch (err) {
+    if (requestId !== _activeRuntimeRequestId) {
+      return;
+    }
     if (err.isNetworkError) {
       store.setConnection('offline', err.message);
       container.innerHTML = renderOfflineState(undefined, err.message);

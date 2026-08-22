@@ -22,9 +22,18 @@ def health(db: Database = Depends(get_db)):
     return runtime_service.get_health(db=db)
 
 
-@router.get("/runtime", summary="Runtime daemon and jobs status")
+@router.get("/runtime", summary="Runtime daemon and jobs operational overview")
+@router.get("/runtime/overview", summary="Runtime operational overview alias")
 def get_runtime(db: Database = Depends(get_db)):
-    return runtime_service.get_runtime_status(db=db)
+    return runtime_service.get_runtime_overview(db=db)
+
+
+@router.get("/runtime/failures", summary="Recent job failures")
+def get_runtime_failures(
+    limit: int = Query(10, ge=1, le=50, description="Max failed runs to return"),
+    db: Database = Depends(get_db),
+):
+    return {"failures": runtime_service.get_recent_job_failures(limit=limit, db=db)}
 
 
 @router.get("/sources", summary="Source adapters health and checkpoints")

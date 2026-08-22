@@ -533,9 +533,12 @@ class SourceCheckpoint(BaseModel):
     last_cursor: Optional[str] = None
     last_event_time: Optional[datetime] = None
     last_error: Optional[str] = None
+    last_error_category: Optional[str] = None
     consecutive_failures: int = 0
+    failure_threshold_reached: bool = False
+    max_consecutive_failures: int = 5
     next_retry_at: Optional[datetime] = None
-    health_status: str = "unknown"  # healthy, degraded, rate_limited, offline, disabled, unknown
+    health_status: str = "unknown"  # healthy, retrying, rate_limited, degraded, disabled, unavailable, unknown
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -543,12 +546,15 @@ class RuntimeJob(BaseModel):
     job_name: str
     last_started_at: Optional[datetime] = None
     last_completed_at: Optional[datetime] = None
-    last_status: str = "pending"  # pending, running, completed, failed, interrupted, skipped
+    last_status: str = "pending"  # pending, running, completed, failed, partial, interrupted, blocked, not_due, not_applicable
     last_error: Optional[str] = None
-    duration_seconds: float = 0.0
-    run_count: int = 0
-    failure_count: int = 0
+    last_error_category: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    run_count: Optional[int] = None
+    failure_count: Optional[int] = None
     next_run_at: Optional[datetime] = None
+    blocked_by: Optional[str] = None
+    blocked_reason: Optional[str] = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -557,9 +563,8 @@ class RuntimeJobRun(BaseModel):
     job_name: str
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
-    status: str = "running"  # running, completed, failed, interrupted, skipped
-    items_processed: int = 0
+    status: str = "running"  # running, completed, failed, partial, interrupted, blocked, not_applicable
+    items_processed: Optional[int] = None
     error_summary: Optional[str] = None
-    duration_seconds: float = 0.0
-
-
+    error_category: Optional[str] = None
+    duration_seconds: Optional[float] = None

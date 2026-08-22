@@ -253,7 +253,7 @@ def test_health_check_offline_degraded_and_db_unhealthy(test_db):
     # 2. Mock database failure -> UNHEALTHY
     test_db.conn.close()
     with patch("app.runtime.health.check_network_connectivity", return_value=True):
-        h_unhealthy = check_system_health(test_db, now=now)
+        h_unhealthy = check_system_health(test_db, now=now, use_cache=False)
         assert h_unhealthy["status"] == "UNHEALTHY"
 
 

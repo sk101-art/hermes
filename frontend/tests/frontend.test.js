@@ -5006,3 +5006,196 @@ test('Phase 12 remediation: Unavailable Story produces neutral copy without infe
   assert.ok(!card.includes('inactive'));
   assert.ok(!card.includes('deleted'));
 });
+
+// ==========================================
+// Phase 13: Runtime Reliability & Operational Tests
+// ==========================================
+
+test('Phase 13: renderRuntimeView makes exactly 1 request to /runtime and 0 Story/Inbox/Claim/Project requests', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+
+  const requestedUrls = [];
+  fetchMock = async (url) => {
+    requestedUrls.push(url);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        schema_version: 'v1',
+        status: 'HEALTHY',
+        observed_at: '2026-08-22T10:00:00Z',
+        effective_timezone: 'UTC',
+        scheduler_time: '2026-08-22 10:00:00 UTC',
+        daemon: { status: 'running', pid: 1234, heartbeat_timestamp: '2026-08-22T09:59:50Z', heartbeat_age_seconds: 10 },
+        system: { database: 'ok', network: 'online', disk_free_mb: 15000, disk_status: 'ok' },
+        sources: [
+          { source: 'github', health_status: 'healthy', consecutive_failures: 0, is_due: false, due_reason: 'NEXT_IN_45m', interval_minutes: 60 }
+        ],
+        source_summary: { total: 1, healthy: 1, retrying: 0, rate_limited: 0, degraded: 0, disabled: 0, unknown: 0, unavailable: 0 },
+        jobs: [
+          { job_name: 'ingestion', status: 'completed', duration_seconds: 4.2, run_count: 5, failure_count: 0, next_schedule: 'NEXT_IN_45m' }
+        ],
+        job_summary: { total: 1, completed: 1, running: 0, failed: 0, partial: 0, interrupted: 0, blocked: 0, not_due: 0, not_applicable: 0, pending: 0 },
+        recent_failures: [],
+        current_source_issues: [],
+        intelligence_freshness: {
+          last_successful_ingestion: '2026-08-22T09:15:00Z',
+          today_briefing: { date: '2026-08-22', generated: true, total_items: 5, generated_at: '2026-08-22T07:30:00Z' }
+        },
+        lifetime_metrics: { sources_polled: 12, events_ingested: 45, jobs_completed: 20, jobs_failed: 0, jobs_interrupted: 0 },
+        warnings: [],
+        issues: []
+      })
+    };
+  };
+
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+
+  assert.strictEqual(requestedUrls.length, 1);
+  assert.ok(requestedUrls[0].endsWith('/runtime'));
+  assert.ok(!requestedUrls.some((u) => u.includes('/story') || u.includes('/inbox') || u.includes('/claims') || u.includes('/projects')));
+
+  // Verify no epistemic verification badge classes are in output
+  assert.ok(!container.innerHTML.includes('badge-verification-supported'));
+  assert.ok(!container.innerHTML.includes('badge-verification-contradicted'));
+  assert.ok(!container.innerHTML.includes('badge-verification-unverified'));
+});
+
+test('Phase 13: renderRuntimeView renders dedicated .runtime-status-* classes for all operational states', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      schema_version: 'v1',
+      status: 'DEGRADED',
+      observed_at: '2026-08-22T10:00:00Z',
+      effective_timezone: 'America/New_York',
+      scheduler_time: '2026-08-22 06:00:00 EDT',
+      daemon: { status: 'stale', pid: 9999, is_stale: true },
+      system: { database: 'ok', network: 'offline', disk_free_mb: 500, disk_status: 'low_space (500 MB < 1024 MB)' },
+      sources: [
+        { source: 'arxiv', health_status: 'healthy', consecutive_failures: 0 },
+        { source: 'crossref', health_status: 'retrying', consecutive_failures: 1, next_retry_at: '2026-08-22T10:15:00Z', backoff_seconds: 900 },
+        { source: 'hackernews', health_status: 'rate_limited', consecutive_failures: 2 },
+        { source: 'openalex', health_status: 'degraded', consecutive_failures: 5, failure_threshold_reached: true, max_consecutive_failures: 5 },
+        { source: 'custom_feed', health_status: 'disabled', enabled: false },
+        { source: 'new_provider', health_status: 'unknown', consecutive_failures: null },
+        { source: 'broken_auth', health_status: 'unavailable', error_category: 'auth_error' },
+      ],
+      source_summary: { total: 7, healthy: 1, retrying: 1, rate_limited: 1, degraded: 1, disabled: 1, unknown: 1, unavailable: 1 },
+      jobs: [
+        { job_name: 'health_check', status: 'completed', duration_seconds: 0.05, run_count: 10, failure_count: 0 },
+        { job_name: 'ingestion', status: 'running', duration_seconds: null, run_count: 5, failure_count: 0, configured_timeout_minutes: 15, timeout_enforced: false },
+        { job_name: 'semantic', status: 'failed', duration_seconds: 1.2, run_count: 3, failure_count: 1, error_category: 'schema_error', sanitized_error: 'Invalid embedding vector' },
+        { job_name: 'claims', status: 'partial', duration_seconds: 2.5, run_count: 2, failure_count: 0 },
+        { job_name: 'recheck', status: 'interrupted', duration_seconds: 3.1, run_count: 1, failure_count: 0 },
+        { job_name: 'context_match', status: 'not_applicable', duration_seconds: null, run_count: null, failure_count: null },
+        { job_name: 'inbox_refresh', status: 'blocked', blocked_by: 'semantic', blocked_reason: 'Prerequisite failed' },
+        { job_name: 'morning_brief', status: 'not_due', next_schedule: 'SCHEDULED_AT_07:30' },
+        { job_name: 'backup', status: 'pending', duration_seconds: null, run_count: null, failure_count: null },
+      ],
+      job_summary: { total: 9, completed: 1, running: 1, failed: 1, partial: 1, interrupted: 1, blocked: 1, not_due: 1, not_applicable: 1, pending: 1 },
+      recent_failures: [
+        { run_id: 'run:1', job_name: 'semantic', started_at: '2026-08-22T09:00:00Z', status: 'failed', error_category: 'schema_error', sanitized_error: 'Invalid embedding vector' }
+      ],
+      current_source_issues: [
+        { source: 'openalex', health_status: 'degraded', consecutive_failures: 5, last_attempt_at: '2026-08-22T09:45:00Z', error_category: 'network_error', sanitized_error: 'Connection reset' }
+      ],
+      intelligence_freshness: {
+        last_successful_ingestion: null,
+        today_briefing: { date: '2026-08-22', generated: false, total_items: null }
+      },
+      lifetime_metrics: { sources_polled: 10, events_ingested: 0, jobs_completed: 1, jobs_failed: 1, jobs_interrupted: 1 },
+      warnings: ['Free disk space low: 500 MB available'],
+      issues: []
+    })
+  });
+
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+
+  const html = container.innerHTML;
+
+  // Source statuses
+  assert.ok(html.includes('runtime-status-healthy'));
+  assert.ok(html.includes('runtime-status-retrying'));
+  assert.ok(html.includes('runtime-status-rate-limited'));
+  assert.ok(html.includes('runtime-status-degraded'));
+  assert.ok(html.includes('runtime-status-disabled'));
+  assert.ok(html.includes('runtime-status-unknown'));
+  assert.ok(html.includes('runtime-status-unavailable'));
+  assert.ok(html.includes('runtime-threshold-tag'));
+
+  // Job statuses
+  assert.ok(html.includes('runtime-status-completed'));
+  assert.ok(html.includes('runtime-status-running'));
+  assert.ok(html.includes('runtime-status-failed'));
+  assert.ok(html.includes('runtime-status-partial'));
+  assert.ok(html.includes('runtime-status-interrupted'));
+  assert.ok(html.includes('runtime-status-blocked'));
+  assert.ok(html.includes('runtime-status-not-due'));
+  assert.ok(html.includes('runtime-status-not-applicable'));
+  assert.ok(html.includes('runtime-status-pending'));
+
+  // Blocked notice
+  assert.ok(html.includes('Blocked by semantic'));
+
+  // Un-enforced timeout notice
+  assert.ok(html.includes('not enforced'));
+});
+
+test('Phase 13: Truthful Null versus Zero rendering in Runtime view', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      schema_version: 'v1',
+      status: 'HEALTHY',
+      observed_at: '2026-08-22T10:00:00Z',
+      effective_timezone: 'UTC',
+      scheduler_time: '2026-08-22 10:00:00 UTC',
+      daemon: { status: 'stopped', pid: null, heartbeat_timestamp: null, heartbeat_age_seconds: null },
+      system: { database: 'ok', network: 'online', disk_free_mb: null, disk_status: 'ok' },
+      sources: [
+        { source: 'never_polled', health_status: 'unknown', consecutive_failures: null, last_attempt_at: null, last_success_at: null }
+      ],
+      source_summary: { total: 1, healthy: 0, retrying: 0, rate_limited: 0, degraded: 0, disabled: 0, unknown: 1, unavailable: 0 },
+      jobs: [
+        { job_name: 'never_run', status: 'pending', duration_seconds: null, run_count: null, failure_count: null, last_completed_at: null },
+        { job_name: 'zero_duration', status: 'completed', duration_seconds: 0.0, run_count: 1, failure_count: 0, last_completed_at: '2026-08-22T10:00:00Z' }
+      ],
+      job_summary: { total: 2, completed: 1, running: 0, failed: 0, partial: 0, interrupted: 0, blocked: 0, not_due: 0, not_applicable: 0, pending: 1 },
+      recent_failures: [],
+      current_source_issues: [],
+      intelligence_freshness: {
+        last_successful_ingestion: null,
+        today_briefing: { date: '2026-08-22', generated: false, total_items: null }
+      },
+      lifetime_metrics: {},
+      warnings: [],
+      issues: []
+    })
+  });
+
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+
+  const html = container.innerHTML;
+
+  // Unrecorded timestamps render "Not recorded"
+  assert.ok(html.includes('Not recorded'));
+
+  // Genuine zero duration renders "0.00s"
+  assert.ok(html.includes('0.00s'));
+
+  // Never completed ingestion renders "Never completed"
+  assert.ok(html.includes('Never completed'));
+});

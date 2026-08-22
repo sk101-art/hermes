@@ -494,3 +494,142 @@ class DailyBriefingResponse(BaseModel):
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
+
+
+# --- Phase 13: Runtime Reliability, Source Health & Operational Schemas ---
+
+class RuntimeDaemonInfo(BaseModel):
+    status: str  # running, stopped, stale, disagreement
+    pid: Optional[int] = None
+    heartbeat_timestamp: Optional[str] = None
+    heartbeat_age_seconds: Optional[int] = None
+    is_stale: bool = False
+    lock_present: bool = False
+    disagreement_notice: Optional[str] = None
+
+
+class RuntimeSystemDiagnostics(BaseModel):
+    database: str
+    network: str
+    disk_free_mb: Optional[int] = None
+    disk_status: str
+    embedding_model: str
+    reference_folder: str
+    observed_at: str
+    cache_age_seconds: Optional[float] = None
+    is_cached: bool = False
+
+
+class SourceOperationalRecord(BaseModel):
+    source: str
+    enabled: bool = True
+    health_status: str  # unknown, healthy, retrying, rate_limited, degraded, disabled, unavailable
+    last_attempt_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    consecutive_failures: Optional[int] = None
+    failure_threshold_reached: bool = False
+    max_consecutive_failures: int = 5
+    next_retry_at: Optional[str] = None
+    backoff_seconds: Optional[int] = None
+    is_due: bool = False
+    due_reason: str
+    interval_minutes: int
+    error_category: Optional[str] = None
+    sanitized_error: Optional[str] = None
+
+
+class JobOperationalRecord(BaseModel):
+    job_name: str
+    status: str  # pending, running, completed, failed, partial, interrupted, blocked, skipped, not_due, not_applicable
+    last_started_at: Optional[str] = None
+    last_completed_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    run_count: Optional[int] = None
+    failure_count: Optional[int] = None
+    is_due: bool = False
+    next_schedule: str
+    configured_timeout_minutes: Optional[int] = None
+    timeout_enforced: bool = False
+    blocked_by: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    error_category: Optional[str] = None
+    sanitized_error: Optional[str] = None
+
+
+class RecentJobFailureRecord(BaseModel):
+    run_id: str
+    job_name: str
+    started_at: str
+    completed_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    status: str  # failed, partial, interrupted
+    error_category: Optional[str] = None
+    sanitized_error: Optional[str] = None
+
+
+class CurrentSourceIssueRecord(BaseModel):
+    source: str
+    health_status: str
+    consecutive_failures: int
+    last_attempt_at: Optional[str] = None
+    next_retry_at: Optional[str] = None
+    error_category: Optional[str] = None
+    sanitized_error: Optional[str] = None
+
+
+class BriefingFreshnessInfo(BaseModel):
+    date: str
+    generated: bool
+    total_items: Optional[int] = None
+    generated_at: Optional[str] = None
+
+
+class IntelligenceFreshnessRecord(BaseModel):
+    last_successful_ingestion: Optional[str] = None
+    today_briefing: BriefingFreshnessInfo
+
+
+class SourceSummaryCounts(BaseModel):
+    total: int = 0
+    healthy: int = 0
+    retrying: int = 0
+    rate_limited: int = 0
+    degraded: int = 0
+    disabled: int = 0
+    unknown: int = 0
+    unavailable: int = 0
+
+
+class JobSummaryCounts(BaseModel):
+    total: int = 0
+    completed: int = 0
+    running: int = 0
+    failed: int = 0
+    partial: int = 0
+    interrupted: int = 0
+    blocked: int = 0
+    not_due: int = 0
+    not_applicable: int = 0
+    pending: int = 0
+
+
+class RuntimeOverviewResponse(BaseModel):
+    schema_version: str = "v1"
+    status: str  # HEALTHY, DEGRADED, UNHEALTHY
+    observed_at: str
+    effective_timezone: str
+    scheduler_time: str
+    timezone_warning: Optional[str] = None
+    daemon: RuntimeDaemonInfo
+    system: RuntimeSystemDiagnostics
+    sources: List[SourceOperationalRecord] = Field(default_factory=list)
+    source_summary: SourceSummaryCounts
+    jobs: List[JobOperationalRecord] = Field(default_factory=list)
+    job_summary: JobSummaryCounts
+    recent_failures: List[RecentJobFailureRecord] = Field(default_factory=list)
+    current_source_issues: List[CurrentSourceIssueRecord] = Field(default_factory=list)
+    intelligence_freshness: IntelligenceFreshnessRecord
+    lifetime_metrics: Dict[str, int] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+    issues: List[str] = Field(default_factory=list)
+    is_partial_availability: bool = False

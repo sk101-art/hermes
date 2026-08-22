@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import platform
 from datetime import datetime, timedelta, timezone
@@ -8,6 +8,7 @@ import yaml
 
 from app.models.schemas import RuntimeJob, RuntimeJobRun, SourceCheckpoint
 from app.runtime.locks import is_pid_alive
+from app.runtime.sanitization import sanitize_error
 from app.storage.db import Database
 
 
@@ -68,12 +69,13 @@ def load_runtime_config(config_path: str = "config/runtime.yaml") -> Dict[str, A
 
 def is_source_due(
     source_name: str,
-    db: Database,
+    db: Optional[Database] = None,
     now: Optional[datetime] = None,
     config: Optional[Dict[str, Any]] = None,
+    checkpoint: Optional[SourceCheckpoint] = None,
 ) -> Tuple[bool, str]:
     """
-    Checks if a source is due for polling based on checkpoint, retry backoff, and interval.
+    Checks if a source is due for polling based on checkpoint, retry backoff, interval, and enabled status.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -81,10 +83,12 @@ def is_source_due(
         config = load_runtime_config()
 
     src_cfg = config.get("sources", {}).get(source_name, {})
-    interval_mins = src_cfg.get("interval_minutes", 60)
-    max_fails = src_cfg.get("max_consecutive_failures", 5)
+    if src_cfg.get("enabled", True) is False:
+        return False, "CONFIG_DISABLED"
 
-    cp = db.get_source_checkpoint(source_name)
+    interval_mins = src_cfg.get("interval_minutes", 60)
+
+    cp = checkpoint if checkpoint is not None else (db.get_source_checkpoint(source_name) if db else None)
     if not cp:
         return True, "INITIAL_RUN"
 
@@ -113,7 +117,7 @@ def record_source_success(
     event_time: Optional[datetime] = None,
     now: Optional[datetime] = None,
 ) -> SourceCheckpoint:
-    """Updates source checkpoint on successful fetch and persistence."""
+    """Updates source checkpoint on successful fetch and persistence, resetting failure counters."""
     if now is None:
         now = datetime.now(timezone.utc)
 
@@ -125,7 +129,9 @@ def record_source_success(
         last_cursor=cursor if cursor is not None else (existing.last_cursor if existing else None),
         last_event_time=event_time if event_time is not None else (existing.last_event_time if existing else None),
         last_error=None,
+        last_error_category=None,
         consecutive_failures=0,
+        failure_threshold_reached=False,
         next_retry_at=None,
         health_status="healthy",
         updated_at=now,
@@ -139,21 +145,35 @@ def record_source_failure(
     error_msg: str,
     db: Database,
     now: Optional[datetime] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> SourceCheckpoint:
-    """Updates source checkpoint with exponential backoff on failure."""
+    """Updates source checkpoint with structured sanitization and exponential backoff on failure."""
     if now is None:
         now = datetime.now(timezone.utc)
+    if config is None:
+        config = load_runtime_config()
+
+    src_cfg = config.get("sources", {}).get(source_name, {})
+    max_fails = src_cfg.get("max_consecutive_failures", 5)
 
     existing = db.get_source_checkpoint(source_name)
-    fails = (existing.consecutive_failures if existing else 0) + 1
+    fails = (existing.consecutive_failures if existing and existing.consecutive_failures is not None else 0) + 1
 
     # Exponential backoff: 15m, 30m, 60m, 120m, max 240m
     delay_minutes = min(240, 15 * (2 ** min(fails - 1, 4)))
     next_retry = now + timedelta(minutes=delay_minutes)
 
-    health_status = "degraded" if fails >= 3 else "healthy"
-    if "429" in error_msg or "rate limit" in error_msg.lower():
+    category, sanitized_error = sanitize_error(error_msg)
+
+    # Determine health_status
+    if category == "rate_limit" or "429" in error_msg or "rate limit" in error_msg.lower():
         health_status = "rate_limited"
+    elif fails < 3:
+        health_status = "retrying"
+    else:
+        health_status = "degraded"
+
+    failure_threshold_reached = bool(fails >= max_fails)
 
     cp = SourceCheckpoint(
         source=source_name,
@@ -161,8 +181,11 @@ def record_source_failure(
         last_attempt_at=now,
         last_cursor=existing.last_cursor if existing else None,
         last_event_time=existing.last_event_time if existing else None,
-        last_error=error_msg[:500],
+        last_error=sanitized_error,
+        last_error_category=category,
         consecutive_failures=fails,
+        failure_threshold_reached=failure_threshold_reached,
+        max_consecutive_failures=max_fails,
         next_retry_at=next_retry,
         health_status=health_status,
         updated_at=now,
@@ -190,8 +213,8 @@ def start_job_run(
     db.save_runtime_job_run(run)
 
     job = db.get_runtime_job(job_name)
-    run_count = (job.run_count if job else 0) + 1
-    fail_count = job.failure_count if job else 0
+    run_count = ((job.run_count if job and job.run_count is not None else 0) + 1)
+    fail_count = job.failure_count if job and job.failure_count is not None else 0
 
     updated_job = RuntimeJob(
         job_name=job_name,
@@ -199,10 +222,13 @@ def start_job_run(
         last_completed_at=job.last_completed_at if job else None,
         last_status="running",
         last_error=None,
-        duration_seconds=job.duration_seconds if job else 0.0,
+        last_error_category=None,
+        duration_seconds=None,
         run_count=run_count,
         failure_count=fail_count,
         next_run_at=job.next_run_at if job else None,
+        blocked_by=None,
+        blocked_reason=None,
         updated_at=now,
     )
     db.save_runtime_job(updated_job)
@@ -212,7 +238,7 @@ def start_job_run(
 def finish_job_run(
     run: RuntimeJobRun,
     status: str,
-    items_processed: int,
+    items_processed: Optional[int],
     db: Database,
     error_summary: Optional[str] = None,
     next_run_at: Optional[datetime] = None,
@@ -223,27 +249,36 @@ def finish_job_run(
         now = datetime.now(timezone.utc)
 
     duration = max(0.0, (now - run.started_at).total_seconds())
+    category = None
+    sanitized_err = None
+    if error_summary:
+        category, sanitized_err = sanitize_error(error_summary)
+
     run.completed_at = now
     run.status = status
     run.items_processed = items_processed
-    run.error_summary = error_summary[:500] if error_summary else None
+    run.error_summary = sanitized_err
+    run.error_category = category
     run.duration_seconds = round(duration, 2)
     db.save_runtime_job_run(run)
 
     job = db.get_runtime_job(run.job_name)
-    run_count = job.run_count if job else 1
-    fail_count = (job.failure_count if job else 0) + (1 if status == "failed" else 0)
+    run_count = job.run_count if job and job.run_count is not None else 1
+    fail_count = (job.failure_count if job and job.failure_count is not None else 0) + (1 if status == "failed" else 0)
 
     updated_job = RuntimeJob(
         job_name=run.job_name,
         last_started_at=job.last_started_at if job else run.started_at,
         last_completed_at=now,
         last_status=status,
-        last_error=error_summary[:500] if error_summary else None,
+        last_error=sanitized_err,
+        last_error_category=category,
         duration_seconds=round(duration, 2),
         run_count=run_count,
         failure_count=fail_count,
         next_run_at=next_run_at,
+        blocked_by=None,
+        blocked_reason=None,
         updated_at=now,
     )
     db.save_runtime_job(updated_job)
@@ -252,6 +287,8 @@ def finish_job_run(
         db.increment_runtime_metric("jobs_completed", 1)
     elif status == "failed":
         db.increment_runtime_metric("jobs_failed", 1)
+    elif status == "partial":
+        db.increment_runtime_metric("jobs_partial", 1)
 
     return run
 
@@ -266,6 +303,7 @@ def recover_interrupted_jobs(db: Database, now: Optional[datetime] = None) -> Li
     for r in running_runs:
         r.completed_at = now
         r.status = "interrupted"
+        r.error_category = "runtime_error"
         r.error_summary = "Job interrupted by daemon restart or crash"
         r.duration_seconds = max(0.0, (now - r.started_at).total_seconds())
         db.save_runtime_job_run(r)
@@ -274,10 +312,12 @@ def recover_interrupted_jobs(db: Database, now: Optional[datetime] = None) -> Li
         if job and job.last_status == "running":
             job.last_status = "interrupted"
             job.last_error = "Daemon restarted while job was in progress"
+            job.last_error_category = "runtime_error"
             job.last_completed_at = now
             job.updated_at = now
             db.save_runtime_job(job)
 
+        db.increment_runtime_metric("jobs_interrupted", 1)
         recovered.append(r)
     return recovered
 
