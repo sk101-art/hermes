@@ -1017,5 +1017,172 @@ def test_changes_contract_detected_at_and_provenance(tmp_path):
     assert c4["new_value"] == "assessed/medium"
 
 
+def test_inbox_contract_transport_and_filtering(tmp_path):
+    from app.storage.db import Database
+    from app.services.intelligence import get_today_inbox
+    from app.services.saved import save_cluster_item, delete_saved_item
+    from app.models.schemas import InboxItem, StoryCluster, Project
 
+    db_path = tmp_path / "test_inbox.db"
+    db = Database(str(db_path))
+
+    # Setup 2 projects
+    db.save_project(Project(
+        id="project:proj_ml",
+        name="Machine Learning Lab",
+        path="/tmp/ml",
+        description="ML project",
+    ))
+    db.save_project(Project(
+        id="project:proj_sys",
+        name="Systems Lab",
+        path="/tmp/sys",
+        description="Compiler project",
+    ))
+
+    # Setup Story Clusters: cl_1 exists, cl_3 does not exist (unavailable)
+    db.save_cluster(StoryCluster(
+        id="cl_inbox_1",
+        canonical_title="PyTorch Compiler Optimization",
+        summary="Speedup in tensor graphs",
+        category="ai_ml",
+        score=0.85,
+    ))
+    db.save_cluster(StoryCluster(
+        id="cl_inbox_2",
+        canonical_title="LLVM Vectorization Pipeline",
+        summary="New loop vectorizer",
+        category="systems_compilers",
+        score=0.75,
+    ))
+
+    now = datetime.now(timezone.utc)
+
+    # Item 1: High priority, unseen, ai_ml, matched to proj_ml, resolvable cluster
+    db.save_inbox_item(InboxItem(
+        id="ib_1",
+        entity_type="cluster",
+        entity_id="cl_inbox_1",
+        story_cluster_id="cl_inbox_1",
+        title="PyTorch Compiler Optimization",
+        section="ai_ml",
+        inbox_score=0.92,
+        rank_score=0.92,
+        project_impact_score=0.80,
+        state="unseen",
+        item_type="claim_strengthened",
+        created_at=now,
+        expires_at=now + timedelta(days=2),
+        matched_project_ids=["project:proj_ml"],
+        reason_codes=["intel_change:verification_strengthened", "recent_discovery"],
+    ))
+
+    # Item 2: Medium priority, seen, systems_compilers, matched to proj_sys
+    db.save_inbox_item(InboxItem(
+        id="ib_2",
+        entity_type="cluster",
+        entity_id="cl_inbox_2",
+        story_cluster_id="cl_inbox_2",
+        title="LLVM Vectorization Pipeline",
+        section="systems_compilers",
+        inbox_score=0.78,
+        rank_score=0.78,
+        project_impact_score=0.65,
+        state="seen",
+        item_type="new_release",
+        created_at=now,
+        expires_at=now + timedelta(days=1),
+        matched_project_ids=["project:proj_sys"],
+        reason_codes=["official_release"],
+    ))
+
+    # Item 3: Low priority, unseen, corrections_updates, unresolvable cluster (cl_missing)
+    db.save_inbox_item(InboxItem(
+        id="ib_3",
+        entity_type="claim",
+        entity_id="claim_missing",
+        story_cluster_id="cl_missing_nonexistent",
+        title="Retraction Notice for Flawed Benchmark",
+        section="corrections_updates",
+        inbox_score=0.60,
+        rank_score=0.60,
+        project_impact_score=0.0,
+        state="unseen",
+        item_type="claim_weakened",
+        created_at=now,
+        expires_at=now + timedelta(days=3),
+        matched_project_ids=[],
+        reason_codes=["claim_weakened", "contradictory_evidence"],
+    ))
+
+    # Test 1: Full active list order preservation
+    items = get_today_inbox(db=db)
+    assert len(items) == 3
+    assert items[0]["id"] == "ib_1"
+    assert items[1]["id"] == "ib_2"
+    assert items[2]["id"] == "ib_3"
+
+    # Test 2: Truthful field transport
+    it1 = items[0]
+    assert it1["id"] == "ib_1"
+    assert it1["entity_type"] == "cluster"
+    assert it1["entity_id"] == "cl_inbox_1"
+    assert it1["story_cluster_id"] == "cl_inbox_1"
+    assert it1["title"] == "PyTorch Compiler Optimization"
+    assert it1["section"] == "ai_ml"
+    assert it1["state"] == "unseen"
+    assert it1["item_type"] == "claim_strengthened"
+    assert it1["inbox_score"] == 0.92
+    assert it1["rank_score"] == 0.92
+    assert it1["project_impact_score"] == 0.80
+    assert it1["matched_project_ids"] == ["project:proj_ml"]
+    assert it1["reason_codes"] == ["intel_change:verification_strengthened", "recent_discovery"]
+    assert it1["story_available"] is True
+    assert it1["is_starred"] is False
+    assert it1["saved_item_id"] is None
+
+    # Test 3: Unresolvable story cluster reflects story_available=False
+    it3 = items[2]
+    assert it3["story_cluster_id"] == "cl_missing_nonexistent"
+    assert it3["story_available"] is False
+    assert it3["item_type"] == "claim_weakened"
+
+    # Test 4: unseen_only filter
+    unseen_items = get_today_inbox(unseen_only=True, db=db)
+    assert len(unseen_items) == 2
+    assert {i["id"] for i in unseen_items} == {"ib_1", "ib_3"}
+
+    # Test 5: section filter
+    sec_items = get_today_inbox(section="systems_compilers", db=db)
+    assert len(sec_items) == 1
+    assert sec_items[0]["id"] == "ib_2"
+
+    # Test 6: project filter
+    proj_items = get_today_inbox(project="proj_ml", db=db)
+    assert len(proj_items) == 1
+    assert proj_items[0]["id"] == "ib_1"
+
+    # Test 7: limit
+    limited = get_today_inbox(limit=1, db=db)
+    assert len(limited) == 1
+    assert limited[0]["id"] == "ib_1"
+
+    # Test 8: Saved item synchronization & active truthfulness
+    ok, msg, saved_obj = save_cluster_item(story_cluster_id="cl_inbox_1", inbox_item_id="ib_1", db=db)
+    assert ok is True
+    assert saved_obj is not None
+
+    items_after_save = get_today_inbox(db=db)
+    saved_it1 = next(i for i in items_after_save if i["id"] == "ib_1")
+    assert saved_it1["is_starred"] is True
+    assert saved_it1["saved_item_id"] == f"saved:cl_inbox_1"
+
+    # Test 9: Deactivating saved item synchronizes back truthfully
+    del_ok, del_msg = delete_saved_item(saved_id=f"saved:cl_inbox_1", db=db)
+    assert del_ok is True
+
+    items_after_delete = get_today_inbox(db=db)
+    unstarred_it1 = next(i for i in items_after_delete if i["id"] == "ib_1")
+    assert unstarred_it1["is_starred"] is False
+    assert unstarred_it1["saved_item_id"] is None
 

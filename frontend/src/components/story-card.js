@@ -40,17 +40,11 @@ export function renderStoryCard(story) {
   const maturityStage = story.maturity_stage || story.maturity || null;
 
   // Risk state (status + level + score)
-  let riskStatus = story.risk_status || (story.risk && story.risk.status ? story.risk.status : null);
-  let riskLevel = story.risk_level || story.risk_score_category || (story.risk && story.risk.level ? story.risk.level : null);
+  const riskStatus = story.risk_status || (story.risk && story.risk.status ? story.risk.status : null);
+  const riskLevel = story.risk_level || story.risk_score_category || (story.risk && story.risk.level ? story.risk.level : null);
   const riskScore = typeof story.risk_score === 'number'
     ? story.risk_score
     : (story.risk && typeof story.risk.score === 'number' ? story.risk.score : null);
-
-  // If story has legacy string 'risk' e.g. 'low'/'medium'/'high'
-  if (!riskStatus && typeof story.risk === 'string') {
-    riskStatus = 'assessed';
-    riskLevel = story.risk;
-  }
 
   // Relevance / Ranking (Cluster or Search Score)
   const rankingScore = typeof story.cluster_score === 'number'

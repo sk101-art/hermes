@@ -803,7 +803,7 @@ def get_today_inbox(
         db = Database()
 
     limit = max(1, min(limit, 50))
-    items = db.get_active_inbox_items()
+    items = db.get_active_inbox_items(limit=100)
 
     if unseen_only:
         items = [it for it in items if it.state == "unseen"]
@@ -818,21 +818,49 @@ def get_today_inbox(
         if proj:
             items = [it for it in items if proj.id in it.matched_project_ids]
 
+    target_items = items[:limit]
+    cluster_ids = [it.story_cluster_id for it in target_items if it.story_cluster_id]
+
+    available_clusters = set()
+    active_saved_map = {}
+    if cluster_ids:
+        placeholders = ",".join(["?"] * len(cluster_ids))
+        cursor = db.conn.cursor()
+        cursor.execute(f"SELECT id FROM story_clusters WHERE id IN ({placeholders})", cluster_ids)
+        available_clusters = {r[0] for r in cursor.fetchall()}
+
+        cursor.execute(
+            f"SELECT id, story_cluster_id FROM saved_items WHERE is_active = 1 AND story_cluster_id IN ({placeholders})",
+            cluster_ids,
+        )
+        for r in cursor.fetchall():
+            active_saved_map[r["story_cluster_id"]] = r["id"]
+
     out = []
-    for it in items[:limit]:
+    for it in target_items:
+        cid = it.story_cluster_id
+        is_avail = bool(cid and cid in available_clusters)
+        active_saved_id = active_saved_map.get(cid) if cid else None
+
         out.append({
             "id": it.id,
+            "entity_type": it.entity_type,
+            "entity_id": it.entity_id,
             "story_cluster_id": it.story_cluster_id,
             "title": it.title,
             "section": it.section,
             "state": it.state,
-            "is_starred": bool(it.is_starred),
-            "inbox_score": round(it.inbox_score, 4),
-            "rank_score": round(it.rank_score, 4),
-            "project_impact_score": round(it.project_impact_score, 4),
-            "matched_project_ids": it.matched_project_ids,
+            "is_starred": bool(active_saved_id is not None or it.is_starred),
+            "inbox_score": round(it.inbox_score, 4) if it.inbox_score is not None else None,
+            "rank_score": round(it.rank_score, 4) if it.rank_score is not None else None,
+            "project_impact_score": round(it.project_impact_score, 4) if it.project_impact_score is not None else 0.0,
+            "matched_project_ids": it.matched_project_ids or [],
+            "item_type": it.item_type,
+            "reason_codes": it.reason_codes or [],
+            "saved_item_id": active_saved_id if active_saved_id is not None else (it.saved_item_id if it.is_starred else None),
+            "story_available": is_avail,
             "expires_at": it.expires_at.isoformat() if it.expires_at else None,
-            "created_at": it.created_at.isoformat(),
+            "created_at": it.created_at.isoformat() if it.created_at else None,
         })
     return out
 

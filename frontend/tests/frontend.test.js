@@ -1248,6 +1248,7 @@ test('Search URL state serialization and restoration preserve all query and filt
 function createMockContainer() {
   let elements = {};
   function makeMockElement() {
+    const classes = new Set();
     return {
       value: '',
       checked: false,
@@ -1255,6 +1256,12 @@ function createMockContainer() {
       style: {},
       _html: '',
       _attrs: {},
+      dataset: {},
+      classList: {
+        contains(cls) { return classes.has(cls); },
+        add(cls) { classes.add(cls); },
+        remove(cls) { classes.delete(cls); }
+      },
       textContent: '',
       getAttribute(attr) { return this._attrs[attr] || null; },
       setAttribute(attr, val) { this._attrs[attr] = String(val); },
@@ -1272,6 +1279,8 @@ function createMockContainer() {
         }
       },
       closest() { return this; },
+      querySelector(sel) { return makeMockElement(); },
+      insertAdjacentHTML() {},
       appendChild() {},
       focus() {},
       remove() {}
@@ -1280,6 +1289,11 @@ function createMockContainer() {
 
   const container = {
     _html: '',
+    _listeners: {},
+    addEventListener(event, handler) {
+      if (!this._listeners[event]) this._listeners[event] = [];
+      this._listeners[event].push(handler);
+    },
     get innerHTML() {
       let combined = this._html;
       for (const key of Object.keys(elements)) {
@@ -2814,9 +2828,713 @@ test('Phase 9: Client-side noise control toggle hides system maintenance records
   fetchMock = null;
 });
 
+/* ==========================================================================
+   Phase 10: Today Inbox & Daily Prioritization Experience Tests
+   ========================================================================== */
 
+test('Phase 10: Initial Today load sends one /inbox request and zero /stories requests', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+  const capturedUrls = [];
 
+  fetchMock = async (url) => {
+    capturedUrls.push(url);
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 1,
+        inbox_items: [
+          {
+            id: 'ib_1',
+            story_cluster_id: 'cl_1',
+            title: 'PyTorch Compiler Update',
+            section: 'ai_ml',
+            state: 'unseen',
+            item_type: 'new_story',
+            inbox_score: 0.85,
+            rank_score: 0.85,
+            project_impact_score: 0.0,
+            story_available: true,
+            created_at: '2026-08-22T00:00:00Z',
+          }
+        ]
+      })
+    };
+  };
 
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderTodayView(container, store);
+
+  const inboxRequests = capturedUrls.filter(u => u.includes('/inbox'));
+  const storyRequests = capturedUrls.filter(u => u.includes('/stories/'));
+
+  assert.strictEqual(inboxRequests.length, 1);
+  assert.strictEqual(storyRequests.length, 0);
+
+  fetchMock = null;
+});
+
+test('Phase 10: Server-side filters (unseen_only, project, section) transmit actual backend query parameters', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+  const capturedUrls = [];
+
+  fetchMock = async (url) => {
+    capturedUrls.push(url);
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ id: 'proj_cuda', name: 'CUDA Lab' }] }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ count: 0, inbox_items: [] })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderTodayView(container, store);
+
+  // Trigger Section filter change
+  const secSelect = container.querySelector('#sel-inbox-section');
+  secSelect.value = 'systems_compilers';
+  const secHandlers = secSelect._listeners['change'] || [];
+  for (const h of secHandlers) await h({ target: secSelect });
+
+  // Trigger Project filter change
+  const projSelect = container.querySelector('#sel-inbox-project');
+  projSelect.value = 'proj_cuda';
+  const projHandlers = projSelect._listeners['change'] || [];
+  for (const h of projHandlers) await h({ target: projSelect });
+
+  // Trigger Unseen Only filter change
+  const chkUnseen = container.querySelector('#chk-unseen-only');
+  chkUnseen.checked = true;
+  const unseenHandlers = chkUnseen._listeners['change'] || [];
+  for (const h of unseenHandlers) await h({ target: chkUnseen });
+
+  const lastReq = capturedUrls[capturedUrls.length - 1];
+  assert.ok(lastReq.includes('section=systems_compilers'));
+  assert.ok(lastReq.includes('project=proj_cuda'));
+  assert.ok(lastReq.includes('unseen_only=true'));
+
+  fetchMock = null;
+});
+
+test('Phase 10: Reset filters restores default parameters and reloads inbox view', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+  const capturedUrls = [];
+
+  fetchMock = async (url) => {
+    capturedUrls.push(url);
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ count: 0, inbox_items: [] })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderTodayView(container, store);
+
+  const btnReset = container.querySelector('#btn-reset-inbox-filters');
+  const resetHandlers = btnReset._listeners['click'] || [];
+  for (const h of resetHandlers) await h({ target: btnReset });
+
+  const finalReq = capturedUrls[capturedUrls.length - 1];
+  assert.ok(!finalReq.includes('section='));
+  assert.ok(!finalReq.includes('project='));
+  assert.ok(!finalReq.includes('unseen_only=true'));
+
+  fetchMock = null;
+});
+
+test('Phase 10: URL hash state synchronization and restoration', async () => {
+  const { parseInboxHashParams, updateInboxHash } = await import('../src/views/today.js');
+
+  // Test hash parsing
+  globalThis.window.location.hash = '#/today?unseen=true&section=ai_ml&project=proj_rag';
+  const parsed = parseInboxHashParams();
+  assert.strictEqual(parsed.unseen_only, true);
+  assert.strictEqual(parsed.section, 'ai_ml');
+  assert.strictEqual(parsed.project, 'proj_rag');
+
+  // Test hash updating
+  updateInboxHash({ unseen_only: true, section: 'systems_compilers', project: 'proj_cuda' });
+  assert.ok(globalThis.window.location.hash.includes('unseen=true'));
+  assert.ok(globalThis.window.location.hash.includes('section=systems_compilers'));
+  assert.ok(globalThis.window.location.hash.includes('project=proj_cuda'));
+});
+
+test('Phase 10: Deterministic section ordering and unknown-section fallback', async () => {
+  const { consolidateInboxItems, CANONICAL_SECTION_ORDER } = await import('../src/views/today.js');
+
+  const items = [
+    { id: 'ib_custom', story_cluster_id: 'cl_custom', title: 'Custom Topic', section: 'custom_section', inbox_score: 0.9, _backendOrder: 0 },
+    { id: 'ib_ai', story_cluster_id: 'cl_ai', title: 'AI Topic', section: 'ai_ml', inbox_score: 0.8, _backendOrder: 1 },
+    { id: 'ib_must', story_cluster_id: 'cl_must', title: 'Must Know Topic', section: 'must_know', inbox_score: 0.7, _backendOrder: 2 },
+    { id: 'ib_corr', story_cluster_id: 'cl_corr', title: 'Correction Topic', section: 'corrections_updates', inbox_score: 0.6, _backendOrder: 3 },
+  ];
+
+  const { sections } = consolidateInboxItems(items);
+  const renderedKeys = [];
+  const knownKeys = new Set(CANONICAL_SECTION_ORDER);
+
+  for (const k of CANONICAL_SECTION_ORDER) {
+    if (sections[k]) renderedKeys.push(k);
+  }
+  const unknownKeys = Object.keys(sections).filter(k => !knownKeys.has(k)).sort();
+  for (const u of unknownKeys) renderedKeys.push(u);
+
+  assert.deepStrictEqual(renderedKeys, ['must_know', 'corrections_updates', 'ai_ml', 'custom_section']);
+});
+
+test('Phase 10: Duplicate Story consolidation into single primary card without losing secondary reason codes and item types', async () => {
+  const { consolidateInboxItems, renderInboxCard } = await import('../src/views/today.js');
+
+  const rawDuplicateItems = [
+    {
+      id: 'ib_sub_1',
+      story_cluster_id: 'cl_dup_1',
+      title: 'LLVM Matrix Lowering Engine',
+      section: 'systems_compilers',
+      item_type: 'new_story',
+      inbox_score: 0.88,
+      rank_score: 0.88,
+      reason_codes: ['recent_discovery'],
+      matched_project_ids: ['proj_cuda'],
+      story_available: true,
+      _backendOrder: 0,
+    },
+    {
+      id: 'ib_sub_2',
+      story_cluster_id: 'cl_dup_1',
+      title: 'LLVM Matrix Lowering Engine',
+      section: 'must_know',
+      item_type: 'claim_strengthened',
+      inbox_score: 0.95,
+      rank_score: 0.95,
+      reason_codes: ['intel_change:verification_strengthened'],
+      matched_project_ids: ['proj_cuda', 'proj_llvm'],
+      story_available: true,
+      _backendOrder: 1,
+    }
+  ];
+
+  const { consolidatedList, sections } = consolidateInboxItems(rawDuplicateItems);
+
+  assert.strictEqual(consolidatedList.length, 1);
+  const primary = consolidatedList[0];
+  // must_know has higher precedence than systems_compilers
+  assert.strictEqual(primary.section, 'must_know');
+  assert.strictEqual(primary.id, 'ib_sub_2');
+  assert.ok(primary.reason_codes.includes('recent_discovery'));
+  assert.ok(primary.reason_codes.includes('intel_change:verification_strengthened'));
+  assert.ok(primary.matched_project_ids.includes('proj_cuda'));
+  assert.ok(primary.matched_project_ids.includes('proj_llvm'));
+  assert.ok(primary.secondaryItemTypes.includes('new_story'));
+
+  const cardHtml = renderInboxCard(primary);
+  assert.ok(cardHtml.includes('Verification Reevaluated'));
+  assert.ok(cardHtml.includes('Recent Discovery'));
+  assert.ok(cardHtml.includes('+ New Story'));
+});
+
+test('Phase 10: Corrective and weakened reasons survive consolidation and are visibly flagged', async () => {
+  const { consolidateInboxItems, renderInboxCard } = await import('../src/views/today.js');
+
+  const items = [
+    {
+      id: 'ib_pos',
+      story_cluster_id: 'cl_mixed',
+      title: 'Distributed KV Store v2',
+      section: 'storage_databases',
+      item_type: 'new_release',
+      inbox_score: 0.80,
+      reason_codes: ['official_release'],
+      story_available: true,
+      _backendOrder: 0,
+    },
+    {
+      id: 'ib_neg',
+      story_cluster_id: 'cl_mixed',
+      title: 'Distributed KV Store v2',
+      section: 'corrections_updates',
+      item_type: 'claim_weakened',
+      inbox_score: 0.85,
+      reason_codes: ['claim_weakened_by_reproduction'],
+      story_available: true,
+      _backendOrder: 1,
+    }
+  ];
+
+  const { consolidatedList } = consolidateInboxItems(items);
+  assert.strictEqual(consolidatedList.length, 1);
+  const primary = consolidatedList[0];
+  assert.strictEqual(primary.section, 'corrections_updates');
+  assert.ok(primary.secondaryItemTypes.includes('new_release'));
+
+  const html = renderInboxCard(primary);
+  assert.ok(html.includes('data-item-type="claim_weakened"'));
+  assert.ok(html.includes('Contradiction / Weakened'));
+  assert.ok(html.includes('+ New Release'));
+});
+
+test('Phase 10: Dedicated Inbox card does not fabricate verification, maturity, risk, or source badges', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_pure_inbox',
+    story_cluster_id: 'cl_pure',
+    title: 'New Framework Release',
+    section: 'developer_tooling',
+    item_type: 'new_story',
+    inbox_score: 0.70,
+    rank_score: 0.70,
+    project_impact_score: 0.0,
+    state: 'unseen',
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  // Must not fabricate epistemic badges
+  assert.ok(!html.includes('badge-verification'));
+  assert.ok(!html.includes('badge-maturity'));
+  assert.ok(!html.includes('badge-risk'));
+  assert.ok(!html.includes('source-pill'));
+  assert.ok(!html.includes('HERMES cluster'));
+});
+
+test('Phase 10: inbox_score and rank_score are labeled as Priority and Order Rank, never Verification or Confidence', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_scores',
+    story_cluster_id: 'cl_scores',
+    title: 'High Priority Compiler Bug',
+    section: 'systems_compilers',
+    item_type: 'new_risk',
+    inbox_score: 0.94,
+    rank_score: 0.94,
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  assert.ok(html.includes('Priority:'));
+  assert.ok(html.includes('94%'));
+  assert.ok(!html.includes('Verification:'));
+  assert.ok(!html.includes('Confidence:'));
+  assert.ok(!html.includes('Accuracy:'));
+});
+
+test('Phase 10: project_impact_score is labeled as Project Relevance, never recommendation or safety advice', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_proj',
+    story_cluster_id: 'cl_proj',
+    title: 'CUDA Kernel Upgrade',
+    section: 'systems_compilers',
+    item_type: 'new_release',
+    inbox_score: 0.85,
+    project_impact_score: 0.78,
+    matched_project_ids: ['proj_cuda'],
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  assert.ok(html.includes('Project Relevance:'));
+  assert.ok(html.includes('78%'));
+  assert.ok(html.includes('Project Context:'));
+  assert.ok(!html.includes('Recommended'));
+  assert.ok(!html.includes('Safe to deploy'));
+  assert.ok(!html.includes('Compatible tool'));
+});
+
+test('Phase 10: Null scores remain absent and never coerce to 0%', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_nulls',
+    story_cluster_id: 'cl_nulls',
+    title: 'Unscored Intelligence Signal',
+    section: 'research',
+    item_type: 'new_story',
+    inbox_score: null,
+    rank_score: null,
+    project_impact_score: null,
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  assert.ok(!html.includes('0%'));
+  assert.ok(!html.includes('Priority:'));
+  assert.ok(!html.includes('Project Relevance:'));
+});
+
+test('Phase 10: Backend item_type and reason_codes are rendered faithfully without client-side inference', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_codes',
+    story_cluster_id: 'cl_codes',
+    title: 'Quantum Memory Coherence',
+    section: 'research',
+    item_type: 'maturity_change',
+    inbox_score: 0.65,
+    reason_codes: ['intel_change:maturity_increased', 'official_release'],
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  assert.ok(html.includes('data-item-type="maturity_change"'));
+  assert.ok(html.includes('Maturity Shift'));
+  assert.ok(html.includes('Maturity Progressed'));
+  assert.ok(html.includes('Official Release'));
+});
+
+test('Phase 10: claim_weakened, correction, and risk change render with neutral/cautionary treatment', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const items = [
+    { id: 'ib_w', story_cluster_id: 'cl_w', title: 'Weakened Claim', section: 'corrections_updates', item_type: 'claim_weakened', story_available: true },
+    { id: 'ib_c', story_cluster_id: 'cl_c', title: 'Correction Notice', section: 'corrections_updates', item_type: 'correction', story_available: true },
+    { id: 'ib_r', story_cluster_id: 'cl_r', title: 'Risk Alert', section: 'systems_compilers', item_type: 'new_risk', story_available: true },
+  ];
+
+  for (const item of items) {
+    const html = renderInboxCard(item);
+    assert.ok(html.includes('type-caution'));
+    assert.ok(!html.includes('type-corroboration'));
+  }
+});
+
+test('Phase 10: Resolvable Story Dossier renders valid link to #/story/{story_cluster_id}', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_res',
+    story_cluster_id: 'cl_valid_123',
+    title: 'Resolvable Story Title',
+    section: 'ai_ml',
+    item_type: 'new_story',
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  assert.ok(html.includes('href="#/story/cl_valid_123"'));
+  assert.ok(html.includes('Open Story Dossier &rarr;'));
+  assert.ok(!html.includes('Story dossier currently unavailable'));
+});
+
+test('Phase 10: Unavailable Story renders neutral note without broken link or per-card lookup', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_unavail',
+    story_cluster_id: 'cl_missing_999',
+    title: 'Deleted Story Topic',
+    section: 'research',
+    item_type: 'new_story',
+    story_available: false,
+  };
+
+  const html = renderInboxCard(item);
+
+  assert.ok(!html.includes('href="#/story/cl_missing_999"'));
+  assert.ok(!html.includes('Open Story Dossier &rarr;'));
+  assert.ok(html.includes('Story dossier currently unavailable'));
+});
+
+test('Phase 10: Initial saved/starred state reflects persistent backend state', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const starredItem = {
+    id: 'ib_star',
+    story_cluster_id: 'cl_star',
+    title: 'Starred Item',
+    section: 'ai_ml',
+    item_type: 'new_story',
+    is_starred: true,
+    saved_item_id: 'saved:cl_star',
+    story_available: true,
+  };
+
+  const html = renderInboxCard(starredItem);
+
+  assert.ok(html.includes('Saved in Library'));
+  assert.ok(html.includes('data-state="starred"'));
+  assert.ok(html.includes('aria-pressed="true"'));
+});
+
+test('Phase 10: Save from Today calls POST /saved with story_cluster_id and inbox_item_id, updating button state', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+  const capturedPosts = [];
+
+  fetchMock = async (url, options) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    if (options && options.method === 'POST' && url.includes('/saved')) {
+      capturedPosts.push(JSON.parse(options.body));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          message: 'Saved successfully',
+          saved_item: { id: 'saved:cl_post_1', story_cluster_id: 'cl_post_1' }
+        })
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 1,
+        inbox_items: [
+          {
+            id: 'ib_post_1',
+            story_cluster_id: 'cl_post_1',
+            title: 'Story to be saved',
+            section: 'ai_ml',
+            state: 'unseen',
+            item_type: 'new_story',
+            is_starred: false,
+            story_available: true,
+          }
+        ]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderTodayView(container, store);
+
+  // Trigger Save click via delegation
+  const clickHandlers = container._listeners['click'] || [];
+  const mockButton = {
+    dataset: { inboxId: 'ib_post_1', clusterId: 'cl_post_1' },
+    classList: { contains: () => false, add: () => {}, remove: () => {} },
+    setAttribute: () => {},
+    closest: (sel) => mockButton,
+    innerHTML: '',
+    textContent: '',
+  };
+
+  for (const h of clickHandlers) {
+    await h({ target: mockButton });
+  }
+
+  assert.strictEqual(capturedPosts.length, 1);
+  assert.strictEqual(capturedPosts[0].story_cluster_id, 'cl_post_1');
+  assert.strictEqual(capturedPosts[0].inbox_item_id, 'ib_post_1');
+
+  fetchMock = null;
+});
+
+test('Phase 10: Failed save preserves truthful rollback state and re-enables button', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+
+  fetchMock = async (url, options) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    if (options && options.method === 'POST' && url.includes('/saved')) {
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({ detail: 'Database error while saving' })
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 1,
+        inbox_items: [
+          {
+            id: 'ib_fail_1',
+            story_cluster_id: 'cl_fail_1',
+            title: 'Failing Story',
+            section: 'ai_ml',
+            is_starred: false,
+            story_available: true,
+          }
+        ]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderTodayView(container, store);
+
+  const clickHandlers = container._listeners['click'] || [];
+  const mockButton = {
+    dataset: { inboxId: 'ib_fail_1', clusterId: 'cl_fail_1' },
+    classList: { contains: () => false, add: () => {}, remove: () => {} },
+    setAttribute: () => {},
+    closest: (sel) => mockButton,
+    disabled: false,
+    innerHTML: '☆ Save to Library',
+    textContent: '☆ Save to Library',
+  };
+
+  for (const h of clickHandlers) {
+    await h({ target: mockButton });
+  }
+
+  // Button should remain enabled and not have is-saved
+  assert.strictEqual(mockButton.disabled, false);
+  assert.strictEqual(mockButton.innerHTML, '☆ Save to Library');
+
+  fetchMock = null;
+});
+
+test('Phase 10: Stale response protection prevents out-of-order race conditions', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+
+  let resolveSlowReq;
+  const slowPromise = new Promise(resolve => { resolveSlowReq = resolve; });
+
+  let reqCount = 0;
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    if (url.includes('/inbox')) {
+      reqCount++;
+      if (reqCount === 1) {
+        await slowPromise;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            count: 1,
+            inbox_items: [{ id: 'ib_slow', story_cluster_id: 'cl_slow', title: 'Slow Response Signal', section: 'ai_ml', story_available: true }]
+          })
+        };
+      } else {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            count: 1,
+            inbox_items: [{ id: 'ib_fast', story_cluster_id: 'cl_fast', title: 'Fast Response Signal', section: 'systems_compilers', story_available: true }]
+          })
+        };
+      }
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  const p1 = renderTodayView(container, store);
+  await new Promise(resolve => setTimeout(resolve, 5));
+
+  const secSelect = container.querySelector('#sel-inbox-section');
+  secSelect.value = 'systems_compilers';
+  const secHandlers = secSelect._listeners['change'] || [];
+  for (const h of secHandlers) await h({ target: secSelect });
+
+  resolveSlowReq();
+  await p1;
+
+  assert.ok(container.innerHTML.includes('Fast Response Signal'));
+  assert.ok(!container.innerHTML.includes('Slow Response Signal'));
+
+  fetchMock = null;
+});
+
+test('Phase 10: Accessible live region announces prioritized signals count', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        count: 2,
+        inbox_items: [
+          { id: 'ib_1', story_cluster_id: 'cl_1', title: 'Signal 1', section: 'ai_ml', story_available: true },
+          { id: 'ib_2', story_cluster_id: 'cl_2', title: 'Signal 2', section: 'systems_compilers', story_available: true },
+        ]
+      })
+    };
+  };
+
+  const container = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderTodayView(container, store);
+
+  const liveRegion = container.querySelector('#inbox-live-region');
+  assert.ok(liveRegion !== null);
+  assert.ok(container.innerHTML.includes('id="inbox-live-region"'));
+  assert.ok(container.innerHTML.includes('aria-live="polite"'));
+  assert.ok(liveRegion.textContent.includes('Showing 2 prioritized intelligence signals across 2 sections.'));
+
+  fetchMock = null;
+});
+
+test('Phase 10: Empty, offline, and backend error states render with accessible recovery cues', async () => {
+  const { renderTodayView } = await import('../src/views/today.js');
+
+  // Test Empty state
+  fetchMock = async (url) => {
+    if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    return { ok: true, status: 200, json: async () => ({ count: 0, inbox_items: [] }) };
+  };
+
+  const containerEmpty = createMockContainer();
+  const store = { state: {}, getState: () => store.state, setState: (s) => Object.assign(store.state, s), setConnection: () => {}, setViewData: () => {} };
+
+  await renderTodayView(containerEmpty, store);
+  assert.ok(containerEmpty.innerHTML.includes('No Intelligence Signals Available'));
+
+  // Test Offline state
+  fetchMock = async () => {
+    const err = new Error('Failed to fetch');
+    err.isNetworkError = true;
+    throw err;
+  };
+
+  const containerOffline = createMockContainer();
+  await renderTodayView(containerOffline, store);
+  assert.ok(containerOffline.innerHTML.includes('Unable to Connect to HERMES API') || containerOffline.innerHTML.includes('state-offline'));
+
+  fetchMock = null;
+});
+
+test('Phase 10 regression: Shared Story Card regression proves string risk level without canonical RiskStatus produces no assessed risk badge', async () => {
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+
+  // Story with string risk level but no canonical RiskStatus
+  const unassessedStory = {
+    id: 'story_unassessed',
+    title: 'Unassessed Risk Story',
+    risk: 'high', // legacy string risk
+    risk_status: null,
+  };
+
+  const html = renderStoryCard(unassessedStory);
+
+  // Must NOT produce an assessed risk badge
+  assert.ok(!html.includes('badge-risk'));
+  assert.ok(!html.includes('risk-critical'));
+  assert.ok(!html.includes('risk-high'));
+  assert.ok(!html.includes('risk-assessed'));
+});
 
 
 
