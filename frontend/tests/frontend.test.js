@@ -1686,7 +1686,7 @@ test('Phase 8 regression: Saved comparison rendering strictly enforces canonical
   }
 });
 
-test('Phase 8: Saved card renders Current intelligence unavailable when current_state is null', async () => {
+test('Phase 8: Saved card renders Current intelligence unavailable when current_state is null without broken Story navigation', async () => {
   const { renderSavedCard, computeEvolutionDiff } = await import('../src/views/saved.js');
 
   const inactiveItem = {
@@ -1700,7 +1700,7 @@ test('Phase 8: Saved card renders Current intelligence unavailable when current_
     risk_score: 0.2,
     risk_status: 'assessed',
     risk_level: 'low',
-    tags: [],
+    tags: ['legacy'],
     current_state: null
   };
 
@@ -1710,6 +1710,106 @@ test('Phase 8: Saved card renders Current intelligence unavailable when current_
   const html = renderSavedCard(inactiveItem);
   assert.ok(html.includes('Current intelligence unavailable'));
   assert.ok(html.includes('Underlying story cluster is no longer active'));
+
+  // Must render snapshot title as non-interactive text and NOT a link to #/story/...
+  assert.ok(html.includes('<span class="saved-card-title-text">Defunct Project Research</span>'));
+  assert.ok(!html.includes('href="#/story/cl_inactive_1"'));
+  assert.ok(!html.includes('href="#/story/'));
+  assert.ok(!html.includes('Open Story Dossier'));
+
+  // Historical snapshot remains inspectable and Remove button is present
+  assert.ok(html.includes('THEN (Saved Snapshot)'));
+  assert.ok(html.includes('Remove'));
+});
+
+test('Phase 8: Saved card renders Story Dossier navigation when current_state exists', async () => {
+  const { renderSavedCard } = await import('../src/views/saved.js');
+
+  const activeItem = {
+    id: 'saved:active_1',
+    story_cluster_id: 'cl_active_1',
+    title_snapshot: 'Active Quantum Core',
+    saved_at: '2026-01-01T10:00:00Z',
+    verification_score: 0.85,
+    claim_status: 'supported',
+    maturity_stage: 'prototype',
+    risk_score: 0.15,
+    risk_status: 'assessed',
+    risk_level: 'low',
+    tags: ['quantum'],
+    current_state: {
+      title: 'Active Quantum Core',
+      cluster_score: 0.9,
+      verification_score: 0.92,
+      claim_status: 'strongly_supported',
+      maturity_stage: 'experimental',
+      risk_status: 'assessed',
+      risk_level: 'low',
+      risk_score: 0.1,
+      claims_count: 8,
+      events_count: 5,
+      is_active: true
+    }
+  };
+
+  const html = renderSavedCard(activeItem);
+
+  // When current_state is present, Story Dossier link and action must be rendered
+  assert.ok(html.includes('href="#/story/cl_active_1"'));
+  assert.ok(html.includes('class="saved-title-link"'));
+  assert.ok(html.includes('Open Story Dossier &rarr;'));
+});
+
+test('Phase 8: getMaturityLabel degrades noncanonical and unknown maturity stages neutrally to Unrecognized maturity', async () => {
+  const { getMaturityLabel, CANONICAL_MATURITY_LABELS } = await import('../src/views/saved.js');
+
+  // 1. Seven canonical stages must render their exact human-readable canonical labels
+  const canonicalExpectations = {
+    concept: 'Concept',
+    research: 'Research',
+    prototype: 'Prototype',
+    experimental: 'Experimental',
+    early_adoption: 'Early Adoption',
+    production_candidate: 'Production Candidate',
+    established: 'Established',
+  };
+
+  for (const [stage, expectedLabel] of Object.entries(canonicalExpectations)) {
+    assert.strictEqual(getMaturityLabel(stage), expectedLabel, `Expected ${stage} -> ${expectedLabel}`);
+    assert.strictEqual(getMaturityLabel(stage.toUpperCase()), expectedLabel, `Expected uppercase ${stage} -> ${expectedLabel}`);
+  }
+
+  // 2. Null / undefined / empty degrade to "Not assessed"
+  assert.strictEqual(getMaturityLabel(null), 'Not assessed');
+  assert.strictEqual(getMaturityLabel(undefined), 'Not assessed');
+  assert.strictEqual(getMaturityLabel(''), 'Not assessed');
+
+  // 3. Noncanonical lifecycle labels must degrade to "Unrecognized maturity" and NEVER render as canonical-looking labels
+  const noncanonicalStages = [
+    'growth',
+    'mature',
+    'stable',
+    'proposal',
+    'production_ready',
+    'arbitrary unknown string',
+    'v1.0.0',
+    'alpha',
+    'beta'
+  ];
+
+  for (const stage of noncanonicalStages) {
+    const result = getMaturityLabel(stage);
+    assert.strictEqual(result, 'Unrecognized maturity', `Noncanonical stage "${stage}" should degrade to "Unrecognized maturity" but got "${result}"`);
+
+    // Verify none render as canonical-looking valid maturity stage names
+    assert.notStrictEqual(result, 'Growth');
+    assert.notStrictEqual(result, 'Mature');
+    assert.notStrictEqual(result, 'Stable');
+    assert.notStrictEqual(result, 'Proposal');
+    assert.notStrictEqual(result, 'Production Ready');
+    assert.notStrictEqual(result, 'Production ready');
+    assert.notStrictEqual(result, 'Arbitrary Unknown String');
+  }
 });
 
 test('Phase 8: Unsave action dispatches DELETE /saved/{savedId} with SavedItem ID', async () => {

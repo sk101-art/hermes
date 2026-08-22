@@ -35,12 +35,13 @@ export const CANONICAL_MATURITY_LABELS = {
 
 /**
  * Format human-readable maturity label.
+ * Preserves the 7 canonical display mappings and degrades all unknown strings neutrally.
  */
 export function getMaturityLabel(stage) {
   if (!stage) return 'Not assessed';
   const canonical = CANONICAL_MATURITY_LABELS[String(stage).toLowerCase()];
   if (canonical) return canonical;
-  return String(stage).charAt(0).toUpperCase() + String(stage).slice(1).replace(/_/g, ' ');
+  return 'Unrecognized maturity';
 }
 
 /**
@@ -193,9 +194,13 @@ export function renderSavedCard(item) {
       <div class="saved-card-header">
         <div>
           <h2 class="saved-card-title">
-            <a href="#/story/${encodeURIComponent(clusterId)}" class="saved-title-link" aria-label="Open Story Dossier for ${escapeHtml(title)}">
-              ${escapeHtml(title)}
-            </a>
+            ${current ? `
+              <a href="#/story/${encodeURIComponent(clusterId)}" class="saved-title-link" aria-label="Open Story Dossier for ${escapeHtml(title)}">
+                ${escapeHtml(title)}
+              </a>
+            ` : `
+              <span class="saved-card-title-text">${escapeHtml(title)}</span>
+            `}
           </h2>
           <div class="mono text-xs text-muted">
             ID: ${escapeHtml(clusterId)} · Saved on ${savedDate}
@@ -203,9 +208,11 @@ export function renderSavedCard(item) {
         </div>
 
         <div class="saved-card-actions">
-          <a href="#/story/${encodeURIComponent(clusterId)}" class="btn btn-secondary btn-sm" aria-label="Open Story Dossier for ${escapeHtml(title)}">
-            Open Story Dossier &rarr;
-          </a>
+          ${current ? `
+            <a href="#/story/${encodeURIComponent(clusterId)}" class="btn btn-secondary btn-sm" aria-label="Open Story Dossier for ${escapeHtml(title)}">
+              Open Story Dossier &rarr;
+            </a>
+          ` : ''}
           <button type="button" class="btn btn-secondary btn-sm btn-unsave" data-action="unsave" data-saved-id="${escapeHtml(savedId)}" data-title="${escapeHtml(title)}" aria-label="Remove ${escapeHtml(title)} from saved library">
             ${getIcon('trash')} Remove
           </button>
