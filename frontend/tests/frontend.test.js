@@ -2290,7 +2290,7 @@ test('Phase 9: All seven canonical maturity stages display correctly without non
   ];
 
   for (const s of stages) {
-    const formatted = formatTransitionValue(s);
+    const formatted = formatTransitionValue(s, 'maturity');
     assert.ok(formatted.includes(CANONICAL_MATURITY_STAGES[s]));
   }
 
@@ -2302,11 +2302,120 @@ test('Phase 9: All seven canonical maturity stages display correctly without non
   assert.strictEqual(CANONICAL_MATURITY_STAGES['production_ready'], undefined);
 });
 
-test('Phase 9: Unknown maturity stages degrade neutrally', async () => {
-  const { formatTransitionValue } = await import('../src/views/changes.js');
+test('Phase 9 regression: Context-aware transition formatting strictly degrades noncanonical maturity and claim statuses', async () => {
+  const { formatTransitionValue, renderChangeCard } = await import('../src/views/changes.js');
 
-  const formatted = formatTransitionValue('unknown_custom_stage');
-  assert.ok(formatted.includes('unknown_custom_stage') || formatted.includes('Unknown Custom Stage'));
+  // Regression 1: maturity: prototype → growth
+  const cardMaturity1 = renderChangeCard({
+    id: 'ch_mat_1',
+    entity_type: 'technology_assessment',
+    entity_id: 'cl_1',
+    change_type: 'maturity_stage_changed',
+    importance: 0.7,
+    reason: 'Maturity transition check',
+    origin: 'actual_revision',
+    old_value: 'prototype',
+    new_value: 'growth',
+    detected_at: '2026-08-22T00:00:00Z',
+  });
+  assert.ok(cardMaturity1.includes('Prototype'));
+  assert.ok(cardMaturity1.includes('Unrecognized maturity'));
+  assert.ok(!cardMaturity1.includes('>Growth<'));
+
+  // Regression 2: maturity: experimental → production_ready
+  const cardMaturity2 = renderChangeCard({
+    id: 'ch_mat_2',
+    entity_type: 'technology_assessment',
+    entity_id: 'cl_2',
+    change_type: 'maturity_stage_changed',
+    importance: 0.7,
+    reason: 'Maturity transition check',
+    origin: 'actual_revision',
+    old_value: 'experimental',
+    new_value: 'production_ready',
+    detected_at: '2026-08-22T00:00:00Z',
+  });
+  assert.ok(cardMaturity2.includes('Experimental'));
+  assert.ok(cardMaturity2.includes('Unrecognized maturity'));
+  assert.ok(!cardMaturity2.includes('Production Ready'));
+
+  // Regression 3: maturity: stable → established
+  const cardMaturity3 = renderChangeCard({
+    id: 'ch_mat_3',
+    entity_type: 'technology_assessment',
+    entity_id: 'cl_3',
+    change_type: 'maturity_stage_changed',
+    importance: 0.7,
+    reason: 'Maturity transition check',
+    origin: 'actual_revision',
+    old_value: 'stable',
+    new_value: 'established',
+    detected_at: '2026-08-22T00:00:00Z',
+  });
+  assert.ok(cardMaturity3.includes('Unrecognized maturity'));
+  assert.ok(cardMaturity3.includes('Established'));
+  assert.ok(!cardMaturity3.includes('>Stable<'));
+
+  // Regression 4: claim status: supported → verified
+  const cardClaim1 = renderChangeCard({
+    id: 'ch_clm_1',
+    entity_type: 'claim',
+    entity_id: 'c_1',
+    change_type: 'claim_status_changed',
+    importance: 0.8,
+    reason: 'Claim status check',
+    origin: 'actual_revision',
+    old_value: 'supported',
+    new_value: 'verified',
+    detected_at: '2026-08-22T00:00:00Z',
+  });
+  assert.ok(cardClaim1.includes('Supported'));
+  assert.ok(cardClaim1.includes('Unrecognized claim status'));
+  assert.ok(!cardClaim1.includes('>Verified<'));
+
+  // Regression 5: claim status: unknown_status → contradicted
+  const cardClaim2 = renderChangeCard({
+    id: 'ch_clm_2',
+    entity_type: 'claim',
+    entity_id: 'c_2',
+    change_type: 'claim_status_changed',
+    importance: 0.8,
+    reason: 'Claim status check',
+    origin: 'actual_revision',
+    old_value: 'unknown_status',
+    new_value: 'contradicted',
+    detected_at: '2026-08-22T00:00:00Z',
+  });
+  assert.ok(cardClaim2.includes('Unrecognized claim status'));
+  assert.ok(cardClaim2.includes('Contradicted'));
+  assert.ok(!cardClaim2.includes('Unknown Status'));
+
+  // Regression 6: generic release/version: v1.2.0 → v1.3.0
+  const cardGeneric = renderChangeCard({
+    id: 'ch_gen_1',
+    entity_type: 'release',
+    entity_id: 'rel_1',
+    change_type: 'release_version_changed',
+    importance: 0.5,
+    reason: 'Release version bump',
+    origin: 'new_release',
+    old_value: 'v1.2.0',
+    new_value: 'v1.3.0',
+    detected_at: '2026-08-22T00:00:00Z',
+  });
+  assert.ok(cardGeneric.includes('v1.2.0'));
+  assert.ok(cardGeneric.includes('v1.3.0'));
+
+  // Regression 7: scored noncanonical forms cannot become polished canonical statuses
+  const scoredMaturity = formatTransitionValue('growth (0.72)', 'maturity');
+  assert.ok(scoredMaturity.includes('Unrecognized maturity'));
+  assert.ok(scoredMaturity.includes('(72%)'));
+  assert.ok(!scoredMaturity.includes('Growth'));
+
+  const scoredClaim = formatTransitionValue('verified (0.80)', 'claim_status');
+  assert.ok(scoredClaim.includes('Unrecognized claim status'));
+  assert.ok(scoredClaim.includes('(80%)'));
+  assert.ok(!scoredClaim.includes('Verified'));
 });
 
 test('Phase 9: Risk status and level remain distinct without inferring missing historical RiskStatus', async () => {

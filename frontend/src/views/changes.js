@@ -99,39 +99,74 @@ export const ORIGIN_METADATA = {
 };
 
 /**
- * Formats a value token (status, maturity stage, or score string) into a readable representation.
+ * Resolves the semantic categorization for a change record to ensure truthful domain formatting.
  */
-export function formatTransitionValue(rawVal) {
+export function getChangeSemanticCategory(changeType = '', entityType = '') {
+  const ct = String(changeType || '').toLowerCase();
+  const et = String(entityType || '').toLowerCase();
+
+  if (ct.includes('maturity') || et === 'technology_assessment') {
+    return 'maturity';
+  }
+  if (
+    ct.includes('claim_status') ||
+    ct.includes('verification_') ||
+    ct.includes('claim_revision') ||
+    ct.includes('claim_retracted') ||
+    ct.includes('claim_created') ||
+    (et === 'claim' && (ct.includes('status') || ct.includes('verification') || ct.includes('state') || ct === 'claim_revision'))
+  ) {
+    return 'claim_status';
+  }
+  return 'generic';
+}
+
+/**
+ * Formats a value token (status, maturity stage, or score string) into a readable representation.
+ * Enforces strict canonical taxonomies for maturity stages and claim statuses.
+ */
+export function formatTransitionValue(rawVal, context = 'generic', isOld = true) {
   if (rawVal === null || rawVal === undefined || rawVal === '') {
-    return `<span class="transition-not-recorded">Previous state not recorded historically</span>`;
+    return isOld
+      ? `<span class="transition-not-recorded">Previous state not recorded historically</span>`
+      : `<span class="transition-not-recorded">New state unspecified</span>`;
   }
 
   const str = String(rawVal).trim();
 
-  // Check if string is formatted as "status (0.8500)" or "stage (0.8500)"
-  const scoreMatch = str.match(/^([a-zA-Z_]+)\s*\(([0-9.]+)\)$/);
+  // Normalize category if changeType or raw context was passed directly
+  let category = context;
+  if (category !== 'maturity' && category !== 'claim_status' && category !== 'generic') {
+    category = getChangeSemanticCategory(context);
+  }
+
+  // Check if string is formatted with score, e.g. "status (0.8500)" or "growth (0.72)"
+  const scoreMatch = str.match(/^([a-zA-Z0-9_.-]+)\s*\(([0-9.]+)\)$/);
+  const token = (scoreMatch ? scoreMatch[1] : str).toLowerCase();
+  const scorePct = scoreMatch
+    ? (!isNaN(parseFloat(scoreMatch[2]))
+        ? ` (${Math.round(parseFloat(scoreMatch[2]) * 100)}%)`
+        : ` (${scoreMatch[2]})`)
+    : '';
+
+  if (category === 'maturity') {
+    if (CANONICAL_MATURITY_STAGES[token]) {
+      return `<strong>${escapeHtml(CANONICAL_MATURITY_STAGES[token])}</strong><span class="mono text-xs">${scorePct}</span>`;
+    }
+    return `<strong>Unrecognized maturity</strong><span class="mono text-xs">${scorePct}</span>`;
+  }
+
+  if (category === 'claim_status') {
+    if (CANONICAL_CLAIM_STATUSES[token]) {
+      return `<strong>${escapeHtml(CANONICAL_CLAIM_STATUSES[token])}</strong><span class="mono text-xs">${scorePct}</span>`;
+    }
+    return `<strong>Unrecognized claim status</strong><span class="mono text-xs">${scorePct}</span>`;
+  }
+
+  // Generic change values (e.g. version numbers, custom state)
   if (scoreMatch) {
-    const key = scoreMatch[1].toLowerCase();
-    const scoreNum = parseFloat(scoreMatch[2]);
-    const scorePct = !isNaN(scoreNum) ? ` (${Math.round(scoreNum * 100)}%)` : ` (${scoreMatch[2]})`;
-
-    if (CANONICAL_CLAIM_STATUSES[key]) {
-      return `<strong>${escapeHtml(CANONICAL_CLAIM_STATUSES[key])}</strong><span class="mono text-xs">${scorePct}</span>`;
-    }
-    if (CANONICAL_MATURITY_STAGES[key]) {
-      return `<strong>${escapeHtml(CANONICAL_MATURITY_STAGES[key])}</strong><span class="mono text-xs">${scorePct}</span>`;
-    }
-    return `<strong>${escapeHtml(toTitleCase(key))}</strong><span class="mono text-xs">${scorePct}</span>`;
+    return `<strong>${escapeHtml(toTitleCase(scoreMatch[1]))}</strong><span class="mono text-xs">${scorePct}</span>`;
   }
-
-  const keyLower = str.toLowerCase();
-  if (CANONICAL_CLAIM_STATUSES[keyLower]) {
-    return `<strong>${escapeHtml(CANONICAL_CLAIM_STATUSES[keyLower])}</strong>`;
-  }
-  if (CANONICAL_MATURITY_STAGES[keyLower]) {
-    return `<strong>${escapeHtml(CANONICAL_MATURITY_STAGES[keyLower])}</strong>`;
-  }
-
   return `<strong>${escapeHtml(str)}</strong>`;
 }
 
@@ -203,8 +238,9 @@ export function renderChangeCard(change) {
   const imp = formatImportance(change.importance, change.importance_level);
   const isSystemRecord = originInfo.isSystem;
 
-  const oldHtml = formatTransitionValue(rawOld);
-  const newHtml = formatTransitionValue(rawNew);
+  const category = getChangeSemanticCategory(changeType, entityType);
+  const oldHtml = formatTransitionValue(rawOld, category, true);
+  const newHtml = formatTransitionValue(rawNew, category, false);
 
   const changeTitle = toTitleCase(changeType.replace(/_/g, ' '));
   const entityLabel = `${toTitleCase(entityType.replace(/_/g, ' '))}: ${entityId}`;
