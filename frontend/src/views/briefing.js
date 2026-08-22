@@ -35,6 +35,60 @@ export const SECTION_ORDER = [
   'watchlist',
 ];
 
+export const CORRECTION_ITEM_TYPES = new Set(['correction']);
+export const WEAKENED_ITEM_TYPES = new Set(['claim_weakened']);
+
+export const CORRECTION_REASON_CODES = new Set([
+  'correction',
+  'claim_retracted',
+  'retraction',
+]);
+
+export const CORRECTION_REASON_PREFIXES = [
+  'correction:',
+  'retraction:',
+];
+
+export const WEAKENED_REASON_CODES = new Set([
+  'claim_weakened',
+  'contradiction_detected',
+  'intel_change:verification_weakened',
+]);
+
+export const WEAKENED_REASON_PREFIXES = [
+  'claim_weakened:',
+  'contradiction_detected:',
+  'intel_change:verification_weakened:',
+];
+
+/**
+ * Explicitly tests whether an item possesses an audited correction signal.
+ * Rejects loose substring matches.
+ */
+export function isCorrectionSignal(itemType, reasonCodes = []) {
+  if (CORRECTION_ITEM_TYPES.has(itemType)) return true;
+  for (const rc of reasonCodes) {
+    if (typeof rc !== 'string') continue;
+    if (CORRECTION_REASON_CODES.has(rc)) return true;
+    if (CORRECTION_REASON_PREFIXES.some((prefix) => rc.startsWith(prefix))) return true;
+  }
+  return false;
+}
+
+/**
+ * Explicitly tests whether an item possesses an audited weakening signal.
+ * Rejects loose substring matches.
+ */
+export function isWeakenedSignal(itemType, reasonCodes = []) {
+  if (WEAKENED_ITEM_TYPES.has(itemType)) return true;
+  for (const rc of reasonCodes) {
+    if (typeof rc !== 'string') continue;
+    if (WEAKENED_REASON_CODES.has(rc)) return true;
+    if (WEAKENED_REASON_PREFIXES.some((prefix) => rc.startsWith(prefix))) return true;
+  }
+  return false;
+}
+
 /**
  * Validates that a value is a strict finite number.
  */
@@ -50,6 +104,30 @@ export function formatBriefingReasonCode(rc) {
   if (rc.startsWith('verified_claim:')) {
     return `Claim Priority Signal: ${rc.slice(15)}`;
   }
+  if (rc.startsWith('correction:')) {
+    return `Correction: ${rc.slice(11)}`;
+  }
+  if (rc.startsWith('retraction:')) {
+    return `Retraction: ${rc.slice(11)}`;
+  }
+  if (rc.startsWith('claim_weakened:')) {
+    return `Claim Weakened: ${rc.slice(15)}`;
+  }
+  if (rc.startsWith('contradiction_detected:')) {
+    return `Contradiction Detected: ${rc.slice(23)}`;
+  }
+  if (rc.startsWith('intel_change:verification_weakened:')) {
+    return `Claim Support Weakened: ${rc.slice(35)}`;
+  }
+  if (rc.startsWith('direct_dependency_match:')) {
+    return `Direct Dependency: ${rc.slice(24).replace('project:', '')}`;
+  }
+  if (rc.startsWith('dependency_match:')) {
+    return `Dependency: ${rc.slice(17)}`;
+  }
+  if (rc.startsWith('project_match:')) {
+    return `Project Context: ${toTitleCase(rc.slice(14).replace(/_/g, ' '))}`;
+  }
   const mapping = {
     recent_discovery: 'Recent Discovery',
     official_release: 'Official Release',
@@ -58,11 +136,14 @@ export function formatBriefingReasonCode(rc) {
     direct_project_dep: 'Direct Project Dependency',
     project_tech_match: 'Project Technology Match',
     correction: 'Correction',
+    claim_retracted: 'Claim Retracted',
+    retraction: 'Retraction',
     claim_weakened: 'Claim Weakened',
+    contradiction_detected: 'Contradiction Detected',
     'intel_change:verification_weakened': 'Claim Support Weakened',
     'intel_change:verification_strengthened': 'Claim Support Changed',
   };
-  return mapping[rc] || rc;
+  return mapping[rc] || toTitleCase(rc.replace(/_/g, ' '));
 }
 
 /**
@@ -136,13 +217,14 @@ function renderDateToolbar(activeDate, todayIso) {
  */
 export function renderBriefingItemCard(item) {
   const isLegacy = item.snapshot_status === 'legacy_incomplete';
+  const isUnrecognized = item.snapshot_status === 'unrecognized_version';
   const hasStoryLink = Boolean(item.story_available && item.story_cluster_id);
   const reasonCodes = ensureArray(item.reason_codes);
   const matchedProjects = ensureArray(item.matched_project_ids);
 
-  // Check correction and weakening semantics strictly from transported fields
-  const isCorrection = item.item_type === 'correction' || (reasonCodes.some(r => /correction|retraction/i.test(r)));
-  const isWeakened = item.item_type === 'claim_weakened' || (reasonCodes.some(r => /weakened|contradict/i.test(r)));
+  // Check correction and weakening semantics strictly using audited exact codes and prefixes
+  const isCorrection = isCorrectionSignal(item.item_type, reasonCodes);
+  const isWeakened = isWeakenedSignal(item.item_type, reasonCodes);
 
   let cardClasses = 'panel briefing-item-card';
   if (isCorrection) cardClasses += ' briefing-card-cautionary';
@@ -177,10 +259,24 @@ export function renderBriefingItemCard(item) {
     ? `<span class="briefing-weakened-tag">Weakened Support</span>`
     : '';
 
-  // Strict finite numeric score checks (omit completely if null/undefined/string/NaN)
-  const hasInboxScore = isValidFiniteNumber(item.inbox_score);
-  const hasRankScore = isValidFiniteNumber(item.rank_score);
-  const hasImpactScore = isValidFiniteNumber(item.project_impact_score);
+  // Snapshot status badge
+  let snapshotStatusBadge = '';
+  if (isLegacy) {
+    snapshotStatusBadge = `<span class="briefing-legacy-badge" title="Captured before schema snapshotting; unrecorded fields omitted">Legacy Snapshot</span>`;
+  } else if (isUnrecognized) {
+    const versionLabel = item.snapshot_version ? ` (${escapeHtml(item.snapshot_version)})` : '';
+    snapshotStatusBadge = `<span class="briefing-unrecognized-badge" title="Snapshot format is not recognized; some fields may not display reliably">Unrecognized Snapshot${versionLabel}</span>`;
+  }
+
+  // Unrecognized version notice
+  const unrecognizedNoticeHtml = isUnrecognized
+    ? `<div class="briefing-unrecognized-notice">Snapshot format (${escapeHtml(item.snapshot_version || 'unknown')}) is not recognized. Schema-dependent score fields are omitted.</div>`
+    : '';
+
+  // Strict finite numeric score checks (omit completely if unrecognized version or null/undefined/string/NaN)
+  const hasInboxScore = !isUnrecognized && isValidFiniteNumber(item.inbox_score);
+  const hasRankScore = !isUnrecognized && isValidFiniteNumber(item.rank_score);
+  const hasImpactScore = !isUnrecognized && isValidFiniteNumber(item.project_impact_score);
 
   return `
     <article class="${cardClasses}" data-inbox-id="${escapeHtml(item.inbox_item_id || '')}">
@@ -188,11 +284,12 @@ export function renderBriefingItemCard(item) {
         <span class="briefing-pos-badge" aria-label="Item #${item.position}">#${item.position}</span>
         ${typeBadgeHtml}
         ${cautionTagHtml}
-        ${isLegacy ? `<span class="briefing-legacy-badge" title="Captured before schema snapshotting; unrecorded fields omitted">Legacy Snapshot</span>` : ''}
+        ${snapshotStatusBadge}
         ${titleHtml}
       </div>
 
       ${summaryHtml}
+      ${unrecognizedNoticeHtml}
 
       <div class="briefing-item-meta-row">
         ${hasInboxScore ? `<span class="briefing-score-badge" title="Daily briefing surfacing priority">Priority: ${item.inbox_score.toFixed(2)}</span>` : ''}
@@ -211,7 +308,7 @@ export function renderBriefingItemCard(item) {
           hasStoryLink
             ? `<div style="margin-left:auto;"><a href="#/story/${encodeURIComponent(item.story_cluster_id)}" class="btn btn-secondary btn-xs">Open Story Dossier →</a></div>`
             : item.story_cluster_id
-            ? `<div style="margin-left:auto;"><span class="text-xs text-muted">Story cluster not currently active</span></div>`
+            ? `<div style="margin-left:auto;"><span class="text-xs text-muted briefing-story-unavailable">Story unavailable</span></div>`
             : ''
         }
       </div>

@@ -4321,7 +4321,9 @@ test('Phase 12: Briefing view suppresses Story Dossier link when story_available
     // Must NOT have link to #/story/cluster:deleted_story
     assert.ok(!html.includes('href="#/story/cluster%3Adeleted_story"'));
     assert.ok(!html.includes('Open Story Dossier →'));
-    assert.ok(html.includes('Story cluster not currently active'));
+    assert.ok(html.includes('Story unavailable'));
+    assert.ok(!html.includes('Story cluster not currently active'));
+    assert.ok(!html.includes('inactive'));
   } finally {
     api.getBriefing = originalGetBriefing;
   }
@@ -4846,4 +4848,161 @@ test('Phase 12: Stale response protection prevents out-of-order date overwrite',
   } finally {
     api.getBriefing = originalGetBriefing;
   }
+});
+
+test('Phase 12 remediation: Exact semantic classification of correction and weakening vs misleading lookalikes', async () => {
+  const { isCorrectionSignal, isWeakenedSignal, renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  // Exact Item Types
+  assert.strictEqual(isCorrectionSignal('correction', []), true);
+  assert.strictEqual(isWeakenedSignal('claim_weakened', []), true);
+  assert.strictEqual(isCorrectionSignal('new_story', []), false);
+  assert.strictEqual(isWeakenedSignal('new_story', []), false);
+
+  // Exact Reason Codes (positive)
+  assert.strictEqual(isCorrectionSignal('new_story', ['correction']), true);
+  assert.strictEqual(isCorrectionSignal('new_story', ['claim_retracted']), true);
+  assert.strictEqual(isCorrectionSignal('new_story', ['retraction']), true);
+  assert.strictEqual(isCorrectionSignal('new_story', ['correction:claim_42']), true);
+  assert.strictEqual(isCorrectionSignal('new_story', ['retraction:claim_99']), true);
+
+  assert.strictEqual(isWeakenedSignal('new_story', ['claim_weakened']), true);
+  assert.strictEqual(isWeakenedSignal('new_story', ['contradiction_detected']), true);
+  assert.strictEqual(isWeakenedSignal('new_story', ['intel_change:verification_weakened']), true);
+  assert.strictEqual(isWeakenedSignal('new_story', ['claim_weakened:claim_42']), true);
+  assert.strictEqual(isWeakenedSignal('new_story', ['contradiction_detected:claim_99']), true);
+  assert.strictEqual(isWeakenedSignal('new_story', ['intel_change:verification_weakened:c1']), true);
+
+  // Misleading Lookalikes (negative - must NOT trigger)
+  const lookalikes = [
+    'not_a_correction_pattern',
+    'correctional_facility_reference',
+    'contradictory_naming_custom',
+    'weakened_dependency_name',
+    'retraction_policy_document',
+    'fast_correction_heuristic',
+    'uncontradicted_release',
+    'weakened_by_design',
+    'correction_score_high',
+  ];
+
+  for (const code of lookalikes) {
+    assert.strictEqual(isCorrectionSignal('new_story', [code]), false, `Expected false for correction lookalike: ${code}`);
+    assert.strictEqual(isWeakenedSignal('new_story', [code]), false, `Expected false for weakening lookalike: ${code}`);
+  }
+
+  // Render card with lookalikes: must remain neutral without caution/weakened badges
+  const lookalikeCard = renderBriefingItemCard({
+    inbox_item_id: 'inbox:lookalike',
+    position: 1,
+    title: 'Lookalike Test Item',
+    item_type: 'new_story',
+    reason_codes: ['not_a_correction_pattern', 'contradictory_naming_custom'],
+  });
+
+  assert.ok(!lookalikeCard.includes('briefing-card-cautionary'));
+  assert.ok(!lookalikeCard.includes('briefing-card-weakened'));
+  assert.ok(!lookalikeCard.includes('briefing-caution-tag'));
+  assert.ok(!lookalikeCard.includes('briefing-weakened-tag'));
+  assert.ok(lookalikeCard.includes('data-reason-code="not_a_correction_pattern"'));
+  assert.ok(lookalikeCard.includes('data-reason-code="contradictory_naming_custom"'));
+});
+
+test('Phase 12 remediation: Unrecognized snapshot version renders neutral badge and notice, omitting schema-dependent fields', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  const card = renderBriefingItemCard({
+    inbox_item_id: 'inbox:unrec_test',
+    story_cluster_id: 'cl_unrec',
+    position: 1,
+    title: 'Unrecognized Format Item',
+    summary: 'Captured under future v2 schema',
+    item_type: 'new_story',
+    inbox_score: 0.95,
+    rank_score: 0.90,
+    project_impact_score: 0.85,
+    snapshot_status: 'unrecognized_version',
+    snapshot_version: 'v2.custom',
+    story_available: true,
+  });
+
+  // Must render unrecognized badge and notice
+  assert.ok(card.includes('briefing-unrecognized-badge'));
+  assert.ok(card.includes('Unrecognized Snapshot (v2.custom)'));
+  assert.ok(card.includes('briefing-unrecognized-notice'));
+  assert.ok(card.includes('Snapshot format (v2.custom) is not recognized'));
+
+  // Must NOT label it as Legacy Snapshot
+  assert.ok(!card.includes('Legacy Snapshot'));
+  assert.ok(!card.includes('briefing-legacy-badge'));
+
+  // Must omit schema-dependent score fields
+  assert.ok(!card.includes('Priority: 0.95'));
+  assert.ok(!card.includes('Rank: 0.90'));
+  assert.ok(!card.includes('Project Impact: 0.85'));
+
+  // Must preserve safe identity / navigation fields
+  assert.ok(card.includes('#1'));
+  assert.ok(card.includes('Unrecognized Format Item'));
+  assert.ok(card.includes('href="#/story/cl_unrec"'));
+});
+
+test('Phase 12 remediation: Complete, legacy_incomplete, and unrecognized_version snapshots are distinguished cleanly', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  // 1. Complete v1
+  const completeCard = renderBriefingItemCard({
+    inbox_item_id: 'inbox:c1',
+    position: 1,
+    title: 'Complete Item',
+    summary: 'Full snapshot data',
+    item_type: 'new_story',
+    inbox_score: 0.88,
+    snapshot_status: 'complete',
+    snapshot_version: 'v1',
+  });
+  assert.ok(!completeCard.includes('Legacy Snapshot'));
+  assert.ok(!completeCard.includes('Unrecognized Snapshot'));
+  assert.ok(completeCard.includes('Priority: 0.88'));
+
+  // 2. Legacy Incomplete
+  const legacyCard = renderBriefingItemCard({
+    inbox_item_id: 'inbox:l1',
+    position: 2,
+    title: 'Legacy Item',
+    snapshot_status: 'legacy_incomplete',
+    snapshot_version: null,
+  });
+  assert.ok(legacyCard.includes('Legacy Snapshot'));
+  assert.ok(!legacyCard.includes('Unrecognized Snapshot'));
+
+  // 3. Unrecognized Version
+  const unrecCard = renderBriefingItemCard({
+    inbox_item_id: 'inbox:u1',
+    position: 3,
+    title: 'Future Item',
+    snapshot_status: 'unrecognized_version',
+    snapshot_version: 'v9.9',
+  });
+  assert.ok(!unrecCard.includes('Legacy Snapshot'));
+  assert.ok(unrecCard.includes('Unrecognized Snapshot (v9.9)'));
+});
+
+test('Phase 12 remediation: Unavailable Story produces neutral copy without inferring active/inactive state', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  const card = renderBriefingItemCard({
+    inbox_item_id: 'inbox:no_story',
+    story_cluster_id: 'cluster:vanished',
+    position: 1,
+    title: 'Item with Vanished Story',
+    story_available: false,
+    snapshot_status: 'complete',
+  });
+
+  assert.ok(card.includes('Story unavailable'));
+  assert.ok(!card.includes('href="#/story/cluster:vanished"'));
+  assert.ok(!card.includes('active'));
+  assert.ok(!card.includes('inactive'));
+  assert.ok(!card.includes('deleted'));
 });
