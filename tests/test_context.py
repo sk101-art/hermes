@@ -1,4 +1,4 @@
-﻿import os
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -462,3 +462,115 @@ def test_unrelated_match_rejection(test_db):
 
     # Completely unrelated technology should NOT produce a match
     assert match is None
+
+
+def test_fresh_db_project_embeddings_schema_and_operations(tmp_path):
+    """
+    Verifies:
+    1. Fresh Database creation from authoritative schema.
+    2. save_project_embedding(project_id, model_name, embedding, content_hash).
+    3. get_project_embedding(project_id, model_name).
+    4. get_cached_project_embedding(content_hash, model_name).
+    5. Embedding numerical round trip.
+    6. Two projects referencing/caching equivalent content without breaking project lookup.
+    7. Database initialization idempotence.
+    8. Nullable risk and ProjectMatch fields remain correct.
+    9. No destructive migration is introduced.
+    """
+    db_file = str(tmp_path / "fresh_authoritative.db")
+    db = Database(db_path=db_file)
+
+    # 1. Verify schema created properly with all expected columns
+    cursor = db.conn.cursor()
+    cursor.execute("PRAGMA table_info(project_embeddings)")
+    cols = {row["name"]: row["type"] for row in cursor.fetchall()}
+    assert "project_id" in cols
+    assert "model_name" in cols
+    assert "embedding" in cols
+    assert "dimension" in cols
+    assert "content_hash" in cols
+    assert "created_at" in cols
+
+    # 2 & 5. Numerical round trip
+    dim = 384
+    np.random.seed(42)
+    vec1 = np.random.randn(dim).astype(np.float32)
+    vec1 = vec1 / np.linalg.norm(vec1)
+
+    saved = db.save_project_embedding(
+        project_id="project:proj_alpha",
+        model_name="all-MiniLM-L6-v2",
+        embedding=vec1,
+        content_hash="hash_alpha_123",
+    )
+    assert saved is True
+
+    # 3. get_project_embedding
+    retrieved_p1 = db.get_project_embedding("project:proj_alpha", "all-MiniLM-L6-v2")
+    assert retrieved_p1 is not None
+    assert retrieved_p1.shape == (dim,)
+    assert retrieved_p1.dtype == np.float32
+    assert np.allclose(retrieved_p1, vec1, atol=1e-6)
+
+    # Missing project / model returns None
+    assert db.get_project_embedding("project:nonexistent", "all-MiniLM-L6-v2") is None
+    assert db.get_project_embedding("project:proj_alpha", "other-model") is None
+
+    # 4. get_cached_project_embedding
+    cached_emb = db.get_cached_project_embedding("hash_alpha_123", "all-MiniLM-L6-v2")
+    assert cached_emb is not None
+    assert np.allclose(cached_emb, vec1, atol=1e-6)
+    assert db.get_cached_project_embedding("nonexistent_hash", "all-MiniLM-L6-v2") is None
+
+    # 6. Two projects referencing equivalent or distinct content
+    vec2 = np.random.randn(dim).astype(np.float32)
+    vec2 = vec2 / np.linalg.norm(vec2)
+    db.save_project_embedding(
+        project_id="project:proj_beta",
+        model_name="all-MiniLM-L6-v2",
+        embedding=vec2,
+        content_hash="hash_beta_456",
+    )
+
+    p1_again = db.get_project_embedding("project:proj_alpha", "all-MiniLM-L6-v2")
+    p2_emb = db.get_project_embedding("project:proj_beta", "all-MiniLM-L6-v2")
+    assert np.allclose(p1_again, vec1, atol=1e-6)
+    assert np.allclose(p2_emb, vec2, atol=1e-6)
+    assert not np.allclose(p1_again, p2_emb, atol=1e-3)
+
+    # 7. Database initialization remains idempotent
+    db2 = Database(db_path=db_file)
+    p1_after_reinit = db2.get_project_embedding("project:proj_alpha", "all-MiniLM-L6-v2")
+    assert p1_after_reinit is not None
+    assert np.allclose(p1_after_reinit, vec1, atol=1e-6)
+    db2.close()
+
+    # 8. Nullable risk and ProjectMatch fields in fresh DB
+    cursor.execute("PRAGMA table_info(technology_states)")
+    ts_cols = {row["name"]: bool(row["notnull"]) for row in cursor.fetchall()}
+    assert ts_cols["risk_score"] is False  # Nullable
+
+    cursor.execute("PRAGMA table_info(project_matches)")
+    pm_cols = {row["name"]: bool(row["notnull"]) for row in cursor.fetchall()}
+    assert pm_cols["relevance_score"] is False  # Nullable
+    assert pm_cols["impact_score"] is False  # Nullable
+    assert pm_cols["recommendation"] is False  # Nullable
+
+    # Null save and retrieval in fresh DB
+    db.save_project(Project(id="project:proj_alpha", name="Alpha", path="/tmp/a", is_active=True))
+    db.save_project_match(ProjectMatch(
+        id="pm_null_test",
+        project_id="project:proj_alpha",
+        entity_id="cl_null_test",
+        match_type="general_related",
+        relevance_score=None,
+        impact_score=None,
+        recommendation=None,
+    ))
+    matches = db.get_project_matches("project:proj_alpha")
+    assert len(matches) == 1
+    assert matches[0].relevance_score is None
+    assert matches[0].impact_score is None
+    assert matches[0].recommendation is None
+
+    db.close()

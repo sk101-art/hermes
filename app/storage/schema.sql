@@ -228,7 +228,7 @@ CREATE INDEX IF NOT EXISTS idx_intel_change_type ON intelligence_changes(change_
 CREATE INDEX IF NOT EXISTS idx_intel_importance ON intelligence_changes(importance DESC);
 CREATE INDEX IF NOT EXISTS idx_intel_created_at ON intelligence_changes(created_at DESC);
 
--- Session 7: Projects and Engineering Context
+-- Session 7: Reference / Context Folder Personalization
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -243,22 +243,22 @@ CREATE TABLE IF NOT EXISTS projects (
     tools_json TEXT,
     topics_json TEXT,
     keywords_json TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    context_hash TEXT,
+    is_active INTEGER DEFAULT 1,
+    context_hash TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_indexed_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
-CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(is_active);
+CREATE INDEX IF NOT EXISTS idx_projects_is_active ON projects(is_active);
 
 CREATE TABLE IF NOT EXISTS project_files (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     relative_path TEXT NOT NULL,
     file_type TEXT NOT NULL,
-    size_bytes INTEGER NOT NULL,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT NOT NULL,
     extracted_text TEXT,
     created_at TEXT NOT NULL,
@@ -268,7 +268,6 @@ CREATE TABLE IF NOT EXISTS project_files (
 
 CREATE INDEX IF NOT EXISTS idx_proj_files_proj ON project_files(project_id);
 CREATE INDEX IF NOT EXISTS idx_proj_files_hash ON project_files(content_hash);
-CREATE INDEX IF NOT EXISTS idx_proj_files_type ON project_files(file_type);
 
 CREATE TABLE IF NOT EXISTS project_technology_profiles (
     project_id TEXT PRIMARY KEY,
@@ -284,18 +283,18 @@ CREATE TABLE IF NOT EXISTS project_technology_profiles (
     observability_json TEXT,
     testing_json TEXT,
     topics_json TEXT,
-    profile_text TEXT,
-    profile_hash TEXT,
+    profile_text TEXT NOT NULL DEFAULT '',
+    profile_hash TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS project_embeddings (
-    content_hash TEXT NOT NULL,
+    project_id TEXT PRIMARY KEY,
     model_name TEXT NOT NULL,
-    dimension INTEGER NOT NULL,
     embedding BLOB NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (content_hash, model_name)
+    dimension INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_proj_emb_hash ON project_embeddings(content_hash);
