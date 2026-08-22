@@ -3039,7 +3039,7 @@ test('Phase 10: Duplicate Story consolidation into single primary card without l
   assert.ok(primary.secondaryItemTypes.includes('new_story'));
 
   const cardHtml = renderInboxCard(primary);
-  assert.ok(cardHtml.includes('Verification Reevaluated'));
+  assert.ok(cardHtml.includes('Claim Support Changed'));
   assert.ok(cardHtml.includes('Recent Discovery'));
   assert.ok(cardHtml.includes('+ New Story'));
 });
@@ -3536,10 +3536,111 @@ test('Phase 10 regression: Shared Story Card regression proves string risk level
   assert.ok(!html.includes('risk-assessed'));
 });
 
+test('Phase 10 remediation: Null project_impact_score remains absent and does not render 0%', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
 
+  // Case 1: Missing / null score
+  const nullScoreItem = {
+    id: 'ib_remed_null',
+    story_cluster_id: 'cl_remed_1',
+    title: 'Item with Null Project Score',
+    section: 'ai_ml',
+    item_type: 'new_story',
+    inbox_score: 0.82,
+    rank_score: 0.82,
+    project_impact_score: null,
+    matched_project_ids: [],
+    story_available: true,
+  };
 
+  const htmlNull = renderInboxCard(nullScoreItem);
+  assert.ok(!htmlNull.includes('Project Relevance:'));
+  assert.ok(!htmlNull.includes('0%'));
 
+  // Case 2: Numeric 0.0 score
+  const zeroScoreItem = {
+    id: 'ib_remed_zero',
+    story_cluster_id: 'cl_remed_2',
+    title: 'Item with Zero Project Score',
+    section: 'ai_ml',
+    item_type: 'new_story',
+    inbox_score: 0.82,
+    rank_score: 0.82,
+    project_impact_score: 0.0,
+    matched_project_ids: [],
+    story_available: true,
+  };
 
+  const htmlZero = renderInboxCard(zeroScoreItem);
+  assert.ok(!htmlZero.includes('Project Relevance:'));
+  assert.ok(!htmlZero.includes('0%'));
 
+  // Case 3: Genuine positive score
+  const posScoreItem = {
+    id: 'ib_remed_pos',
+    story_cluster_id: 'cl_remed_3',
+    title: 'Item with Positive Project Score',
+    section: 'ai_ml',
+    item_type: 'new_story',
+    inbox_score: 0.82,
+    rank_score: 0.82,
+    project_impact_score: 0.75,
+    matched_project_ids: ['proj_cuda'],
+    story_available: true,
+  };
 
+  const htmlPos = renderInboxCard(posScoreItem);
+  assert.ok(htmlPos.includes('Project Relevance: <strong>75%</strong>'));
+});
 
+test('Phase 10 remediation: verified_claim:* reason codes render as Claim Priority Signal without truth claims', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_remed_claim',
+    story_cluster_id: 'cl_remed_4',
+    title: 'Item with Claim Surfacing Code',
+    section: 'ai_ml',
+    item_type: 'new_story',
+    inbox_score: 0.85,
+    reason_codes: ['verified_claim:0.65', 'verified_claim:0.89'],
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  // Must NOT contain truth or epistemic certainty claims
+  assert.ok(!html.includes('Verified Claim Found'));
+  assert.ok(!html.includes('Verified'));
+  assert.ok(!html.includes('65%'));
+  assert.ok(!html.includes('89%'));
+
+  // Must render prioritization-safe wording
+  assert.ok(html.includes('Claim Priority Signal'));
+
+  // Original reason code must be preserved in data attribute
+  assert.ok(html.includes('data-reason-code="verified_claim:0.65"'));
+  assert.ok(html.includes('data-reason-code="verified_claim:0.89"'));
+});
+
+test('Phase 10 remediation: intel_change:verification_strengthened renders as Claim Support Changed without verification badges', async () => {
+  const { renderInboxCard } = await import('../src/views/today.js');
+
+  const item = {
+    id: 'ib_remed_intel',
+    story_cluster_id: 'cl_remed_5',
+    title: 'Item with Intel Change',
+    section: 'ai_ml',
+    item_type: 'new_story',
+    inbox_score: 0.85,
+    reason_codes: ['intel_change:verification_strengthened'],
+    story_available: true,
+  };
+
+  const html = renderInboxCard(item);
+
+  assert.ok(html.includes('Claim Support Changed'));
+  assert.ok(!html.includes('Verification Reevaluated'));
+  assert.ok(!html.includes('badge-verification'));
+  assert.ok(html.includes('data-reason-code="intel_change:verification_strengthened"'));
+});

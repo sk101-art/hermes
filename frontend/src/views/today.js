@@ -49,8 +49,10 @@ export function formatItemType(itemType) {
 
 export function formatReasonCode(code) {
   if (!code) return '';
-  if (code.startsWith('intel_change:verification_strengthened')) return 'Verification Reevaluated';
+  if (code.startsWith('intel_change:verification_strengthened')) return 'Claim Support Changed';
+  if (code.startsWith('intel_change:verification_weakened')) return 'Claim Support Weakened';
   if (code.startsWith('intel_change:maturity_increased')) return 'Maturity Progressed';
+  if (code.startsWith('intel_change:maturity_decreased')) return 'Maturity Regressed';
   if (code.startsWith('intel_change:')) return toTitleCase(code.replace('intel_change:', '').replace(/_/g, ' '));
   if (code.startsWith('direct_dependency_match:')) {
     const proj = code.replace('direct_dependency_match:', '').replace('project:', '');
@@ -63,7 +65,7 @@ export function formatReasonCode(code) {
     const kind = code.replace('project_match:', '').replace(/_/g, ' ');
     return `Project Context: ${toTitleCase(kind)}`;
   }
-  if (code.startsWith('verified_claim:')) return 'Verified Claim Found';
+  if (code.startsWith('verified_claim:')) return 'Claim Priority Signal';
   if (code === 'recent_discovery') return 'Recent Discovery';
   if (code === 'official_release') return 'Official Release';
   return toTitleCase(code.replace(/_/g, ' '));

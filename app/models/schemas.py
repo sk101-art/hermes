@@ -448,9 +448,9 @@ class InboxItem(BaseModel):
     story_cluster_id: str
     title: str
     section: str = "ai_ml"  # must_know, project_relevant, ai_ml, systems_compilers, storage_databases, developer_tooling, research, corrections_updates, watchlist
-    inbox_score: float = 0.50
-    rank_score: float = 0.50
-    project_impact_score: float = 0.0
+    inbox_score: Optional[float] = None
+    rank_score: Optional[float] = None
+    project_impact_score: Optional[float] = None
     state: str = "unseen"  # unseen, seen, opened, starred, expired, archived
     item_type: str = "new_story"  # new_story, story_update, claim_strengthened, claim_weakened, new_release, new_risk, maturity_change, correction
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

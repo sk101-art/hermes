@@ -1722,9 +1722,9 @@ class Database:
             story_cluster_id=r["story_cluster_id"],
             title=r["title"],
             section=r["section"],
-            inbox_score=r["inbox_score"] or 0.50,
-            rank_score=r["rank_score"] or 0.50,
-            project_impact_score=r["project_impact_score"] or 0.0,
+            inbox_score=r["inbox_score"] if r["inbox_score"] is not None else None,
+            rank_score=r["rank_score"] if r["rank_score"] is not None else None,
+            project_impact_score=r["project_impact_score"] if r["project_impact_score"] is not None else None,
             state=r["state"],
             item_type=r["item_type"],
             created_at=datetime.fromisoformat(r["created_at"]),
@@ -1794,15 +1794,22 @@ class Database:
         self,
         include_expired: bool = False,
         include_suppressed: bool = False,
-        limit: int = 100,
+        limit: Optional[int] = None,
     ) -> List[InboxItem]:
         cursor = self.conn.cursor()
         if include_expired:
-            cursor.execute("SELECT * FROM inbox_items ORDER BY inbox_score DESC LIMIT ?", (limit,))
+            query = "SELECT * FROM inbox_items ORDER BY inbox_score DESC"
         elif include_suppressed:
-            cursor.execute("SELECT * FROM inbox_items WHERE state NOT IN ('expired', 'archived') ORDER BY inbox_score DESC LIMIT ?", (limit,))
+            query = "SELECT * FROM inbox_items WHERE state NOT IN ('expired', 'archived') ORDER BY inbox_score DESC"
         else:
-            cursor.execute("SELECT * FROM inbox_items WHERE state IN ('unseen', 'seen', 'opened', 'starred') ORDER BY inbox_score DESC LIMIT ?", (limit,))
+            query = "SELECT * FROM inbox_items WHERE state IN ('unseen', 'seen', 'opened', 'starred') ORDER BY inbox_score DESC"
+
+        params: List[Any] = []
+        if limit is not None and limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        cursor.execute(query, params)
         return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
 
     def get_inbox_items_by_state(self, state: str) -> List[InboxItem]:

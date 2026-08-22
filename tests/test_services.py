@@ -1186,3 +1186,188 @@ def test_inbox_contract_transport_and_filtering(tmp_path):
     assert unstarred_it1["is_starred"] is False
     assert unstarred_it1["saved_item_id"] is None
 
+
+def test_inbox_null_score_preservation_and_stale_saved_isolation(tmp_path):
+    from app.storage.db import Database
+    from app.services.intelligence import get_today_inbox
+    from app.services.saved import save_cluster_item, delete_saved_item
+    from app.models.schemas import InboxItem, StoryCluster, SavedItem
+
+    db_path = tmp_path / "test_remediation_null_stale.db"
+    db = Database(str(db_path))
+
+    now = datetime.now(timezone.utc)
+
+    # Setup Story Cluster
+    db.save_cluster(StoryCluster(
+        id="cl_stale_1",
+        canonical_title="Historical Research Cluster",
+        summary="Quantum memory coherence",
+        category="research",
+        score=0.80,
+    ))
+
+    # Save a SavedItem directly with is_active = 0 (inactive historical saved item)
+    db.save_saved_item(SavedItem(
+        id="saved:cl_stale_1",
+        entity_type="cluster",
+        entity_id="cl_stale_1",
+        story_cluster_id="cl_stale_1",
+        title_snapshot="Historical Research Cluster",
+        is_active=False,
+        created_at=now,
+        updated_at=now,
+    ))
+
+    # Inbox row contains stale is_starred=True and stale saved_item_id
+    # Scores are None (null)
+    db.save_inbox_item(InboxItem(
+        id="ib_stale_1",
+        entity_type="cluster",
+        entity_id="cl_stale_1",
+        story_cluster_id="cl_stale_1",
+        title="Historical Research Cluster",
+        section="research",
+        inbox_score=None,
+        rank_score=None,
+        project_impact_score=None,
+        is_starred=True,
+        saved_item_id="saved:cl_stale_1",
+        state="unseen",
+        item_type="new_story",
+        created_at=now,
+        matched_project_ids=[],
+        reason_codes=["recent_discovery"],
+    ))
+
+    # Fetch inbox: Assert null scores remain None and stale saved state is isolated
+    items = get_today_inbox(db=db)
+    assert len(items) == 1
+    it = items[0]
+    assert it["inbox_score"] is None
+    assert it["rank_score"] is None
+    assert it["project_impact_score"] is None
+    assert it["is_starred"] is False
+    assert it["saved_item_id"] is None
+
+    # Reactivate via save_cluster_item
+    ok, msg, saved_obj = save_cluster_item(story_cluster_id="cl_stale_1", db=db)
+    assert ok is True
+    assert saved_obj is not None
+
+    items_after_reactivate = get_today_inbox(db=db)
+    it_reactivated = items_after_reactivate[0]
+    assert it_reactivated["is_starred"] is True
+    assert it_reactivated["saved_item_id"] == "saved:cl_stale_1"
+
+    # Soft-delete again
+    del_ok, _ = delete_saved_item(saved_id="saved:cl_stale_1", db=db)
+    assert del_ok is True
+
+    items_after_soft_delete = get_today_inbox(db=db)
+    it_deleted = items_after_soft_delete[0]
+    assert it_deleted["is_starred"] is False
+    assert it_deleted["saved_item_id"] is None
+
+
+def test_inbox_complete_candidate_filtering_beyond_100_rows(tmp_path):
+    from app.storage.db import Database
+    from app.services.intelligence import get_today_inbox
+    from app.models.schemas import InboxItem, StoryCluster, Project
+
+    db_path = tmp_path / "test_remediation_100_rows.db"
+    db = Database(str(db_path))
+
+    now = datetime.now(timezone.utc)
+
+    # Setup Target Project and Common Project
+    db.save_project(Project(
+        id="project:proj_target",
+        name="Target Project",
+        path="/tmp/target",
+    ))
+    db.save_project(Project(
+        id="project:proj_common",
+        name="Common Project",
+        path="/tmp/common",
+    ))
+
+    # Insert 120 active InboxItem rows:
+    # Rows 0..104: section="ai_ml", matched_project_ids=["project:proj_common"], scores 0.99 down to 0.47
+    for i in range(105):
+        score = round(0.99 - (i * 0.005), 4)
+        db.save_inbox_item(InboxItem(
+            id=f"ib_common_{i}",
+            entity_type="cluster",
+            entity_id=f"cl_common_{i}",
+            story_cluster_id=f"cl_common_{i}",
+            title=f"Common AI Item {i}",
+            section="ai_ml",
+            inbox_score=score,
+            rank_score=score,
+            project_impact_score=0.5,
+            state="unseen",
+            item_type="new_story",
+            created_at=now,
+            matched_project_ids=["project:proj_common"],
+            reason_codes=["recent_discovery"],
+        ))
+
+    # Row 105 (position 106, score 0.40): ONLY match for developer_tooling and project:proj_target
+    db.save_inbox_item(InboxItem(
+        id="ib_target_105",
+        entity_type="cluster",
+        entity_id="cl_target_105",
+        story_cluster_id="cl_target_105",
+        title="Target Developer Tooling Item",
+        section="developer_tooling",
+        inbox_score=0.40,
+        rank_score=0.40,
+        project_impact_score=0.88,
+        state="unseen",
+        item_type="new_release",
+        created_at=now,
+        matched_project_ids=["project:proj_target"],
+        reason_codes=["official_release"],
+    ))
+
+    # Rows 106..119: section="ai_ml", matched_project_ids=["project:proj_common"], scores 0.35 down to 0.285
+    for i in range(106, 120):
+        score = round(0.35 - ((i - 106) * 0.005), 4)
+        db.save_inbox_item(InboxItem(
+            id=f"ib_common_{i}",
+            entity_type="cluster",
+            entity_id=f"cl_common_{i}",
+            story_cluster_id=f"cl_common_{i}",
+            title=f"Common AI Item {i}",
+            section="ai_ml",
+            inbox_score=score,
+            rank_score=score,
+            project_impact_score=0.5,
+            state="unseen",
+            item_type="new_story",
+            created_at=now,
+            matched_project_ids=["project:proj_common"],
+            reason_codes=["recent_discovery"],
+        ))
+
+    # Test Section Filter: Even though ib_target_105 is beyond top 100, filtering retrieves it
+    sec_results = get_today_inbox(section="developer_tooling", limit=20, db=db)
+    assert len(sec_results) == 1
+    assert sec_results[0]["id"] == "ib_target_105"
+    assert sec_results[0]["section"] == "developer_tooling"
+
+    # Test Project Filter: Project proj_target retrieves ib_target_105 beyond position 100
+    proj_results = get_today_inbox(project="proj_target", limit=20, db=db)
+    assert len(proj_results) == 1
+    assert proj_results[0]["id"] == "ib_target_105"
+    assert proj_results[0]["matched_project_ids"] == ["project:proj_target"]
+
+    # Test Limit Applied After Filtering: Limit 10 returns top 10 AI items in order
+    ai_results = get_today_inbox(section="ai_ml", limit=10, db=db)
+    assert len(ai_results) == 10
+    scores = [r["inbox_score"] for r in ai_results]
+    assert scores == sorted(scores, reverse=True)
+    assert ai_results[0]["id"] == "ib_common_0"
+    assert ai_results[9]["id"] == "ib_common_9"
+

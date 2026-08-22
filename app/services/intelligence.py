@@ -442,14 +442,14 @@ def get_top_developments(
             entity_id=it.id,
             title=it.title,
             summary=summary_text,
-            score=round(it.rank_score, 4),
+            score=round(it.rank_score, 4) if it.rank_score is not None else 0.0,
             sources=list(cl.sources),
             published_at=it.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
             verification_score=round(verif_score, 4) if verif_score is not None else None,
             maturity=maturity,
             risk=risk,
             risk_status=risk_status,
-            project_relevance=round(it.project_impact_score, 4),
+            project_relevance=round(it.project_impact_score, 4) if it.project_impact_score is not None else 0.0,
             reason_codes=list(it.reason_codes),
             urls=urls,
         )
@@ -803,7 +803,7 @@ def get_today_inbox(
         db = Database()
 
     limit = max(1, min(limit, 50))
-    items = db.get_active_inbox_items(limit=100)
+    items = db.get_active_inbox_items(limit=None)
 
     if unseen_only:
         items = [it for it in items if it.state == "unseen"]
@@ -817,6 +817,8 @@ def get_today_inbox(
         proj = db.get_project(p_clean) or db.get_project(f"project:{p_clean.lower()}") or db.get_project_by_name(p_clean)
         if proj:
             items = [it for it in items if proj.id in it.matched_project_ids]
+        else:
+            items = []
 
     target_items = items[:limit]
     cluster_ids = [it.story_cluster_id for it in target_items if it.story_cluster_id]
@@ -850,14 +852,14 @@ def get_today_inbox(
             "title": it.title,
             "section": it.section,
             "state": it.state,
-            "is_starred": bool(active_saved_id is not None or it.is_starred),
+            "is_starred": bool(active_saved_id is not None),
             "inbox_score": round(it.inbox_score, 4) if it.inbox_score is not None else None,
             "rank_score": round(it.rank_score, 4) if it.rank_score is not None else None,
-            "project_impact_score": round(it.project_impact_score, 4) if it.project_impact_score is not None else 0.0,
+            "project_impact_score": round(it.project_impact_score, 4) if it.project_impact_score is not None else None,
             "matched_project_ids": it.matched_project_ids or [],
             "item_type": it.item_type,
             "reason_codes": it.reason_codes or [],
-            "saved_item_id": active_saved_id if active_saved_id is not None else (it.saved_item_id if it.is_starred else None),
+            "saved_item_id": active_saved_id,
             "story_available": is_avail,
             "expires_at": it.expires_at.isoformat() if it.expires_at else None,
             "created_at": it.created_at.isoformat() if it.created_at else None,
