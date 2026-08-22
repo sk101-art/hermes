@@ -71,6 +71,9 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
 
     if hb_alive:
         daemon_status = "running"
+    elif hb_data and (hb_data.get("is_stale") or hb_data.get("status") == "stale" or (hb_age_sec is not None and hb_age_sec > 30)):
+        daemon_status = "stale"
+        is_stale = True
     elif lock_present and not hb_alive:
         daemon_status = "stale"
         is_stale = True
@@ -173,6 +176,7 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
             health_status=health_status,
             last_attempt_at=cp.last_attempt_at.isoformat() if cp and cp.last_attempt_at else None,
             last_success_at=cp.last_success_at.isoformat() if cp and cp.last_success_at else None,
+            last_event_time=cp.last_event_time.isoformat() if cp and cp.last_event_time else None,
             consecutive_failures=consecutive_failures,
             failure_threshold_reached=failure_threshold_reached,
             max_consecutive_failures=max_fails,
@@ -357,6 +361,11 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         warnings.append(tz_warning)
 
     is_partial_availability = False
+    if src_counts.total == 0:
+        warnings.append("No source adapters configured or active.")
+    if job_counts.total == 0:
+        warnings.append("No runtime jobs scheduled.")
+
     if src_counts.degraded > 0 or src_counts.rate_limited > 0 or src_counts.retrying > 0:
         is_partial_availability = True
         warnings.append(f"{src_counts.degraded + src_counts.rate_limited + src_counts.retrying} source(s) experiencing retries or degradation")
@@ -365,8 +374,11 @@ def get_runtime_overview(db: Optional[Database] = None) -> RuntimeOverviewRespon
         is_partial_availability = True
 
     overall_status = sys_health.get("status", "HEALTHY")
-    if overall_status == "HEALTHY" and (is_partial_availability or daemon_status in ("stale", "stopped")):
-        overall_status = "DEGRADED"
+    if overall_status == "HEALTHY":
+        if src_counts.total == 0 or job_counts.total == 0:
+            overall_status = "UNKNOWN"
+        elif is_partial_availability or daemon_status in ("stale", "stopped"):
+            overall_status = "DEGRADED"
 
     return RuntimeOverviewResponse(
         schema_version="v1",

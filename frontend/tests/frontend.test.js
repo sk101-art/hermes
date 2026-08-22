@@ -5809,3 +5809,40 @@ test('Phase 13: 45. Partial availability warning notice banner renders when pres
   await renderRuntimeView(container, store);
   assert.ok(container.innerHTML.includes('Partial source availability: openalex failed'));
 });
+
+test('Phase 13: 46. Source health: offline source renders runtime-status-offline', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{ source: 'arxiv', health_status: 'offline', last_attempt_at: '2026-08-22T10:00:00Z', last_success_at: null }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('runtime-status-offline'));
+});
+
+test('Phase 13: 47. Machine-readable time tags render datetime and handles invalid dates safely', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview({
+      sources: [{
+        source: 'github',
+        health_status: 'healthy',
+        last_attempt_at: '2026-08-22T10:00:00Z',
+        last_success_at: 'invalid-date-string'
+      }]
+    })
+  });
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+  assert.ok(container.innerHTML.includes('<time datetime="2026-08-22T10:00:00Z">'));
+  assert.ok(!container.innerHTML.includes('Invalid Date'));
+  assert.ok(!container.innerHTML.includes('NaN'));
+});

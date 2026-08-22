@@ -33,7 +33,15 @@ function formatNullOrSeconds(val) {
 
 function formatNullOrTime(isoStr) {
   if (!isoStr) return 'Not recorded';
-  return `${formatDate(isoStr)} ${formatTime(isoStr)}`;
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return 'Not recorded';
+    const formatted = `${formatDate(isoStr)} ${formatTime(isoStr)}`;
+    if (formatted.includes('NaN') || formatted.includes('Invalid')) return 'Not recorded';
+    return `<time datetime="${escapeHtml(isoStr)}">${escapeHtml(formatted)}</time>`;
+  } catch {
+    return 'Not recorded';
+  }
 }
 
 function getSourceStatusClass(status) {
@@ -46,6 +54,8 @@ function getSourceStatusClass(status) {
       return 'runtime-status-rate-limited';
     case 'degraded':
       return 'runtime-status-degraded';
+    case 'offline':
+      return 'runtime-status-offline';
     case 'disabled':
       return 'runtime-status-disabled';
     case 'unavailable':

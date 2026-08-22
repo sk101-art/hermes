@@ -31,6 +31,7 @@ from app.runtime.sanitization import (
     sanitize_error,
     sanitize_error_category,
     sanitize_error_summary,
+    sanitize_runtime_data,
 )
 from app.runtime.scheduler import (
     check_job_dependencies,
@@ -42,6 +43,7 @@ from app.runtime.scheduler import (
 from app.runtime.state import (
     finish_job_run,
     is_source_due,
+    load_runtime_config,
     record_source_failure,
     record_source_success,
     recover_interrupted_jobs,
@@ -949,5 +951,202 @@ def test_ingestion_edge_cases(temp_db):
         assert len(res_fail["sources_failed"]) == 1
         # Returned error must be sanitized
         assert "Connection refused" in res_fail["sources_failed"][0]["error"]
+
+
+# =========================================================================
+# 17. Pre-Phase-13 Legacy Schema Migration & Idempotence
+# =========================================================================
+
+def test_pre_phase13_legacy_schema_migration_and_idempotence(tmp_path):
+    legacy_db_path = str(tmp_path / "legacy_test.db")
+    raw_conn = sqlite3.connect(legacy_db_path)
+    # Create legacy tables without Phase 13 columns
+    raw_conn.executescript("""
+        CREATE TABLE source_checkpoints (
+            source TEXT PRIMARY KEY,
+            last_success_at TEXT,
+            last_attempt_at TEXT,
+            last_cursor TEXT,
+            last_event_time TEXT,
+            last_error TEXT,
+            consecutive_failures INTEGER DEFAULT 0,
+            next_retry_at TEXT,
+            health_status TEXT DEFAULT 'healthy',
+            updated_at TEXT
+        );
+        CREATE TABLE runtime_jobs (
+            job_name TEXT PRIMARY KEY,
+            last_status TEXT,
+            last_started_at TEXT,
+            last_completed_at TEXT,
+            duration_seconds REAL,
+            run_count INTEGER DEFAULT 0,
+            failure_count INTEGER DEFAULT 0,
+            last_error TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE runtime_job_runs (
+            id TEXT PRIMARY KEY,
+            job_name TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            duration_seconds REAL,
+            status TEXT,
+            error_message TEXT,
+            created_at TEXT
+        );
+        INSERT INTO source_checkpoints (source, last_success_at, consecutive_failures)
+        VALUES ('github', '2026-08-20T10:00:00+00:00', 0);
+        INSERT INTO runtime_jobs (job_name, last_status, run_count)
+        VALUES ('ingestion', 'completed', 5);
+    """)
+    raw_conn.commit()
+    raw_conn.close()
+
+    # Open via Database which runs _run_migrations
+    migrated_db = Database(legacy_db_path)
+    try:
+        # Verify columns added
+        scp_cols = {r["name"] for r in migrated_db.conn.execute("PRAGMA table_info(source_checkpoints)").fetchall()}
+        assert "failure_threshold_reached" in scp_cols
+        assert "max_consecutive_failures" in scp_cols
+        assert "last_error_category" in scp_cols
+
+        rj_cols = {r["name"] for r in migrated_db.conn.execute("PRAGMA table_info(runtime_jobs)").fetchall()}
+        assert "evaluation_status" in rj_cols
+        assert "evaluated_at" in rj_cols
+        assert "blocked_by" in rj_cols
+        assert "blocked_reason" in rj_cols
+        assert "last_error_category" in rj_cols
+
+        rjr_cols = {r["name"] for r in migrated_db.conn.execute("PRAGMA table_info(runtime_job_runs)").fetchall()}
+        assert "error_category" in rjr_cols
+
+        # Verify legacy row values preserved
+        cp = migrated_db.get_source_checkpoint("github")
+        assert cp.source == "github"
+        assert cp.last_success_at == datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
+        assert cp.consecutive_failures == 0
+
+        job = migrated_db.get_runtime_job("ingestion")
+        assert job.job_name == "ingestion"
+        assert job.last_status == "completed"
+        assert job.run_count == 5
+
+        # Verify idempotence on second migration run
+        migrated_db._migrate_columns()
+        scp_cols_after = {r["name"] for r in migrated_db.conn.execute("PRAGMA table_info(source_checkpoints)").fetchall()}
+        assert scp_cols == scp_cols_after
+    finally:
+        migrated_db.close()
+
+
+# =========================================================================
+# 18. Timestamp Identity & Provenance (All 4 Timestamps Distinct)
+# =========================================================================
+
+def test_four_source_timestamps_differ_and_retained(temp_db):
+    t_success = datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
+    t_attempt = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    t_event = datetime(2026, 8, 20, 9, 30, 0, tzinfo=timezone.utc)
+    t_retry = datetime(2026, 8, 22, 10, 30, 0, tzinfo=timezone.utc)
+
+    cp = SourceCheckpoint(
+        source="arxiv",
+        last_success_at=t_success,
+        last_attempt_at=t_attempt,
+        last_event_time=t_event,
+        next_retry_at=t_retry,
+        consecutive_failures=1,
+        health_status="retrying",
+        last_error="Temporary 503",
+        last_error_category="server_error",
+        updated_at=t_attempt,
+    )
+    temp_db.save_source_checkpoint(cp)
+
+    config = load_runtime_config()
+    overview = get_runtime_overview(temp_db)
+    arxiv_rec = next((s for s in overview.sources if s.source == "arxiv"), None)
+    assert arxiv_rec is not None
+    assert arxiv_rec.last_success_at == t_success.isoformat()
+    assert arxiv_rec.last_attempt_at == t_attempt.isoformat()
+    assert arxiv_rec.last_event_time == t_event.isoformat()
+    assert arxiv_rec.next_retry_at == t_retry.isoformat()
+    # Timestamps are distinct and have not been substituted
+    assert arxiv_rec.last_success_at != arxiv_rec.last_attempt_at
+    assert arxiv_rec.last_event_time != arxiv_rec.last_success_at
+
+
+# =========================================================================
+# 19. Active Daemon vs Stale Daemon vs Running Job Overview
+# =========================================================================
+
+def test_active_vs_stale_daemon_and_running_job_in_overview(temp_db, tmp_path):
+    now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
+    
+    # 1. Active daemon with running job
+    temp_db.save_runtime_job(RuntimeJob(
+        job_name="semantic",
+        last_status="running",
+        evaluation_status="due",
+        last_started_at=now,
+        updated_at=now,
+    ))
+
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(True, {"status": "running", "pid": 1234, "timestamp": now.isoformat(), "age_seconds": 5})), \
+         patch("app.services.runtime.read_heartbeat", return_value={"status": "running", "pid": 1234, "timestamp": now.isoformat(), "age_seconds": 5}):
+        overview_active = get_runtime_overview(temp_db)
+        assert overview_active.daemon.status == "running"
+        assert overview_active.daemon.pid == 1234
+        sem_job = next(j for j in overview_active.jobs if j.job_name == "semantic")
+        assert sem_job.status == "running"
+        assert sem_job.last_status == "running"
+
+    # 2. Stale daemon degrades status
+    with patch("app.services.runtime.is_heartbeat_alive", return_value=(False, {"status": "stale", "pid": 1234, "timestamp": (now - timedelta(seconds=120)).isoformat(), "age_seconds": 120})), \
+         patch("app.services.runtime.read_heartbeat", return_value={"status": "stale", "pid": 1234, "timestamp": (now - timedelta(seconds=120)).isoformat(), "age_seconds": 120}):
+        overview_stale = get_runtime_overview(temp_db)
+        assert overview_stale.daemon.status == "stale"
+        assert overview_stale.status == "DEGRADED"
+
+
+# =========================================================================
+# 20. UNC Path & Recursive Sanitization
+# =========================================================================
+
+def test_unc_path_sanitization_and_recursive_sanitizer():
+    raw_unc = r"Failed to access \\fileserver\shares\hermes\data.db with Bearer secret-tok-123"
+    cat, sanitized = sanitize_error(raw_unc)
+    assert r"\\fileserver\shares" not in sanitized
+    assert "[LOCAL_PATH]" in sanitized
+    assert "secret-tok-123" not in sanitized
+    assert "Bearer [REDACTED]" in sanitized
+
+    nested_payload = {
+        "job": "ingestion",
+        "nested_errors": [
+            r"C:\Users\Admin\secrets.txt",
+            r"\\nas01\backup\archive.tar",
+            "http://user:pass@example.com/api"
+        ]
+    }
+    cleaned = sanitize_runtime_data(nested_payload)
+    assert cleaned["nested_errors"][0] == "[LOCAL_PATH]"
+    assert cleaned["nested_errors"][1] == "[LOCAL_PATH]"
+    assert "pass" not in cleaned["nested_errors"][2]
+    assert cleaned["nested_errors"][2] == "https://[REDACTED]@example.com/api"
+
+
+# =========================================================================
+# 21. Empty Sources / Empty Jobs Status
+# =========================================================================
+
+def test_empty_sources_and_jobs_produce_unknown_status(temp_db):
+    empty_config = {"sources": {}}
+    with patch("app.services.runtime.load_runtime_config", return_value=empty_config):
+        overview = get_runtime_overview(temp_db)
+        assert overview.status == "UNKNOWN"
+        assert any("No source adapters" in w for w in overview.warnings)
 
 

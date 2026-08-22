@@ -526,6 +526,7 @@ class SourceOperationalRecord(BaseModel):
     health_status: str  # unknown, healthy, retrying, rate_limited, degraded, disabled, unavailable
     last_attempt_at: Optional[str] = None
     last_success_at: Optional[str] = None
+    last_event_time: Optional[str] = None
     consecutive_failures: Optional[int] = None
     failure_threshold_reached: bool = False
     max_consecutive_failures: int = 5

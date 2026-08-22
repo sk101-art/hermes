@@ -10,8 +10,9 @@ PARAM_SECRET_PATTERN = re.compile(
 URL_CRED_PATTERN = re.compile(r'https?://[^:\s@]+:[^@\s]+@', re.IGNORECASE)
 AUTH_HEADER_PATTERN = re.compile(r'(Authorization\s*:\s*)(?:Basic|Digest|Bearer)\s+[^\r\n]+', re.IGNORECASE)
 
-# File Paths (Windows and Linux/macOS user paths)
+# File Paths (Windows, UNC, and Linux/macOS user paths)
 WINDOWS_PATH_PATTERN = re.compile(r'[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\r\n:;\'"<>|]+', re.IGNORECASE)
+UNC_PATH_PATTERN = re.compile(r'\\\\[a-zA-Z0-9._-]+\\[^\r\n:;\'"<>|\s]+', re.IGNORECASE)
 UNIX_PATH_PATTERN = re.compile(r'/(?:home|Users|root)/[^\r\n:;\'"<>|\s]+', re.IGNORECASE)
 
 
@@ -95,6 +96,7 @@ def sanitize_error(error_input: Any, max_length: int = 300) -> Tuple[str, str]:
 
     # 6. Redact absolute local user file paths
     sanitized = WINDOWS_PATH_PATTERN.sub("[LOCAL_PATH]", sanitized)
+    sanitized = UNC_PATH_PATTERN.sub("[LOCAL_PATH]", sanitized)
     sanitized = UNIX_PATH_PATTERN.sub("[LOCAL_PATH]", sanitized)
 
     # 7. Normalize whitespace
@@ -124,3 +126,24 @@ def sanitize_error_category(category: Optional[str], text: Optional[str]) -> Opt
         cat, _ = sanitize_error(text)
         return cat
     return None
+
+
+def sanitize_runtime_data(data: Any) -> Any:
+    """Recursively sanitizes sensitive patterns from nested strings, dicts, and lists."""
+    if isinstance(data, str):
+        # Redact Bearer, Auth headers, params, URLs, paths
+        sanitized = BEARER_PATTERN.sub("Bearer [REDACTED]", data)
+        sanitized = AUTH_HEADER_PATTERN.sub(r"\1[REDACTED]", sanitized)
+        sanitized = PARAM_SECRET_PATTERN.sub(r"\g<key>=[REDACTED]", sanitized)
+        sanitized = URL_CRED_PATTERN.sub("https://[REDACTED]@", sanitized)
+        sanitized = WINDOWS_PATH_PATTERN.sub("[LOCAL_PATH]", sanitized)
+        sanitized = UNC_PATH_PATTERN.sub("[LOCAL_PATH]", sanitized)
+        sanitized = UNIX_PATH_PATTERN.sub("[LOCAL_PATH]", sanitized)
+        return sanitized
+    elif isinstance(data, dict):
+        return {k: sanitize_runtime_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_runtime_data(item) for item in data]
+    elif isinstance(data, tuple):
+        return tuple(sanitize_runtime_data(item) for item in data)
+    return data

@@ -247,6 +247,7 @@ class Database:
             ("last_error_category", "TEXT"),
             ("evaluation_status", "TEXT DEFAULT 'pending'"),
             ("evaluated_at", "TEXT"),
+            ("next_run_at", "TEXT"),
             ("blocked_by", "TEXT"),
             ("blocked_reason", "TEXT"),
         ]:
@@ -263,6 +264,11 @@ class Database:
                 self.conn.execute("ALTER TABLE runtime_job_runs ADD COLUMN error_category TEXT")
             except Exception:
                 pass
+
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status)")
+        except Exception:
+            pass
 
         self.conn.commit()
 
@@ -2432,7 +2438,7 @@ class Database:
             max_consecutive_failures=max_f,
             next_retry_at=datetime.fromisoformat(r["next_retry_at"]) if r["next_retry_at"] else None,
             health_status=r["health_status"] or "unknown",
-            updated_at=datetime.fromisoformat(r["updated_at"]),
+            updated_at=datetime.fromisoformat(r["updated_at"]) if r["updated_at"] else datetime.now(timezone.utc),
         )
 
     def get_source_checkpoint(self, source: str) -> Optional[SourceCheckpoint]:
@@ -2477,7 +2483,7 @@ class Database:
                 job.next_run_at.isoformat() if job.next_run_at else None,
                 job.blocked_by,
                 job.blocked_reason,
-                job.updated_at.isoformat(),
+                job.updated_at.isoformat() if job.updated_at else datetime.now(timezone.utc).isoformat(),
             ),
         )
         self.conn.commit()
@@ -2485,22 +2491,23 @@ class Database:
 
     def _row_to_runtime_job(self, r: sqlite3.Row) -> RuntimeJob:
         keys = r.keys()
+        eval_st = r["evaluation_status"] if "evaluation_status" in keys and r["evaluation_status"] else "pending"
         return RuntimeJob(
             job_name=r["job_name"],
             last_started_at=datetime.fromisoformat(r["last_started_at"]) if r["last_started_at"] else None,
             last_completed_at=datetime.fromisoformat(r["last_completed_at"]) if r["last_completed_at"] else None,
             last_status=r["last_status"] or "pending",
-            evaluation_status=r["evaluation_status"] if "evaluation_status" in keys and r["evaluation_status"] else (r["last_status"] or "pending"),
+            evaluation_status=eval_st,
             evaluated_at=datetime.fromisoformat(r["evaluated_at"]) if "evaluated_at" in keys and r["evaluated_at"] else None,
             last_error=r["last_error"],
             last_error_category=r["last_error_category"] if "last_error_category" in keys else None,
             duration_seconds=r["duration_seconds"],
             run_count=r["run_count"],
             failure_count=r["failure_count"],
-            next_run_at=datetime.fromisoformat(r["next_run_at"]) if r["next_run_at"] else None,
+            next_run_at=datetime.fromisoformat(r["next_run_at"]) if "next_run_at" in keys and r["next_run_at"] else None,
             blocked_by=r["blocked_by"] if "blocked_by" in keys else None,
             blocked_reason=r["blocked_reason"] if "blocked_reason" in keys else None,
-            updated_at=datetime.fromisoformat(r["updated_at"]),
+            updated_at=datetime.fromisoformat(r["updated_at"]) if r["updated_at"] else datetime.now(timezone.utc),
         )
 
     def get_runtime_job(self, job_name: str) -> Optional[RuntimeJob]:
