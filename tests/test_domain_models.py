@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 import pytest
 from app.models.schemas import (
     MaturityStage,
@@ -18,8 +19,14 @@ from app.models.schemas import (
     Claim,
     Evidence,
     Event,
+    StoryCluster,
     TechnologyAssessment,
     TechnologyState,
+    InboxItem,
+    ProjectMatch,
+    IntelligenceChange,
+    ClaimRevision,
+    TechnologyAssessmentRevision,
 )
 from app.evidence.verification import (
     is_independent_evidence,
@@ -113,16 +120,33 @@ def test_canonical_risk_levels_and_statuses():
 
 
 def test_maturity_stage_normalizer_strictness():
-    # Canonical enum & string inputs
+    # Canonical enum & string inputs (all 7 canonical stages)
+    assert normalize_maturity_stage(MaturityStage.CONCEPT) == "concept"
+    assert normalize_maturity_stage(MaturityStage.RESEARCH) == "research"
+    assert normalize_maturity_stage(MaturityStage.PROTOTYPE) == "prototype"
+    assert normalize_maturity_stage(MaturityStage.EXPERIMENTAL) == "experimental"
     assert normalize_maturity_stage(MaturityStage.EARLY_ADOPTION) == "early_adoption"
+    assert normalize_maturity_stage(MaturityStage.PRODUCTION_CANDIDATE) == "production_candidate"
+    assert normalize_maturity_stage(MaturityStage.ESTABLISHED) == "established"
+
+    assert normalize_maturity_stage("concept") == "concept"
+    assert normalize_maturity_stage("research") == "research"
     assert normalize_maturity_stage("prototype") == "prototype"
+    assert normalize_maturity_stage("experimental") == "experimental"
+    assert normalize_maturity_stage("early_adoption") == "early_adoption"
     assert normalize_maturity_stage("production_candidate") == "production_candidate"
+    assert normalize_maturity_stage("established") == "established"
     assert normalize_maturity_stage("  EXPERIMENTAL  ") == "experimental"
 
-    # Supported compatibility aliases
-    assert normalize_maturity_stage("maturing") == "early_adoption"
-    assert normalize_maturity_stage("production_ready") == "established"
-    assert normalize_maturity_stage("stable") == "established"
+    # Negative tests: Non-canonical legacy values MUST NOT be normalized or aliased
+    assert normalize_maturity_stage("maturing") is None
+    assert normalize_maturity_stage("production_ready") is None
+    assert normalize_maturity_stage("stable") is None
+    assert normalize_maturity_stage("growth") is None
+    assert normalize_maturity_stage("growth (0.72)") is None
+    assert normalize_maturity_stage("experimental (0.90)") is None
+    assert normalize_maturity_stage("mature") is None
+    assert normalize_maturity_stage("proposal") is None
 
     # Empty, None, and unmapped invalid inputs -> None (never fabricated defaults)
     assert normalize_maturity_stage(None) is None
@@ -417,3 +441,265 @@ def test_real_database_persisted_values_conform_to_canonical_ontology():
             assert normalize_claim_status(val) is not None, f"claim_revisions has unmapped new_status: {val}"
 
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Semantic Grounding, Strict Maturity & Taxonomy Invariant Tests
+# ---------------------------------------------------------------------------
+
+def test_phase14_canonical_maturity_stages_complete_matrix():
+    """All 7 canonical maturity stages must normalize to themselves."""
+    canonical_stages = [
+        ("concept", MaturityStage.CONCEPT),
+        ("research", MaturityStage.RESEARCH),
+        ("prototype", MaturityStage.PROTOTYPE),
+        ("experimental", MaturityStage.EXPERIMENTAL),
+        ("early_adoption", MaturityStage.EARLY_ADOPTION),
+        ("production_candidate", MaturityStage.PRODUCTION_CANDIDATE),
+        ("established", MaturityStage.ESTABLISHED),
+    ]
+    for raw_str, enum_val in canonical_stages:
+        assert normalize_maturity_stage(raw_str) == raw_str
+        assert normalize_maturity_stage(enum_val) == raw_str
+        assert normalize_maturity_stage(f"  {raw_str.upper()}  ") == raw_str
+
+
+def test_phase14_rejected_maturity_legacy_aliases_degrade_neutrally():
+    """Rejected legacy aliases and non-canonical strings MUST NOT be normalized or aliased."""
+    rejected_values = [
+        "maturing",
+        "production_ready",
+        "stable",
+        "growth",
+        "growth (0.72)",
+        "experimental (0.90)",
+        "mature",
+        "proposal",
+        "beta",
+        "alpha",
+        "deprecated",
+        "legacy",
+        "1.0",
+        "0.85",
+    ]
+    for val in rejected_values:
+        assert normalize_maturity_stage(val) is None, f"Expected '{val}' to normalize to None"
+
+
+def test_phase14_canonical_claim_statuses_complete_matrix():
+    """All 8 canonical claim statuses must normalize cleanly."""
+    canonical_statuses = [
+        ("strongly_supported", ClaimStatus.STRONGLY_SUPPORTED),
+        ("supported", ClaimStatus.SUPPORTED),
+        ("weakly_supported", ClaimStatus.WEAKLY_SUPPORTED),
+        ("mixed", ClaimStatus.MIXED),
+        ("contradicted", ClaimStatus.CONTRADICTED),
+        ("unverified", ClaimStatus.UNVERIFIED),
+        ("superseded", ClaimStatus.SUPERSEDED),
+        ("retracted", ClaimStatus.RETRACTED),
+    ]
+    for raw_str, enum_val in canonical_statuses:
+        assert normalize_claim_status(raw_str) == raw_str
+        assert normalize_claim_status(enum_val) == raw_str
+        assert normalize_claim_status(f"  {raw_str.upper()}  ") == raw_str
+
+
+def test_phase14_null_and_unsupported_claim_statuses_never_fabricated():
+    """Null input returns None; unsupported aliases (like 'verified' or 'not_assessed') return None."""
+    assert normalize_claim_status(None) is None
+    assert normalize_claim_status("") is None
+    assert normalize_claim_status("   ") is None
+    # 'not_assessed' belongs to RiskStatus, not ClaimStatus
+    assert normalize_claim_status("not_assessed") is None
+    # 'verified' is NOT an officially supported ClaimStatus alias
+    assert normalize_claim_status("verified") is None
+    assert normalize_claim_status("unsupported_alias") is None
+
+
+def test_phase14_unverified_remains_distinct_from_missing_data():
+    """'unverified' is an explicit canonical evaluated state, distinct from None/null."""
+    assert normalize_claim_status("unverified") == "unverified"
+    assert normalize_claim_status(None) is None
+    assert normalize_claim_status("unverified") != normalize_claim_status(None)
+
+
+def test_phase14_score_domain_independence():
+    """Different score fields across models maintain independent ranges, nullability, and semantics."""
+    now = datetime.now(timezone.utc)
+
+    # 1. Event scores
+    ev = Event(
+        id="github:test/repo",
+        title="Test Event",
+        relevance_score=0.75,
+        trust_score=0.80,
+        novelty_score=0.60,
+        final_score=0.72,
+    )
+    assert ev.relevance_score == 0.75
+    assert ev.final_score == 0.72
+
+    # 2. Cluster scores
+    cl = StoryCluster(
+        id="cluster:1",
+        canonical_title="Test Cluster",
+        cluster_score=1.45,
+        source_diversity_score=0.66,
+    )
+    assert cl.cluster_score == 1.45
+    assert cl.source_diversity_score == 0.66
+
+    # 3. Claim verification score
+    claim = Claim(
+        id="claim:1",
+        cluster_id="cluster:1",
+        subject="Subject",
+        predicate="supports",
+        object="Object",
+        claim_text="Test claim text",
+        status="supported",
+        verification_score=0.88,
+    )
+    assert claim.verification_score == 0.88
+
+    # 4. ProjectMatch scores (nullable)
+    pm = ProjectMatch(
+        id="pm:1",
+        project_id="proj:1",
+        entity_id="cluster:1",
+        relevance_score=0.92,
+        impact_score=0.85,
+    )
+    assert pm.relevance_score == 0.92
+    assert pm.impact_score == 0.85
+
+    # 5. InboxItem scores (nullable)
+    inbox = InboxItem(
+        id="inbox:1",
+        entity_id="cluster:1",
+        story_cluster_id="cluster:1",
+        title="Inbox Title",
+        inbox_score=0.79,
+        rank_score=0.91,
+        project_impact_score=None,
+    )
+    assert inbox.inbox_score == 0.79
+    assert inbox.rank_score == 0.91
+    assert inbox.project_impact_score is None
+
+    # 6. IntelligenceChange importance
+    chg = IntelligenceChange(
+        id="chg:1",
+        entity_id="claim:1",
+        change_type="status_change",
+        importance=0.65,
+        reason="Updated evidence",
+    )
+    assert chg.importance == 0.65
+
+    # 7. TechnologyState risk score (nullable)
+    tstate = TechnologyState(
+        cluster_id="cluster:1",
+        risk_score=None,
+    )
+    assert tstate.risk_score is None
+
+
+def test_phase14_genuine_zero_preserved_and_not_dropped():
+    """A genuine zero score (0.0) is preserved and never falsified to None."""
+    ev = Event(id="arxiv:1", title="Paper", relevance_score=0.0, final_score=0.0)
+    assert ev.relevance_score == 0.0
+    assert ev.final_score == 0.0
+
+    claim = Claim(
+        id="claim:2",
+        cluster_id="c:1",
+        subject="S",
+        predicate="P",
+        object="O",
+        claim_text="Text",
+        verification_score=0.0,
+    )
+    assert claim.verification_score == 0.0
+
+    inbox = InboxItem(
+        id="inbox:2",
+        entity_id="c:1",
+        story_cluster_id="c:1",
+        title="Inbox 2",
+        inbox_score=0.0,
+        rank_score=0.0,
+        project_impact_score=0.0,
+    )
+    assert inbox.inbox_score == 0.0
+    assert inbox.rank_score == 0.0
+    assert inbox.project_impact_score == 0.0
+
+
+def test_phase14_historical_revisions_preserve_null_previous_states():
+    """Historical revision records preserve previous_status=None without backfilling current state."""
+    crev = ClaimRevision(
+        id="rev:1",
+        claim_id="claim:1",
+        previous_status=None,
+        new_status="supported",
+        reason="Initial baseline assessment",
+    )
+    assert crev.previous_status is None
+    assert crev.new_status == "supported"
+
+    trev = TechnologyAssessmentRevision(
+        id="trev:1",
+        cluster_id="cluster:1",
+        previous_stage=None,
+        new_stage="prototype",
+        previous_score=None,
+        new_score=0.45,
+        reason="Initial maturity stage determination",
+    )
+    assert trev.previous_stage is None
+    assert trev.new_stage == "prototype"
+    assert trev.previous_score is None
+
+
+def test_phase14_source_identities_exact_canonical():
+    """Exact source identities like 'hackernews' (not 'hacker_news') must be preserved."""
+    ev = Event(id="hackernews:9999", title="HN Discussion")
+    assert ev.source == "hackernews"
+    assert ev.source_type == "discussion"
+
+    ev_gh = Event(id="github:org/repo", title="Repo")
+    assert ev_gh.source == "github"
+
+    ev_arxiv = Event(id="arxiv:2608.12345", title="Paper")
+    assert ev_arxiv.source == "arxiv"
+
+
+def test_phase14_evidence_stance_aliases_boundary_and_idempotency():
+    """Retained stance aliases ('refutes', 'opposes' -> 'contradicts', 'neutral', 'background' -> 'context') test."""
+    # Positive compatibility
+    assert normalize_evidence_stance("refutes") == "contradicts"
+    assert normalize_evidence_stance("opposes") == "contradicts"
+    assert normalize_evidence_stance("neutral") == "context"
+    assert normalize_evidence_stance("background") == "context"
+
+    # Idempotent normalization (single-normalization)
+    assert normalize_evidence_stance("contradicts") == "contradicts"
+    assert normalize_evidence_stance("context") == "context"
+    assert normalize_evidence_stance("supports") == "supports"
+
+
+def test_phase14_evidence_class_aliases_boundary_and_idempotency():
+    """Retained evidence class aliases ('author' -> 'primary', 'discussion' -> 'community', etc.)."""
+    assert normalize_evidence_class("author") == "primary"
+    assert normalize_evidence_class("discussion") == "community"
+    assert normalize_evidence_class("registry") == "metadata"
+    assert normalize_evidence_class("benchmark") == "secondary"
+    assert normalize_evidence_class("independent") == "primary"
+
+    # Idempotency
+    assert normalize_evidence_class("primary") == "primary"
+    assert normalize_evidence_class("secondary") == "secondary"
+    assert normalize_evidence_class("community") == "community"
+    assert normalize_evidence_class("metadata") == "metadata"
+

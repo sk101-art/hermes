@@ -60,18 +60,11 @@ class RiskStatus(str, Enum):
 
 
 def normalize_maturity_stage(val: Any) -> Optional[str]:
-    """Normalizes raw or legacy maturity stage strings or enum members to canonical MaturityStage values."""
+    """Normalizes raw maturity stage strings or enum members to canonical MaturityStage values."""
     if not val:
         return None
     v = val.value if hasattr(val, "value") else str(val)
     v = v.strip().lower()
-    mapping = {
-        "maturing": MaturityStage.EARLY_ADOPTION.value,
-        "production_ready": MaturityStage.ESTABLISHED.value,
-        "stable": MaturityStage.ESTABLISHED.value,
-    }
-    if v in mapping:
-        return mapping[v]
     valid_stages = {s.value for s in MaturityStage}
     if v in valid_stages:
         return v

@@ -59,7 +59,6 @@ export function renderStoryCard(story) {
     <div class="story-card-top">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
         ${sources.slice(0, 3).map(renderSourcePill).join('')}
-        ${!sources.length ? '<span class="source-pill">HERMES cluster</span>' : ''}
       </div>
       <time datetime="${escapeHtml(dateStr || '')}">${formatDate(dateStr)}</time>
     </div>

@@ -69,6 +69,7 @@ import {
   VERIFICATION_MAP,
   getMaturityMeta,
   MATURITY_MAP,
+  normalizeMaturityStage,
   getRiskMeta,
   getEvidenceStanceMeta
 } from '../src/utils/semantic.js';
@@ -188,7 +189,7 @@ test('All seven canonical maturity stages render correctly without default fallb
 
   // Unknown input must degrade safely to neutral unassessed
   const unknown = getMaturityMeta('unrecognized_future_stage');
-  assert.strictEqual(unknown.label, 'Unrecognized Future Stage');
+  assert.strictEqual(unknown.label, 'Unrecognized maturity');
   assert.strictEqual(unknown.cssClass, 'badge-maturity-not_assessed');
 });
 
@@ -221,7 +222,7 @@ test('All eight canonical ClaimStatus values render without invented fallback', 
 
   // Unknown input must degrade neutrally without positive fallback
   const unknown = getVerificationMeta('hypothetical_future_status');
-  assert.strictEqual(unknown.label, 'Hypothetical Future Status');
+  assert.strictEqual(unknown.label, 'Unrecognized claim status');
   assert.strictEqual(unknown.cssClass, 'badge-verification-not_assessed');
 });
 
@@ -244,24 +245,30 @@ test('Claim status descriptions contain no explanatory overreach or invented evi
   });
 });
 
-test('Maturity alias normalization preserves neutrality for ungrounded strings', () => {
-  // Backend supported aliases
-  assert.strictEqual(getMaturityMeta('maturing').label, 'Early Adoption');
-  assert.strictEqual(getMaturityMeta('production_ready').label, 'Established');
-  assert.strictEqual(getMaturityMeta('stable').label, 'Established');
+test('Maturity alias normalization rejects non-canonical legacy values with negative tests', () => {
+  // Rejected legacy aliases must degrade neutrally to "Unrecognized maturity"
+  assert.strictEqual(getMaturityMeta('maturing').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('maturing').cssClass, 'badge-maturity-not_assessed');
+  assert.strictEqual(normalizeMaturityStage('maturing'), null);
 
-  // Ungrounded strings (must NOT silently map to established or concept)
-  const matureMeta = getMaturityMeta('mature');
-  assert.strictEqual(matureMeta.label, 'Mature');
-  assert.strictEqual(matureMeta.cssClass, 'badge-maturity-not_assessed');
+  assert.strictEqual(getMaturityMeta('production_ready').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('production_ready').cssClass, 'badge-maturity-not_assessed');
+  assert.strictEqual(normalizeMaturityStage('production_ready'), null);
 
-  const proposalMeta = getMaturityMeta('proposal');
-  assert.strictEqual(proposalMeta.label, 'Proposal');
-  assert.strictEqual(proposalMeta.cssClass, 'badge-maturity-not_assessed');
+  assert.strictEqual(getMaturityMeta('stable').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('stable').cssClass, 'badge-maturity-not_assessed');
+  assert.strictEqual(normalizeMaturityStage('stable'), null);
 
-  const arbitraryMeta = getMaturityMeta('some_arbitrary_string');
-  assert.strictEqual(arbitraryMeta.label, 'Some Arbitrary String');
-  assert.strictEqual(arbitraryMeta.cssClass, 'badge-maturity-not_assessed');
+  assert.strictEqual(getMaturityMeta('growth').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('growth').cssClass, 'badge-maturity-not_assessed');
+  assert.strictEqual(normalizeMaturityStage('growth'), null);
+
+  // Scored or ungrounded strings
+  assert.strictEqual(getMaturityMeta('mature').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('proposal').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('growth (0.72)').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('experimental (0.90)').label, 'Unrecognized maturity');
+  assert.strictEqual(getMaturityMeta('some_arbitrary_string').label, 'Unrecognized maturity');
 });
 
 test('Maturity descriptions contain no unsupported production-readiness claims', () => {
@@ -5917,4 +5924,184 @@ test('Phase 13: 50. All four source timestamps render distinctly without fallbac
   await renderRuntimeView(container, store);
   assert.ok(container.innerHTML.includes('<time datetime="2026-08-22T10:00:00Z">'));
   assert.ok(container.innerHTML.includes('<time datetime="2026-08-20T10:00:00Z">'));
+});
+
+/* ==========================================================================
+   Phase 14: Strict Semantic Grounding & Taxonomy Behavioral Tests
+   ========================================================================== */
+
+test('Phase 14: Story Card does not fabricate "HERMES cluster" as source when sources array is empty', async () => {
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+  const cardHtml = renderStoryCard({
+    id: 'test_story_empty_sources',
+    canonical_title: 'Title Without Sources',
+    sources: [],
+    events: [],
+    created_at: '2026-08-20T10:00:00Z',
+  });
+  assert.ok(!cardHtml.includes('HERMES cluster'), 'Expected no fabricated "HERMES cluster" in StoryCard');
+});
+
+test('Phase 14: Strict 7 canonical maturity stages and degradation of non-canonical values to Unrecognized maturity', () => {
+  const canonicalStages = [
+    'concept',
+    'research',
+    'prototype',
+    'experimental',
+    'early_adoption',
+    'production_candidate',
+    'established',
+  ];
+
+  canonicalStages.forEach((stage) => {
+    const meta = getMaturityMeta(stage);
+    assert.notStrictEqual(meta.label, 'Unrecognized maturity');
+    assert.strictEqual(normalizeMaturityStage(stage), stage);
+  });
+
+  const rejectedValues = [
+    'maturing',
+    'production_ready',
+    'stable',
+    'growth',
+    'growth (0.72)',
+    'experimental (0.90)',
+    'mature',
+    'proposal',
+    'beta',
+    'alpha',
+    'deprecated',
+  ];
+
+  rejectedValues.forEach((val) => {
+    const meta = getMaturityMeta(val);
+    assert.strictEqual(meta.label, 'Unrecognized maturity', `Expected ${val} to degrade to Unrecognized maturity`);
+    assert.strictEqual(meta.cssClass, 'badge-maturity-not_assessed');
+    assert.strictEqual(normalizeMaturityStage(val), null);
+  });
+});
+
+test('Phase 14: Null claim status renders Not assessed and is never fabricated to unverified or supported', () => {
+  const nullMeta = getVerificationMeta(null);
+  assert.strictEqual(nullMeta.label, 'Not assessed');
+  assert.strictEqual(nullMeta.cssClass, 'badge-verification-not_assessed');
+
+  const emptyMeta = getVerificationMeta('');
+  assert.strictEqual(emptyMeta.label, 'Not assessed');
+});
+
+test('Phase 14: Canonical unverified status is distinct from null missing data', () => {
+  const unverifiedMeta = getVerificationMeta('unverified');
+  assert.strictEqual(unverifiedMeta.label, 'Unverified');
+  assert.strictEqual(unverifiedMeta.cssClass, 'badge-verification-unverified');
+
+  const nullMeta = getVerificationMeta(null);
+  assert.strictEqual(nullMeta.label, 'Not assessed');
+  assert.notStrictEqual(unverifiedMeta.cssClass, nullMeta.cssClass);
+});
+
+test('Phase 14: Unsupported claim aliases degrade neutrally to Unrecognized claim status', () => {
+  const unsupported = ['verified', 'not_assessed', 'confirmed', 'false_claim', 'debunked'];
+  unsupported.forEach((alias) => {
+    const meta = getVerificationMeta(alias);
+    assert.strictEqual(meta.label, 'Unrecognized claim status');
+    assert.strictEqual(meta.cssClass, 'badge-verification-not_assessed');
+  });
+});
+
+test('Phase 14: Independent score domain badges preserve labels and formatting', () => {
+  const relBadge = renderRankingBadge(0.85, 'Relevance');
+  assert.ok(relBadge.includes('Relevance: 85%'));
+  assert.ok(!relBadge.includes('Confidence'));
+  assert.ok(!relBadge.includes('Verification'));
+
+  const rankBadge = renderRankingBadge(0.85, 'Rank');
+  assert.ok(rankBadge.includes('Rank: 85%'));
+  assert.ok(!rankBadge.includes('Confidence'));
+});
+
+test('Phase 14: Genuine zero scores are preserved and rendered as 0% or 0', () => {
+  const zeroPct = formatScorePercentage(0.0);
+  assert.strictEqual(zeroPct, '0%');
+
+  const zeroRankBadge = renderRankingBadge(0.0, 'Relevance');
+  assert.ok(zeroRankBadge.includes('Relevance: 0%'));
+});
+
+test('Phase 14: Missing scores render as — or are omitted, never 0%', () => {
+  const nullPct = formatScorePercentage(null);
+  assert.strictEqual(nullPct, '—');
+
+  const undefinedPct = formatScorePercentage(undefined);
+  assert.strictEqual(undefinedPct, '—');
+
+  const nullRankBadge = renderRankingBadge(null, 'Relevance');
+  assert.strictEqual(nullRankBadge, '');
+});
+
+test('Phase 14: Historical null in changes renders Previous state not recorded historically', async () => {
+  const { formatTransitionValue } = await import('../src/views/changes.js');
+  const formatted = formatTransitionValue(null, 'claim_status', true);
+  assert.ok(formatted.includes('Previous state not recorded historically'));
+});
+
+test('Phase 14: Runtime view contains zero epistemic verification, assessed, or unassessed strings', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const store = (await import('../src/state/store.js')).store;
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview()
+  });
+
+  const container = { innerHTML: '', querySelector: () => null };
+  await renderRuntimeView(container, store);
+
+  const htmlLower = container.innerHTML.toLowerCase();
+  assert.ok(!htmlLower.includes('verification_score'), 'Runtime view must not include verification_score');
+  assert.ok(!htmlLower.includes('unassessed'), 'Runtime view must not contain unassessed wording');
+  assert.ok(!htmlLower.includes('not assessed'), 'Runtime view must not contain not assessed wording');
+});
+
+test('Phase 14: Canonical source registry renders exact formatted identities without guessed names', () => {
+  const sources = [
+    { id: 'github', label: 'GitHub' },
+    { id: 'github_releases', label: 'GitHub Releases' },
+    { id: 'arxiv', label: 'arXiv' },
+    { id: 'hackernews', label: 'Hacker News' },
+    { id: 'huggingface', label: 'Hugging Face' },
+    { id: 'openalex', label: 'OpenAlex' },
+    { id: 'crossref', label: 'Crossref' },
+    { id: 'stackexchange', label: 'Stack Exchange' },
+    { id: 'rss', label: 'RSS Feed' },
+  ];
+
+  sources.forEach(({ id, label }) => {
+    const pill = renderSourcePill(id);
+    assert.ok(pill.includes(label), `Expected pill for ${id} to include ${label}`);
+  });
+
+  // Unknown source must render neutrally without throwing or fabricating
+  const customPill = renderSourcePill('custom_feed');
+  assert.ok(customPill.includes('custom_feed'));
+});
+
+test('Phase 14: Generic Changes values are not guessed into canonical taxonomies', async () => {
+  const { formatTransitionValue } = await import('../src/views/changes.js');
+  const versionTransition = formatTransitionValue('v1.2.0', 'version', false);
+  assert.ok(versionTransition.includes('v1.2.0'));
+  assert.ok(!versionTransition.includes('Unrecognized maturity'));
+  assert.ok(!versionTransition.includes('Unrecognized claim status'));
+});
+
+test('Phase 14: Retained stance aliases normalize predictably and idempotently', () => {
+  assert.strictEqual(getEvidenceStanceMeta('refutes').label, 'Contradicts');
+  assert.strictEqual(getEvidenceStanceMeta('opposes').label, 'Contradicts');
+  assert.strictEqual(getEvidenceStanceMeta('neutral').label, 'Context');
+  assert.strictEqual(getEvidenceStanceMeta('background').label, 'Context');
+
+  // Idempotency
+  assert.strictEqual(getEvidenceStanceMeta('contradicts').label, 'Contradicts');
+  assert.strictEqual(getEvidenceStanceMeta('context').label, 'Context');
+  assert.strictEqual(getEvidenceStanceMeta('supports').label, 'Supports');
 });

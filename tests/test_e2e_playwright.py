@@ -8,6 +8,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+import pytest
+pytest.importorskip("playwright")
 from playwright.sync_api import sync_playwright
 
 def run_hermes_e2e_tests():

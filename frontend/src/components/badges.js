@@ -98,15 +98,24 @@ export function renderRankingBadge(score, label = 'Relevance') {
   </span>`;
 }
 
-/**
- * Render a Source Provenance Pill.
- * @param {string|null} source 
- * @returns {string} HTML string
- */
+export const CANONICAL_SOURCES = {
+  github: 'GitHub',
+  github_releases: 'GitHub Releases',
+  arxiv: 'arXiv',
+  hackernews: 'Hacker News',
+  huggingface: 'Hugging Face',
+  openalex: 'OpenAlex',
+  crossref: 'Crossref',
+  stackexchange: 'Stack Exchange',
+  rss: 'RSS Feed',
+};
+
 export function renderSourcePill(source) {
   if (!source) return '';
-  return `<span class="source-pill" aria-label="Source: ${escapeHtml(source)}">
-    <span>${escapeHtml(source)}</span>
+  const key = String(source).toLowerCase().trim();
+  const label = CANONICAL_SOURCES[key] || source;
+  return `<span class="source-pill" aria-label="Source: ${escapeHtml(label)}">
+    <span>${escapeHtml(label)}</span>
   </span>`;
 }
 

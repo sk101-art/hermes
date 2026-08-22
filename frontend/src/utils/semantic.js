@@ -92,11 +92,11 @@ export function getVerificationMeta(status) {
     return VERIFICATION_MAP.not_assessed;
   }
   const key = status.toLowerCase().trim();
-  if (VERIFICATION_MAP[key]) {
+  if (VERIFICATION_MAP[key] && key !== 'not_assessed') {
     return VERIFICATION_MAP[key];
   }
   return {
-    label: toTitleCase(key) || 'Unknown',
+    label: 'Unrecognized claim status',
     cssClass: 'badge-verification-not_assessed',
     icon: 'helpCircle',
     description: 'Unrecognized verification state',
@@ -157,21 +157,9 @@ export const MATURITY_MAP = {
   },
 };
 
-/**
- * Normalizes only verified backend compatibility aliases to canonical maturity values.
- * Strictly avoids ungrounded mapping of arbitrary strings.
- * @param {string|null} val 
- * @returns {string|null}
- */
 export function normalizeMaturityStage(val) {
   if (!val || typeof val !== 'string') return null;
   const v = val.toLowerCase().trim();
-  const legacyAliases = {
-    maturing: 'early_adoption',
-    production_ready: 'established',
-    stable: 'established',
-  };
-  if (legacyAliases[v]) return legacyAliases[v];
   if (MATURITY_MAP[v] && v !== 'not_assessed') return v;
   return null;
 }
@@ -186,16 +174,11 @@ export function getMaturityMeta(stage) {
     return MATURITY_MAP.not_assessed;
   }
   const key = stage.toLowerCase().trim();
-  if (MATURITY_MAP[key]) {
+  if (MATURITY_MAP[key] && key !== 'not_assessed') {
     return MATURITY_MAP[key];
   }
-  // Check backend compatibility aliases
-  const normalized = normalizeMaturityStage(key);
-  if (normalized && MATURITY_MAP[normalized]) {
-    return MATURITY_MAP[normalized];
-  }
   return {
-    label: toTitleCase(key) || 'Unknown',
+    label: 'Unrecognized maturity',
     cssClass: 'badge-maturity-not_assessed',
     description: 'Unrecognized maturity stage',
   };
