@@ -133,18 +133,28 @@ def export_briefing_markdown(
     briefing_date: str,
     text: str,
     export_dir: str = "data/briefings",
+    filename: Optional[str] = None,
 ) -> str:
     """
     Safely exports morning briefing text to disk using a temporary file
     and atomic rename to prevent partial/corrupted writes.
+    Canonical filename: data/briefings/{briefing_date}.md
     """
     os.makedirs(export_dir, exist_ok=True)
-    target_file = Path(export_dir) / f"briefing_{briefing_date}.md"
-    tmp_file = Path(export_dir) / f"briefing_{briefing_date}.tmp.{os.getpid()}"
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp_file, target_file)
-    return str(target_file)
+    fname = filename or f"{briefing_date}.md"
+    target_file = Path(export_dir) / fname
+    tmp_file = Path(export_dir) / f"{fname}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_file, target_file)
+        return str(target_file)
+    finally:
+        if tmp_file.exists():
+            try:
+                tmp_file.unlink()
+            except Exception:
+                pass
 
 
 def generate_morning_briefing(

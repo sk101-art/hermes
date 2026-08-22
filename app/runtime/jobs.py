@@ -24,7 +24,7 @@ from app.context.scanner import compute_project_context_hash, discover_projects,
 from app.evidence.claims import extract_claims_for_cluster
 from app.evidence.recheck import populate_recheck_queue, process_recheck_queue
 from app.evidence.reevaluate import reevaluate_claim, reevaluate_cluster_maturity, sequence_cluster_releases, update_technology_state
-from app.inbox.briefing import generate_morning_briefing
+from app.inbox.briefing import export_briefing_markdown, generate_morning_briefing
 from app.inbox.generator import generate_daily_inbox
 from app.models.schemas import Project
 from app.pipeline.dedup import is_duplicate_event
@@ -399,21 +399,39 @@ def run_morning_briefing(
     briefing = generate_morning_briefing(db=db, target_date=target_date, refresh=True, now=now)
     db.increment_runtime_metric("briefings_generated", 1)
 
-    # Export to markdown file
-    briefings_dir = Path("data/briefings")
-    briefings_dir.mkdir(parents=True, exist_ok=True)
-    briefing_file = briefings_dir / f"{target_date}.md"
-    briefing_file.write_text(briefing.summary_text or "", encoding="utf-8")
+    # Export to markdown file safely using atomic temporary file and replace
+    try:
+        markdown_file_path = export_briefing_markdown(
+            briefing_date=target_date,
+            text=briefing.summary_text or "",
+            export_dir="data/briefings",
+        )
+        logger.info(f"Morning briefing saved to {markdown_file_path} ({briefing.total_items} items).")
+        export_success = True
+        export_error = None
+    except Exception as e:
+        logger.error(f"Failed to export morning briefing markdown: {e}")
+        export_success = False
+        export_error = str(e)
+        markdown_file_path = None
 
-    logger.info(f"Morning briefing saved to {briefing_file} ({briefing.total_items} items).")
+    if not export_success:
+        return {
+            "status": "export_failed",
+            "briefing_id": briefing.id,
+            "briefing_date": target_date,
+            "total_items": briefing.total_items,
+            "error": export_error,
+        }
 
     return {
+        "status": "success",
         "briefing_id": briefing.id,
         "briefing_date": target_date,
         "total_items": briefing.total_items,
         "high_priority_count": briefing.high_priority_count,
         "project_relevant_count": briefing.project_relevant_count,
-        "markdown_file": str(briefing_file),
+        "markdown_file": markdown_file_path,
     }
 
 

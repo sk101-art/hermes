@@ -892,8 +892,16 @@ def get_morning_brief(
 
     items_by_section: Dict[str, List[Dict[str, Any]]] = {sec: [] for sec in SECTION_ORDER}
 
+    RECOGNIZED_SNAPSHOT_VERSIONS = {"v1"}
+
     for bi in briefing_items:
-        is_legacy = (bi.snapshot_version is None or bi.title is None)
+        if bi.snapshot_version is None or (bi.snapshot_version in RECOGNIZED_SNAPSHOT_VERSIONS and bi.title is None):
+            snapshot_status = "legacy_incomplete"
+        elif bi.snapshot_version not in RECOGNIZED_SNAPSHOT_VERSIONS:
+            snapshot_status = "unrecognized_version"
+        else:
+            snapshot_status = "complete"
+
         story_avail = bool(bi.story_cluster_id and bi.story_cluster_id in existing_cluster_ids)
 
         item_data = {
@@ -910,7 +918,7 @@ def get_morning_brief(
             "rank_score": bi.rank_score,
             "project_impact_score": bi.project_impact_score,
             "matched_project_ids": bi.matched_project_ids or [],
-            "snapshot_status": "legacy_incomplete" if is_legacy else "complete",
+            "snapshot_status": snapshot_status,
             "snapshot_version": bi.snapshot_version,
             "story_available": story_avail,
         }

@@ -501,3 +501,246 @@ def test_atomic_persistence_rollback_on_error(test_db):
     # Ensure briefing was NOT saved (rolled back)
     assert test_db.get_daily_briefing("2026-08-20") is None
 
+
+def test_snapshot_version_handling_none_v1_and_unknown(test_db):
+    """Proves None stays legacy_incomplete, v1 is complete, and unknown versions degrade neutrally."""
+    now = datetime(2026, 8, 20, 8, 0, 0, tzinfo=timezone.utc)
+    briefing = DailyBriefing(
+        id="briefing:2026-08-20",
+        briefing_date="2026-08-20",
+        total_items=3,
+        summary_text="Summary",
+        sections={"ai_ml": ["inbox:1", "inbox:2", "inbox:3"]},
+    )
+    items = [
+        DailyBriefingItem(
+            briefing_id=briefing.id,
+            inbox_item_id="inbox:1",
+            position=1,
+            section="ai_ml",
+            title="Legacy Item",
+            snapshot_version=None,
+        ),
+        DailyBriefingItem(
+            briefing_id=briefing.id,
+            inbox_item_id="inbox:2",
+            position=2,
+            section="ai_ml",
+            title="Complete V1 Item",
+            snapshot_version="v1",
+        ),
+        DailyBriefingItem(
+            briefing_id=briefing.id,
+            inbox_item_id="inbox:3",
+            position=3,
+            section="ai_ml",
+            title="Future Version Item",
+            snapshot_version="v2_experimental",
+        ),
+    ]
+    test_db.save_daily_briefing_with_items(briefing, items)
+
+    brief_data = get_morning_brief("2026-08-20", db=test_db)
+    assert brief_data is not None
+    sec_items = brief_data["sections"]["ai_ml"]
+    assert len(sec_items) == 3
+
+    # Check snapshot status
+    assert sec_items[0]["snapshot_version"] is None
+    assert sec_items[0]["snapshot_status"] == "legacy_incomplete"
+
+    assert sec_items[1]["snapshot_version"] == "v1"
+    assert sec_items[1]["snapshot_status"] == "complete"
+
+    assert sec_items[2]["snapshot_version"] == "v2_experimental"
+    assert sec_items[2]["snapshot_status"] == "unrecognized_version"  # Degrades neutrally, not automatically complete
+
+
+def test_generation_query_boundedness_regression(tmp_path):
+    """Proves morning briefing generation executes in constant queries regardless of item count (5 vs 50 items)."""
+    now = datetime(2026, 8, 20, 8, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Test with 5 items in ai_ml (cap is 5)
+    db_5 = Database(db_path=str(tmp_path / "db_5.db"))
+    for i in range(5):
+        cid = f"cluster:c5_{i}"
+        cl = StoryCluster(id=cid, canonical_title=f"Story {i}")
+        ev = Event(id=f"ev:c5_{i}", title=f"Ev {i}", source="github", url=f"https://github.com/repo5_{i}/proj")
+        item = InboxItem(
+            id=f"inbox:c5_{i}",
+            entity_id=cid,
+            story_cluster_id=cid,
+            title=f"Item {i}",
+            section="ai_ml",
+            inbox_score=0.90 - (i * 0.01),
+        )
+        db_5.save_cluster(cl)
+        db_5.save_event(ev)
+        db_5.add_event_to_cluster(cid, ev.id)
+        db_5.save_inbox_item(item)
+
+    with QueryCounter(db_5.conn) as qc_5:
+        b5 = generate_morning_briefing(db=db_5, target_date="2026-08-20", refresh=True, now=now)
+    assert b5.total_items == 5
+    select_5 = [q for q in qc_5.queries if "SELECT" in q.upper()]
+
+    # 2. Test with 50 items
+    db_50 = Database(db_path=str(tmp_path / "db_50.db"))
+    for i in range(50):
+        cid = f"cluster:c50_{i}"
+        cl = StoryCluster(id=cid, canonical_title=f"Story {i}")
+        ev = Event(id=f"ev:c50_{i}", title=f"Ev {i}", source="github", url=f"https://github.com/repo50_{i}/proj")
+        item = InboxItem(
+            id=f"inbox:c50_{i}",
+            entity_id=cid,
+            story_cluster_id=cid,
+            title=f"Item {i}",
+            section="systems_compilers",
+            inbox_score=0.95 - (i * 0.005),
+        )
+        db_50.save_cluster(cl)
+        db_50.save_event(ev)
+        db_50.add_event_to_cluster(cid, ev.id)
+        db_50.save_inbox_item(item)
+
+    with QueryCounter(db_50.conn) as qc_50:
+        b50 = generate_morning_briefing(db=db_50, target_date="2026-08-20", refresh=True, now=now)
+    # Capped at systems_compilers section cap (4)
+    assert b50.total_items == 4
+    select_50 = [q for q in qc_50.queries if "SELECT" in q.upper()]
+
+    # Assert query counts are constant and bounded (batch queries, no N+1 loop queries)
+    assert len(select_5) <= 4
+    assert len(select_50) <= 4
+    assert len(select_5) == len(select_50)
+
+
+def test_runtime_markdown_export_integration(test_db, tmp_path, monkeypatch):
+    """Proves run_morning_briefing safely exports markdown using atomic rename and handles export errors."""
+    from app.runtime.jobs import run_morning_briefing
+
+    now = datetime(2026, 8, 20, 8, 0, 0, tzinfo=timezone.utc)
+    cl = StoryCluster(id="cluster:rt", canonical_title="Runtime Briefing")
+    ev = Event(id="ev:rt", source="github", event_type="release", title="Release", url="https://github.com/rt/app")
+    item = InboxItem(
+        id="inbox:rt",
+        entity_id=cl.id,
+        story_cluster_id=cl.id,
+        title="Runtime Briefing Title",
+        section="must_know",
+        inbox_score=0.95,
+    )
+    test_db.save_cluster(cl)
+    test_db.save_event(ev)
+    test_db.add_event_to_cluster(cl.id, ev.id)
+    test_db.save_inbox_item(item)
+
+    res = run_morning_briefing(db=test_db, now=now, refresh=True)
+    assert res["status"] == "success"
+    assert res["total_items"] == 1
+    markdown_path = Path(res["markdown_file"])
+    assert markdown_path.exists()
+    assert markdown_path.name == "2026-08-20.md"
+
+    # Verify content equals stored summary_text and hash
+    briefing = test_db.get_daily_briefing("2026-08-20")
+    assert briefing is not None
+    file_content = markdown_path.read_text(encoding="utf-8")
+    assert file_content == briefing.summary_text
+    import hashlib
+    computed_hash = hashlib.sha256(file_content.encode("utf-8")).hexdigest()
+    assert computed_hash == briefing.content_hash
+
+    # Ensure no leftover temp files in directory
+    temp_files = list(markdown_path.parent.glob("*.tmp.*"))
+    assert len(temp_files) == 0
+
+    # Test export failure path (e.g. disk/write error)
+    def broken_export(*args, **kwargs):
+        raise OSError("Permission denied / disk full")
+
+    monkeypatch.setattr("app.runtime.jobs.export_briefing_markdown", broken_export)
+    fail_res = run_morning_briefing(db=test_db, now=now, refresh=True)
+    assert fail_res["status"] == "export_failed"
+    assert "Permission denied" in fail_res["error"]
+
+
+def test_summary_and_snapshot_reconciliation_on_refresh(test_db):
+    """Proves refresh removes obsolete item rows and updates summary text and content hash."""
+    now = datetime(2026, 8, 20, 8, 0, 0, tzinfo=timezone.utc)
+
+    # Initial generation with items A, B
+    item_a = InboxItem(id="inbox:a", entity_id="cluster:a", story_cluster_id="cluster:a", title="Alpha", section="ai_ml", inbox_score=0.90)
+    item_b = InboxItem(id="inbox:b", entity_id="cluster:b", story_cluster_id="cluster:b", title="Beta", section="ai_ml", inbox_score=0.80)
+    test_db.save_inbox_item(item_a)
+    test_db.save_inbox_item(item_b)
+
+    b1 = generate_morning_briefing(db=test_db, target_date="2026-08-20", refresh=True, now=now)
+    assert b1.total_items == 2
+    assert "Alpha" in b1.summary_text
+    assert "Beta" in b1.summary_text
+
+    # Now expire / remove item B and add item C
+    test_db.conn.execute("DELETE FROM inbox_items WHERE id = ?", ("inbox:b",))
+    test_db.conn.commit()
+    item_c = InboxItem(id="inbox:c", entity_id="cluster:c", story_cluster_id="cluster:c", title="Gamma", section="ai_ml", inbox_score=0.95)
+    test_db.save_inbox_item(item_c)
+
+    b2 = generate_morning_briefing(db=test_db, target_date="2026-08-20", refresh=True, now=now)
+    assert b2.total_items == 2
+
+    # Check stored items in DB: inbox:b must be completely gone
+    stored = test_db.get_daily_briefing_items(b2.id)
+    stored_ids = [it.inbox_item_id for it in stored]
+    assert "inbox:b" not in stored_ids
+    assert "inbox:c" in stored_ids
+    assert "inbox:a" in stored_ids
+
+    # Check summary text and hash
+    assert "Beta" not in b2.summary_text
+    assert "Gamma" in b2.summary_text
+    assert "Alpha" in b2.summary_text
+    assert b2.content_hash != b1.content_hash
+
+
+def test_legacy_incomplete_item_negative_metadata_test(test_db):
+    """Negative test: Proves missing legacy fields do not generate fabricated title, summary, type, or scores."""
+    briefing = DailyBriefing(
+        id="briefing:2026-08-20",
+        briefing_date="2026-08-20",
+        total_items=1,
+        summary_text="",
+        sections={"watchlist": ["inbox:legacy_bare"]},
+    )
+    # Direct DB insertion of row with NULL for snapshot fields
+    cursor = test_db.conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO daily_briefings (id, briefing_date, generated_at, total_items, high_priority_count, project_relevant_count, content_hash, summary_text, sections_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (briefing.id, briefing.briefing_date, "2026-08-20T08:00:00+00:00", 1, 0, 0, "hash", "", json.dumps(briefing.sections), "2026-08-20T08:00:00+00:00")
+    )
+    cursor.execute(
+        """
+        INSERT INTO daily_briefing_items (briefing_id, inbox_item_id, position, section, title, summary, story_cluster_id, item_type, reason_codes_json, inbox_score, rank_score, project_impact_score, matched_project_ids_json, snapshot_version)
+        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        """,
+        (briefing.id, "inbox:legacy_bare", 1, "watchlist")
+    )
+    test_db.conn.commit()
+
+    brief_data = get_morning_brief("2026-08-20", db=test_db)
+    assert brief_data is not None
+    item = brief_data["sections"]["watchlist"][0]
+
+    assert item["snapshot_status"] == "legacy_incomplete"
+    assert item["snapshot_version"] is None
+    assert item["title"] is None
+    assert item["summary"] is None
+    assert item["item_type"] is None
+    assert item["inbox_score"] is None
+    assert item["rank_score"] is None
+    assert item["project_impact_score"] is None
+    assert item["story_available"] is False
+

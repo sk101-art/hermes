@@ -36,6 +36,36 @@ export const SECTION_ORDER = [
 ];
 
 /**
+ * Validates that a value is a strict finite number.
+ */
+export function isValidFiniteNumber(val) {
+  return typeof val === 'number' && Number.isFinite(val);
+}
+
+/**
+ * Safely format reason codes without inventing truth or verification claims.
+ */
+export function formatBriefingReasonCode(rc) {
+  if (typeof rc !== 'string') return '';
+  if (rc.startsWith('verified_claim:')) {
+    return `Claim Priority Signal: ${rc.slice(15)}`;
+  }
+  const mapping = {
+    recent_discovery: 'Recent Discovery',
+    official_release: 'Official Release',
+    high_interest: 'High Interest',
+    starred: 'Starred Item',
+    direct_project_dep: 'Direct Project Dependency',
+    project_tech_match: 'Project Technology Match',
+    correction: 'Correction',
+    claim_weakened: 'Claim Weakened',
+    'intel_change:verification_weakened': 'Claim Support Weakened',
+    'intel_change:verification_strengthened': 'Claim Support Changed',
+  };
+  return mapping[rc] || rc;
+}
+
+/**
  * Format a Date object to YYYY-MM-DD in UTC.
  */
 function formatDateUtc(date) {
@@ -104,49 +134,72 @@ function renderDateToolbar(activeDate, todayIso) {
 /**
  * Renders an individual briefing snapshot item.
  */
-function renderBriefingItemCard(item) {
+export function renderBriefingItemCard(item) {
   const isLegacy = item.snapshot_status === 'legacy_incomplete';
   const hasStoryLink = Boolean(item.story_available && item.story_cluster_id);
-  const title = item.title || 'Untitled snapshot item';
-  const summary = item.summary || title;
-  const itemType = item.item_type || 'story';
   const reasonCodes = ensureArray(item.reason_codes);
   const matchedProjects = ensureArray(item.matched_project_ids);
 
-  // Truthful score rendering (priority vs ranking vs project impact)
-  const inboxScoreStr = item.inbox_score !== null && item.inbox_score !== undefined
-    ? `Priority: ${Number(item.inbox_score).toFixed(2)}`
-    : 'Priority: unrated';
+  // Check correction and weakening semantics strictly from transported fields
+  const isCorrection = item.item_type === 'correction' || (reasonCodes.some(r => /correction|retraction/i.test(r)));
+  const isWeakened = item.item_type === 'claim_weakened' || (reasonCodes.some(r => /weakened|contradict/i.test(r)));
 
-  const rankScoreStr = item.rank_score !== null && item.rank_score !== undefined
-    ? `Rank: ${Number(item.rank_score).toFixed(2)}`
-    : null;
+  let cardClasses = 'panel briefing-item-card';
+  if (isCorrection) cardClasses += ' briefing-card-cautionary';
+  if (isWeakened) cardClasses += ' briefing-card-weakened';
 
-  const projectImpactStr = item.project_impact_score !== null && item.project_impact_score !== undefined
-    ? `Project Impact: ${Number(item.project_impact_score).toFixed(2)}`
-    : null;
+  // Title rendering: do NOT synthesize "Untitled snapshot item"
+  let titleHtml = '';
+  if (item.title) {
+    if (hasStoryLink) {
+      titleHtml = `<a href="#/story/${encodeURIComponent(item.story_cluster_id)}" class="briefing-title-link">${escapeHtml(item.title)}</a>`;
+    } else {
+      titleHtml = `<span class="text-semibold text-foreground">${escapeHtml(item.title)}</span>`;
+    }
+  } else {
+    titleHtml = `<span class="briefing-missing-notice">Title was not captured in this legacy snapshot</span>`;
+  }
+
+  // Summary rendering: do NOT fabricate summary or copy title
+  const summaryHtml = item.summary
+    ? `<p class="briefing-item-summary">${escapeHtml(item.summary)}</p>`
+    : '';
+
+  // Type badge: do NOT default to 'story'
+  const typeBadgeHtml = item.item_type
+    ? `<span class="briefing-type-tag">${escapeHtml(toTitleCase(item.item_type))}</span>`
+    : '';
+
+  // Cautionary tags
+  const cautionTagHtml = isCorrection
+    ? `<span class="briefing-caution-tag">Correction</span>`
+    : isWeakened
+    ? `<span class="briefing-weakened-tag">Weakened Support</span>`
+    : '';
+
+  // Strict finite numeric score checks (omit completely if null/undefined/string/NaN)
+  const hasInboxScore = isValidFiniteNumber(item.inbox_score);
+  const hasRankScore = isValidFiniteNumber(item.rank_score);
+  const hasImpactScore = isValidFiniteNumber(item.project_impact_score);
 
   return `
-    <article class="panel briefing-item-card" data-inbox-id="${escapeHtml(item.inbox_item_id || '')}">
+    <article class="${cardClasses}" data-inbox-id="${escapeHtml(item.inbox_item_id || '')}">
       <div class="briefing-item-header">
         <span class="briefing-pos-badge" aria-label="Item #${item.position}">#${item.position}</span>
-        <span class="briefing-type-tag">${escapeHtml(toTitleCase(itemType))}</span>
+        ${typeBadgeHtml}
+        ${cautionTagHtml}
         ${isLegacy ? `<span class="briefing-legacy-badge" title="Captured before schema snapshotting; unrecorded fields omitted">Legacy Snapshot</span>` : ''}
-        ${
-          hasStoryLink
-            ? `<a href="#/story/${encodeURIComponent(item.story_cluster_id)}" class="briefing-title-link">${escapeHtml(title)}</a>`
-            : `<span class="text-semibold text-foreground">${escapeHtml(title)}</span>`
-        }
+        ${titleHtml}
       </div>
 
-      <p class="briefing-item-summary">${escapeHtml(summary)}</p>
+      ${summaryHtml}
 
       <div class="briefing-item-meta-row">
-        <span class="briefing-score-badge" title="Daily briefing surfacing priority">${escapeHtml(inboxScoreStr)}</span>
-        ${rankScoreStr ? `<span class="briefing-score-badge text-muted" title="Feed ranking score">${escapeHtml(rankScoreStr)}</span>` : ''}
-        ${projectImpactStr ? `<span class="briefing-impact-badge" title="Project relevance score">${escapeHtml(projectImpactStr)}</span>` : ''}
+        ${hasInboxScore ? `<span class="briefing-score-badge" title="Daily briefing surfacing priority">Priority: ${item.inbox_score.toFixed(2)}</span>` : ''}
+        ${hasRankScore ? `<span class="briefing-score-badge text-muted" title="Feed ranking score">Rank: ${item.rank_score.toFixed(2)}</span>` : ''}
+        ${hasImpactScore ? `<span class="briefing-impact-badge" title="Project relevance score">Project Impact: ${item.project_impact_score.toFixed(2)}</span>` : ''}
 
-        ${reasonCodes.map(rc => `<span class="briefing-reason-pill">${escapeHtml(rc)}</span>`).join('')}
+        ${reasonCodes.map(rc => `<span class="briefing-reason-pill" data-reason-code="${escapeHtml(String(rc))}">${escapeHtml(formatBriefingReasonCode(String(rc)))}</span>`).join('')}
 
         ${matchedProjects.map(pid => `
           <a href="#/projects/${encodeURIComponent(pid)}" class="briefing-project-pill" title="Matched Project">
@@ -192,7 +245,7 @@ export async function renderBriefingView(container, store, params = {}) {
       ? briefing.ordered_sections
       : SECTION_ORDER.filter(secKey => sections[secKey] && sections[secKey].length > 0);
 
-    const hasItems = briefing.total_items > 0 || orderedSections.length > 0;
+    const hasItems = (briefing.total_items > 0) || (orderedSections.some(secKey => sections[secKey] && sections[secKey].length > 0));
     const briefingDateStr = briefing.briefing_date || activeDate;
 
     let sectionsHtml = '';
@@ -254,6 +307,15 @@ export async function renderBriefingView(container, store, params = {}) {
           ${escapeHtml(briefing.summary_text || 'No summary text was generated for this briefing.')}
         </p>
 
+        <div class="briefing-disclosure-notice">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+          <span>This briefing is a stored snapshot generated from HERMES intelligence available at the displayed generation time. Current Story Dossiers may have changed since then.</span>
+        </div>
+
         <div class="briefing-stats-row">
           <div class="briefing-stat-pill">
             <span>Total Items:</span>
@@ -283,7 +345,7 @@ export async function renderBriefingView(container, store, params = {}) {
 
     if (err.isNetworkError) {
       store.setConnection('offline', err.message);
-      container.innerHTML = renderOfflineState(undefined, err.message);
+      container.innerHTML = renderOfflineState(undefined, err.message, () => renderBriefingView(container, store, params));
     } else if (err.status === 404) {
       // Briefing not found for date
       const notFoundHtml = `
@@ -315,9 +377,39 @@ export async function renderBriefingView(container, store, params = {}) {
       `;
       container.innerHTML = notFoundHtml;
       bindBriefingEvents(container, todayIso);
+    } else if (err.status === 422) {
+      // Invalid date format or impossible date
+      const invalidDateHtml = `
+        <div id="briefing-announcer" class="sr-only" aria-live="polite" aria-atomic="true">
+          Invalid briefing date: ${escapeHtml(activeDate)}.
+        </div>
+
+        <div class="page-header-container">
+          <div>
+            <span class="eyebrow">Daily Intelligence</span>
+            <h1>Morning Briefing</h1>
+            <p class="lead">A date-addressable engineering read: what deserved attention, why it was selected, and historical intelligence snapshots.</p>
+          </div>
+          <div class="page-header-meta">
+            ${renderDateToolbar(todayIso, todayIso)}
+          </div>
+        </div>
+
+        <div class="panel" style="padding:var(--space-8);text-align:center;margin-top:var(--space-4);border-left:3px solid var(--state-danger);">
+          <h2 style="margin-bottom:var(--space-2);">Invalid Briefing Date</h2>
+          <p class="text-muted" style="max-width:560px;margin:0 auto var(--space-4) auto;">
+            The requested date <strong>${escapeHtml(activeDate)}</strong> is not a valid calendar date (format: YYYY-MM-DD). Please select a valid date using the controls above.
+          </p>
+          <div style="display:flex;gap:var(--space-3);justify-content:center;">
+            <button class="btn btn-primary btn-sm briefing-today-btn">Go to Today</button>
+          </div>
+        </div>
+      `;
+      container.innerHTML = invalidDateHtml;
+      bindBriefingEvents(container, todayIso);
     } else {
       store.setConnection('degraded', err.message);
-      container.innerHTML = renderErrorState('Failed to Load Morning Briefing', err.message);
+      container.innerHTML = renderErrorState('Failed to Load Morning Briefing', err.message, () => renderBriefingView(container, store, params));
     }
   }
 }

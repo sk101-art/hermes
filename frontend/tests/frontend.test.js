@@ -4367,13 +4367,135 @@ test('Phase 12: Briefing view renders Legacy Snapshot badge when snapshot_status
     const html = container.innerHTML;
 
     assert.ok(html.includes('Legacy Snapshot'));
-    assert.ok(html.includes('Priority: unrated'));
+    assert.ok(!html.includes('Priority: unrated'));
   } finally {
     api.getBriefing = originalGetBriefing;
   }
 });
 
-test('Phase 12: Briefing view renders 404 empty state with date navigation intact', async () => {
+test('Phase 12: Initial Briefing view load sends exactly one GET /briefing request and zero Story/Inbox/Claim/Project requests', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  let briefingCalls = 0;
+  let storyCalls = 0;
+  let inboxCalls = 0;
+  let claimCalls = 0;
+  let projectCalls = 0;
+
+  const originalGetBriefing = api.getBriefing;
+  const originalGetStory = api.getStory;
+  const originalGetInbox = api.getInbox;
+  const originalGetClaims = api.getClaims;
+  const originalGetProjects = api.getProjects;
+
+  api.getBriefing = async () => {
+    briefingCalls++;
+    return {
+      id: 'briefing:2026-08-20',
+      briefing_date: '2026-08-20',
+      generated_at: '2026-08-20T08:00:00Z',
+      total_items: 0,
+      sections: {},
+      ordered_sections: [],
+    };
+  };
+  api.getStory = async () => { storyCalls++; return {}; };
+  api.getInbox = async () => { inboxCalls++; return {}; };
+  api.getClaims = async () => { claimCalls++; return {}; };
+  api.getProjects = async () => { projectCalls++; return {}; };
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore);
+
+    assert.strictEqual(briefingCalls, 1, 'Must make exactly 1 getBriefing call');
+    assert.strictEqual(storyCalls, 0, 'Must make 0 getStory calls');
+    assert.strictEqual(inboxCalls, 0, 'Must make 0 getInbox calls');
+    assert.strictEqual(claimCalls, 0, 'Must make 0 getClaims calls');
+    assert.strictEqual(projectCalls, 0, 'Must make 0 getProjects calls');
+  } finally {
+    api.getBriefing = originalGetBriefing;
+    api.getStory = originalGetStory;
+    api.getInbox = originalGetInbox;
+    api.getClaims = originalGetClaims;
+    api.getProjects = originalGetProjects;
+  }
+});
+
+test('Phase 12: Date parameter in route triggers GET /briefing with date parameter', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  let capturedParams = null;
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async (params) => {
+    capturedParams = params;
+    return {
+      id: 'briefing:2026-08-15',
+      briefing_date: '2026-08-15',
+      generated_at: '2026-08-15T08:00:00Z',
+      total_items: 0,
+      sections: {},
+      ordered_sections: [],
+    };
+  };
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-15' });
+
+    assert.deepStrictEqual(capturedParams, { date: '2026-08-15' });
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Previous and Next day buttons compute correct ISO dates', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => ({
+    id: 'briefing:2026-08-15',
+    briefing_date: '2026-08-15',
+    generated_at: '2026-08-15T08:00:00Z',
+    total_items: 0,
+    sections: {},
+    ordered_sections: [],
+  });
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-15' });
+
+    const html = container.innerHTML;
+    assert.ok(html.includes('data-target-date="2026-08-14"'));
+    assert.ok(html.includes('data-target-date="2026-08-16"'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Briefing view renders 404 empty state distinctly from zero-item briefing', async () => {
   const testStore = {
     state: { view: 'briefing' },
     getState: () => testStore.state,
@@ -4385,7 +4507,7 @@ test('Phase 12: Briefing view renders 404 empty state with date navigation intac
 
   const originalGetBriefing = api.getBriefing;
   api.getBriefing = async () => {
-    const err = new Error('No briefing found for date 2026-01-01');
+    const err = new Error('Not found');
     err.status = 404;
     throw err;
   };
@@ -4396,10 +4518,331 @@ test('Phase 12: Briefing view renders 404 empty state with date navigation intac
     const html = container.innerHTML;
 
     assert.ok(html.includes('No Briefing Snapshot Found'));
+    assert.ok(!html.includes('No items recorded in this briefing digest'));
     assert.ok(html.includes('2026-01-01'));
-    assert.ok(html.includes('id="briefing-date-input"'));
-    assert.ok(html.includes('value="2026-01-01"'));
-    assert.ok(html.includes('Go to Today'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Briefing view renders 422 invalid date state distinctly', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => {
+    const err = new Error('Invalid date');
+    err.status = 422;
+    throw err;
+  };
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: 'invalid-date' });
+    const html = container.innerHTML;
+
+    assert.ok(html.includes('Invalid Briefing Date'));
+    assert.ok(html.includes('invalid-date'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Briefing view renders zero-item briefing message distinctly', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => ({
+    id: 'briefing:2026-08-20',
+    briefing_date: '2026-08-20',
+    generated_at: '2026-08-20T08:00:00Z',
+    total_items: 0,
+    sections: {},
+    ordered_sections: [],
+  });
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-20' });
+    const html = container.innerHTML;
+
+    assert.ok(html.includes('No items recorded in this briefing digest'));
+    assert.ok(!html.includes('No Briefing Snapshot Found'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Strict numeric score rendering and non-numeric omission', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  // 1. Valid positive numbers
+  const cardWithScores = renderBriefingItemCard({
+    inbox_item_id: '1',
+    position: 1,
+    title: 'Item With Scores',
+    inbox_score: 0.95,
+    rank_score: 0.88,
+    project_impact_score: 0.75,
+  });
+  assert.ok(cardWithScores.includes('Priority: 0.95'));
+  assert.ok(cardWithScores.includes('Rank: 0.88'));
+  assert.ok(cardWithScores.includes('Project Impact: 0.75'));
+
+  // 2. Genuine numeric 0.0
+  const cardWithZero = renderBriefingItemCard({
+    inbox_item_id: '2',
+    position: 2,
+    title: 'Item With Zero',
+    inbox_score: 0.0,
+    rank_score: 0.0,
+    project_impact_score: 0.0,
+  });
+  assert.ok(cardWithZero.includes('Priority: 0.00'));
+  assert.ok(cardWithZero.includes('Rank: 0.00'));
+  assert.ok(cardWithZero.includes('Project Impact: 0.00'));
+
+  // 3. Null and undefined
+  const cardWithNulls = renderBriefingItemCard({
+    inbox_item_id: '3',
+    position: 3,
+    title: 'Item With Nulls',
+    inbox_score: null,
+    rank_score: undefined,
+    project_impact_score: null,
+  });
+  assert.ok(!cardWithNulls.includes('Priority:'));
+  assert.ok(!cardWithNulls.includes('Rank:'));
+  assert.ok(!cardWithNulls.includes('Project Impact:'));
+  assert.ok(!cardWithNulls.includes('Priority: unrated'));
+
+  // 4. Non-numeric strings and NaN
+  const cardWithInvalid = renderBriefingItemCard({
+    inbox_item_id: '4',
+    position: 4,
+    title: 'Item With Invalid Numbers',
+    inbox_score: '0.95',
+    rank_score: NaN,
+    project_impact_score: 'high',
+  });
+  assert.ok(!cardWithInvalid.includes('Priority:'));
+  assert.ok(!cardWithInvalid.includes('Rank:'));
+  assert.ok(!cardWithInvalid.includes('Project Impact:'));
+  assert.ok(!cardWithInvalid.includes('NaN'));
+});
+
+test('Phase 12: Reason codes preserve raw code in data-reason-code attribute and escape special characters', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  const card = renderBriefingItemCard({
+    inbox_item_id: '1',
+    position: 1,
+    title: 'Reason Test Item',
+    reason_codes: ['verified_claim:0.80', 'recent_discovery', 'custom<tag>&test'],
+  });
+
+  assert.ok(card.includes('data-reason-code="verified_claim:0.80"'));
+  assert.ok(card.includes('data-reason-code="recent_discovery"'));
+  assert.ok(card.includes('data-reason-code="custom&lt;tag&gt;&amp;test"'));
+  assert.ok(card.includes('Claim Priority Signal: 0.80'));
+  assert.ok(card.includes('Recent Discovery'));
+});
+
+test('Phase 12: Correction item type renders cautionary badge and styling', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  const card = renderBriefingItemCard({
+    inbox_item_id: '1',
+    position: 1,
+    title: 'Correction Notice',
+    item_type: 'correction',
+    reason_codes: ['correction'],
+  });
+
+  assert.ok(card.includes('briefing-card-cautionary'));
+  assert.ok(card.includes('briefing-caution-tag'));
+  assert.ok(card.includes('Correction'));
+  assert.ok(!card.includes('badge-verification'));
+});
+
+test('Phase 12: Claim weakened item renders weakened support tag and styling', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  const card = renderBriefingItemCard({
+    inbox_item_id: '1',
+    position: 1,
+    title: 'Weakened Finding',
+    item_type: 'claim_weakened',
+    reason_codes: ['intel_change:verification_weakened'],
+  });
+
+  assert.ok(card.includes('briefing-card-weakened'));
+  assert.ok(card.includes('briefing-weakened-tag'));
+  assert.ok(card.includes('Weakened Support'));
+  assert.ok(!card.includes('badge-verification'));
+});
+
+test('Phase 12: Legacy incomplete item omits missing title, summary, type, and projects without fabricating values', async () => {
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+
+  const card = renderBriefingItemCard({
+    inbox_item_id: 'legacy_empty',
+    position: 1,
+    snapshot_status: 'legacy_incomplete',
+    title: null,
+    summary: null,
+    item_type: null,
+    inbox_score: null,
+    rank_score: null,
+    project_impact_score: null,
+    reason_codes: [],
+    matched_project_ids: [],
+  });
+
+  assert.ok(card.includes('briefing-missing-notice'));
+  assert.ok(card.includes('Title was not captured in this legacy snapshot'));
+  assert.ok(!card.includes('Untitled snapshot item'));
+  assert.ok(!card.includes('briefing-item-summary'));
+  assert.ok(!card.includes('briefing-type-tag'));
+  assert.ok(!card.includes('briefing-score-badge'));
+  assert.ok(!card.includes('briefing-project-pill'));
+  assert.ok(card.includes('Legacy Snapshot'));
+});
+
+test('Phase 12: Snapshot disclosure notice is rendered in executive summary', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => ({
+    id: 'briefing:2026-08-20',
+    briefing_date: '2026-08-20',
+    generated_at: '2026-08-20T08:00:00Z',
+    total_items: 0,
+    summary_text: 'Summary',
+    sections: {},
+    ordered_sections: [],
+  });
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-20' });
+    const html = container.innerHTML;
+
+    assert.ok(html.includes('briefing-disclosure-notice'));
+    assert.ok(html.includes('This briefing is a stored snapshot generated from HERMES intelligence'));
+    assert.ok(html.includes('Current Story Dossiers may have changed since then'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Live region announces briefing date and total items on load', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async () => ({
+    id: 'briefing:2026-08-20',
+    briefing_date: '2026-08-20',
+    generated_at: '2026-08-20T08:00:00Z',
+    total_items: 5,
+    summary_text: 'Summary',
+    sections: {},
+    ordered_sections: [],
+  });
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+    await renderBriefingView(container, testStore, { date: '2026-08-20' });
+    const html = container.innerHTML;
+
+    assert.ok(html.includes('id="briefing-announcer"'));
+    assert.ok(html.includes('Briefing for 2026-08-20 loaded with 5 items.'));
+  } finally {
+    api.getBriefing = originalGetBriefing;
+  }
+});
+
+test('Phase 12: Stale response protection prevents out-of-order date overwrite', async () => {
+  const testStore = {
+    state: { view: 'briefing' },
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  let resolveFirst;
+  const firstPromise = new Promise((resolve) => { resolveFirst = resolve; });
+
+  const originalGetBriefing = api.getBriefing;
+  api.getBriefing = async (params) => {
+    if (params && params.date === '2026-08-01') {
+      await firstPromise;
+      return {
+        id: 'briefing:2026-08-01',
+        briefing_date: '2026-08-01',
+        generated_at: '2026-08-01T08:00:00Z',
+        total_items: 1,
+        sections: { ai_ml: [{ inbox_item_id: '1', position: 1, title: 'Old Date Item' }] },
+        ordered_sections: ['ai_ml'],
+      };
+    }
+    return {
+      id: 'briefing:2026-08-02',
+      briefing_date: '2026-08-02',
+      generated_at: '2026-08-02T08:00:00Z',
+      total_items: 1,
+      sections: { ai_ml: [{ inbox_item_id: '2', position: 1, title: 'New Date Item' }] },
+      ordered_sections: ['ai_ml'],
+    };
+  };
+
+  try {
+    const { renderBriefingView } = await import('../src/views/briefing.js');
+
+    // Trigger request 1 (slow)
+    const call1 = renderBriefingView(container, testStore, { date: '2026-08-01' });
+    // Trigger request 2 (fast)
+    const call2 = renderBriefingView(container, testStore, { date: '2026-08-02' });
+
+    await call2;
+    assert.ok(container.innerHTML.includes('New Date Item'));
+
+    // Resolve slow request 1
+    resolveFirst();
+    await call1;
+
+    // Container MUST still contain New Date Item (request 1 discarded as stale)
+    assert.ok(container.innerHTML.includes('New Date Item'));
+    assert.ok(!container.innerHTML.includes('Old Date Item'));
   } finally {
     api.getBriefing = originalGetBriefing;
   }

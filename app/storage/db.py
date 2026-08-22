@@ -2266,7 +2266,7 @@ class Database:
                         it.rank_score,
                         it.project_impact_score,
                         json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
-                        getattr(it, "snapshot_version", "v1") or "v1",
+                        getattr(it, "snapshot_version", None),
                     ),
                 )
             self.conn.commit()
@@ -2308,7 +2308,7 @@ class Database:
                         it.rank_score,
                         it.project_impact_score,
                         json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
-                        getattr(it, "snapshot_version", "v1") or "v1",
+                        getattr(it, "snapshot_version", None),
                     ),
                 )
             self.conn.commit()
