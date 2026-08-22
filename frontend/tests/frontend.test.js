@@ -3676,3 +3676,411 @@ test('Phase 10 remediation: SearchResult and StoryCard omit unavailable score an
   assert.ok(!storyNullHtml.includes('badge-ranking'));
   assert.ok(!storyNullHtml.includes('badge-project-match'));
 });
+
+// ============================================================================
+// Phase 11: Project Intelligence & Engineering Context Tests
+// ============================================================================
+
+test('Phase 11: Router correctly parses parametric projects/:id and project/:id routes', async () => {
+  const { Router } = await import('../src/state/router.js');
+  const routerInstance = new Router();
+
+  let captured = null;
+  routerInstance.on('projects', (route) => {
+    captured = route;
+  });
+
+  // Test #/projects/project:cuda-compiler-lab
+  window.location.hash = '#/projects/project%3Acuda-compiler-lab';
+  routerInstance._handleHashChange();
+  assert.strictEqual(captured.path, 'projects');
+  assert.strictEqual(captured.params.projectId, 'project:cuda-compiler-lab');
+
+  // Test #/project/project:local-rag-agent
+  window.location.hash = '#/project/project%3Alocal-rag-agent';
+  routerInstance._handleHashChange();
+  assert.strictEqual(captured.path, 'projects');
+  assert.strictEqual(captured.params.projectId, 'project:local-rag-agent');
+
+  // Test #/projects (Index)
+  window.location.hash = '#/projects';
+  routerInstance._handleHashChange();
+  assert.strictEqual(captured.path, 'projects');
+  assert.strictEqual(captured.params.projectId, undefined);
+});
+
+test('Phase 11: Project Index View renders single GET /projects request, reads project_id, and includes audited privacy notice', async () => {
+  const { renderProjectsView } = await import('../src/views/projects.js');
+  const { api } = await import('../src/api/endpoints.js');
+
+  const testStore = {
+    state: {},
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  let getProjectsCalls = 0;
+  let storyCalls = 0;
+  let matchesCalls = 0;
+
+  const originalGetProjects = api.getProjects;
+  const originalGetStory = api.getStory;
+
+  api.getProjects = async () => {
+    getProjectsCalls++;
+    return {
+      count: 2,
+      projects: [
+        {
+          project_id: 'project:cuda-compiler-lab',
+          name: 'CUDA Compiler Lab',
+          description: 'LLVM/MLIR GPU compiler exploration',
+          is_active: true,
+          languages: ['c++', 'cuda'],
+          frameworks: ['llvm', 'mlir'],
+          libraries: ['cutlass'],
+          databases: [],
+          infrastructure: [],
+          models: [],
+          tools: ['cmake', 'ninja'],
+          topics: ['compilers', 'gpu-acceleration'],
+          keywords: ['ptx', 'nvptx'],
+          matches_count: 14,
+          last_indexed_at: '2026-08-20T08:59:00Z',
+        },
+        {
+          project_id: 'project:local-rag-agent',
+          name: 'Local RAG Agent',
+          description: 'On-device retrieval agent',
+          is_active: false,
+          languages: ['python'],
+          frameworks: ['langchain'],
+          libraries: ['faiss'],
+          databases: ['sqlite'],
+          infrastructure: [],
+          models: ['llama3'],
+          tools: [],
+          topics: ['rag', 'vector-search'],
+          keywords: ['embeddings'],
+          matches_count: 8,
+          last_indexed_at: null,
+        },
+      ],
+    };
+  };
+
+  api.getStory = async () => {
+    storyCalls++;
+  };
+
+  try {
+    await renderProjectsView(container, testStore);
+
+    // Bounded request assertion: exactly 1 GET /projects call, 0 story calls, 0 matches calls
+    assert.strictEqual(getProjectsCalls, 1);
+    assert.strictEqual(storyCalls, 0);
+    assert.strictEqual(matchesCalls, 0);
+
+    const html = container.innerHTML;
+
+    // Audited privacy copy
+    assert.ok(html.includes('Local Context Privacy'));
+    assert.ok(html.includes('HERMES parses local workspace manifests'));
+    assert.ok(html.includes('Sensitive credentials'));
+    assert.ok(html.includes('binaries are skipped'));
+
+    // Project Cards rendered with canonical project_id
+    assert.ok(html.includes('data-project-id="project:cuda-compiler-lab"'));
+    assert.ok(html.includes('CUDA Compiler Lab'));
+    assert.ok(html.includes('14 matched items'));
+    assert.ok(html.includes('Active'));
+    assert.ok(html.includes('href="#/projects/project%3Acuda-compiler-lab"'));
+
+    assert.ok(html.includes('data-project-id="project:local-rag-agent"'));
+    assert.ok(html.includes('Local RAG Agent'));
+    assert.ok(html.includes('8 matched items'));
+    assert.ok(html.includes('Inactive'));
+    assert.ok(html.includes('Never indexed'));
+
+  } finally {
+    api.getProjects = originalGetProjects;
+    api.getStory = originalGetStory;
+  }
+});
+
+test('Phase 11: Project Detail View renders aggregated intelligence in single request with distinct tech categories, concerns, and cross-nav', async () => {
+  const { renderProjectsView } = await import('../src/views/projects.js');
+  const { api } = await import('../src/api/endpoints.js');
+
+  const testStore = {
+    state: {},
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  let getIntelCalls = 0;
+  let storyCalls = 0;
+
+  const originalGetIntel = api.getProjectIntelligence;
+  const originalGetStory = api.getStory;
+
+  api.getProjectIntelligence = async (projectId) => {
+    getIntelCalls++;
+    assert.strictEqual(projectId, 'project:cuda-compiler-lab');
+    return {
+      project_id: 'project:cuda-compiler-lab',
+      name: 'CUDA Compiler Lab',
+      description: 'LLVM/MLIR GPU compiler pipeline',
+      is_active: true,
+      last_indexed_at: '2026-08-20T08:59:00Z',
+      intelligence_available: true,
+      technology_profile: {
+        languages: ['C++', 'CUDA'],
+        frameworks: ['LLVM', 'MLIR'],
+        libraries: ['CUTLASS'],
+        databases: [],
+        infrastructure: ['NVIDIA Driver'],
+        models: [],
+        tools: ['CMake', 'Ninja'],
+        topics: ['Compilers', 'GPU'],
+        keywords: ['PTX', 'NVPTX'],
+      },
+      top_matches: [
+        {
+          cluster_id: 'cl_cuda_1',
+          title: 'LLVM 19 NVPTX Codegen Improvements',
+          match_type: 'technology_overlap',
+          relevance_score: 0.8437,
+          impact_score: 0.7935,
+          recommendation: 'upgrade_candidate',
+          reason_codes: ['framework_match', 'technology_overlap'],
+          story_available: true,
+        },
+        {
+          cluster_id: 'cl_missing_story_2',
+          title: 'CUTLASS 3.5 Kernel Optimization',
+          match_type: 'direct_dependency',
+          relevance_score: null,
+          impact_score: null,
+          recommendation: 'consider',
+          reason_codes: ['direct_dependency_match'],
+          story_available: false,
+        },
+        {
+          cluster_id: 'cl_zero_score_3',
+          title: 'CMake 3.30 Ninja Multi-Config Update',
+          match_type: 'compatible_tool',
+          relevance_score: 0.0,
+          impact_score: 0.0,
+          recommendation: 'watch',
+          reason_codes: ['tool_match'],
+          story_available: true,
+        },
+      ],
+      risks: [
+        {
+          cluster_id: 'cl_cuda_1',
+          title: 'LLVM 19 NVPTX Codegen Improvements',
+          concern_type: 'high_project_impact',
+          match_type: 'technology_overlap',
+          impact_score: 0.7935,
+          relevance_score: 0.8437,
+          risk_status: 'insufficient_data',
+          risk_level: null,
+          risk_score: 0.35,
+          recommendation: 'upgrade_candidate',
+          reason_codes: ['framework_match'],
+          story_available: true,
+        },
+        {
+          cluster_id: 'cl_vuln_4',
+          title: 'Critical Buffer Overflow in NVPTX Driver Parser',
+          concern_type: 'vulnerability',
+          match_type: 'vulnerability',
+          impact_score: 0.92,
+          relevance_score: 0.88,
+          risk_status: 'assessed',
+          risk_level: 'critical',
+          risk_score: 0.95,
+          recommendation: 'potential_risk',
+          reason_codes: ['security_vulnerability'],
+          story_available: true,
+        },
+        {
+          cluster_id: 'cl_assessed_5',
+          title: 'Legacy Driver Deprecation Risk',
+          concern_type: 'assessed_risk',
+          match_type: 'general_related',
+          impact_score: 0.85,
+          relevance_score: 0.75,
+          risk_status: 'assessed',
+          risk_level: 'critical',
+          risk_score: 0.88,
+          recommendation: 'potential_risk',
+          reason_codes: ['technology_overlap'],
+          story_available: true,
+        },
+      ],
+      recent_changes: [
+        {
+          id: 'ch_1',
+          cluster_id: 'cl_cuda_1',
+          change_type: 'state_transition',
+          importance_level: 'high',
+          description: 'LLVM 19 transitioned to release state with updated NVPTX backend',
+          old_value: 'release_candidate',
+          new_value: 'active_release',
+          origin: 'system',
+          detected_at: '2026-08-21T10:00:00Z',
+        },
+      ],
+    };
+  };
+
+  api.getStory = async () => {
+    storyCalls++;
+  };
+
+  try {
+    await renderProjectsView(container, testStore, { projectId: 'project:cuda-compiler-lab' });
+
+    // Single bounded request
+    assert.strictEqual(getIntelCalls, 1);
+    assert.strictEqual(storyCalls, 0);
+
+    const html = container.innerHTML;
+
+    // Breadcrumb and header
+    assert.ok(html.includes('← Back to Projects'));
+    assert.ok(html.includes('CUDA Compiler Lab'));
+    assert.ok(html.includes('Active Profile'));
+
+    // Cross-surface navigation links
+    assert.ok(html.includes('href="#/today?project=project%3Acuda-compiler-lab"'));
+    assert.ok(html.includes('href="#/search?project=project%3Acuda-compiler-lab"'));
+    assert.ok(html.includes('href="#/changes?project=project%3Acuda-compiler-lab"'));
+
+    // Structured Technology Profile (distinct categories)
+    assert.ok(html.includes('Languages (2)'));
+    assert.ok(html.includes('Frameworks (2)'));
+    assert.ok(html.includes('Libraries (1)'));
+    assert.ok(html.includes('Infrastructure (1)'));
+    assert.ok(html.includes('Tools (2)'));
+    assert.ok(html.includes('Topics (2)'));
+    assert.ok(html.includes('Keywords (2)'));
+
+    // Score labeling and rounding
+    assert.ok(html.includes('Relevance: 84%'));
+    assert.ok(html.includes('Project Impact: 79%'));
+    assert.ok(html.includes('data-reason-code="framework_match"'));
+
+    // Advisory context provenance
+    assert.ok(html.includes('Advisory Context:'));
+    assert.ok(html.includes('Upgrade Candidate — New release or major improvements available.'));
+
+    // Missing score omission (null)
+    assert.ok(!html.includes('Relevance: null%'));
+    assert.ok(!html.includes('Project Impact: null%'));
+
+    // Genuine 0.0 preservation
+    assert.ok(html.includes('Relevance: 0%'));
+    assert.ok(html.includes('Project Impact: 0%'));
+
+    // Story availability
+    assert.ok(html.includes('href="#/story/cl_cuda_1"'));
+    assert.ok(html.includes('Story unavailable'));
+    assert.ok(!html.includes('href="#/story/cl_missing_story_2"'));
+
+    // Concerns separation: High Project Impact != Assessed Risk
+    assert.ok(html.includes('High Project Impact'));
+    assert.ok(html.includes('Canonical Risk Status: <strong>insufficient_data</strong>'));
+    assert.ok(html.includes('Assessed Risk · critical'));
+    assert.ok(html.includes('Vulnerability'));
+
+    // Recent Changes
+    assert.ok(html.includes('release_candidate'));
+    assert.ok(html.includes('active_release'));
+    assert.ok(html.includes('origin-system'));
+    assert.ok(html.includes('badge-high'));
+
+  } finally {
+    api.getProjectIntelligence = originalGetIntel;
+    api.getStory = originalGetStory;
+  }
+});
+
+test('Phase 11: Project Detail View renders graceful 404 for unknown project', async () => {
+  const { renderProjectsView } = await import('../src/views/projects.js');
+  const { api } = await import('../src/api/endpoints.js');
+
+  const testStore = {
+    state: {},
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetIntel = api.getProjectIntelligence;
+  api.getProjectIntelligence = async () => {
+    const err = new Error('Project not found');
+    err.status = 404;
+    throw err;
+  };
+
+  try {
+    await renderProjectsView(container, testStore, { projectId: 'project:unknown_app' });
+    const html = container.innerHTML;
+    assert.ok(html.includes('Project Not Found'));
+    assert.ok(html.includes('project:unknown_app'));
+    assert.ok(html.includes('href="#/projects"'));
+  } finally {
+    api.getProjectIntelligence = originalGetIntel;
+  }
+});
+
+test('Phase 11: Project Detail View renders truthful empty intelligence state when intelligence_available is false', async () => {
+  const { renderProjectsView } = await import('../src/views/projects.js');
+  const { api } = await import('../src/api/endpoints.js');
+
+  const testStore = {
+    state: {},
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetIntel = api.getProjectIntelligence;
+  api.getProjectIntelligence = async () => {
+    return {
+      project_id: 'project:clean_slate',
+      name: 'Clean Slate',
+      description: 'Brand new project with no matching stories',
+      is_active: true,
+      last_indexed_at: null,
+      intelligence_available: false,
+      technology_profile: {},
+      top_matches: [],
+      risks: [],
+      recent_changes: [],
+    };
+  };
+
+  try {
+    await renderProjectsView(container, testStore, { projectId: 'project:clean_slate' });
+    const html = container.innerHTML;
+    assert.ok(html.includes('No Project Intelligence Recorded Yet'));
+    assert.ok(html.includes('No matching intelligence items, engineering concerns, or recent changes'));
+  } finally {
+    api.getProjectIntelligence = originalGetIntel;
+  }
+});

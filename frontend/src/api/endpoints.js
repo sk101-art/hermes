@@ -29,7 +29,7 @@ export const api = {
   // Projects & Context
   getProjects: () => request('/projects'),
   getProject: (projectId) => request(`/projects/${encodeURIComponent(projectId)}`),
-  getProjectMatches: (projectId) => request(`/projects/${encodeURIComponent(projectId)}/matches`),
+  getProjectIntelligence: (projectId, params = {}) => request(`/projects/${encodeURIComponent(projectId)}/intelligence`, { params }),
 
   // Saved Library (Phase 4 Contract)
   getSavedItems: (params = { limit: 50, include_current: false }) => {

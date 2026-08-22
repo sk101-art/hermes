@@ -423,20 +423,30 @@ class SaveItemRequest(BaseModel):
 class ProjectSummary(BaseModel):
     project_id: str
     name: str
+    description: Optional[str] = None
+    is_active: bool = True
     languages: List[str] = Field(default_factory=list)
     frameworks: List[str] = Field(default_factory=list)
     libraries: List[str] = Field(default_factory=list)
     databases: List[str] = Field(default_factory=list)
     infrastructure: List[str] = Field(default_factory=list)
+    models: List[str] = Field(default_factory=list)
+    tools: List[str] = Field(default_factory=list)
     topics: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
     last_indexed_at: Optional[str] = None
+    matches_count: int = 0
 
 
 class ProjectIntelligence(BaseModel):
     project_id: str
     name: str
+    description: Optional[str] = None
+    is_active: bool = True
+    last_indexed_at: Optional[str] = None
     technology_profile: Dict[str, Any] = Field(default_factory=dict)
     top_matches: List[Dict[str, Any]] = Field(default_factory=list)
     recommendations: List[Dict[str, Any]] = Field(default_factory=list)
     risks: List[Dict[str, Any]] = Field(default_factory=list)
     recent_changes: List[Dict[str, Any]] = Field(default_factory=list)
+    intelligence_available: bool

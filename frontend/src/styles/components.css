@@ -1762,3 +1762,80 @@
     text-align: center;
   }
 }
+
+/* ==========================================================================
+   Phase 11: Projects Surface Styles
+   ========================================================================== */
+
+.project-card-item {
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.project-card-item:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.project-card-item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-color: var(--accent-primary);
+}
+
+.tech-category-card {
+  transition: border-color 0.15s ease;
+}
+
+.tech-category-card:hover {
+  border-color: var(--border-default);
+}
+
+.concern-card,
+.match-card,
+.change-card {
+  transition: border-color 0.15s ease;
+}
+
+.concern-card:hover,
+.match-card:hover,
+.change-card:hover {
+  border-color: var(--border-strong);
+}
+
+.score-pill {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-xs);
+  font-weight: 500;
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-panel-subtle);
+}
+
+.score-pill.score-relevance {
+  color: var(--ink-primary);
+  background-color: var(--bg-panel-subtle);
+}
+
+.score-pill.score-impact {
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+  background-color: var(--bg-panel);
+}
+
+.chip-reason {
+  background-color: var(--bg-panel);
+  border-color: var(--border-default);
+}
+
+@media (max-width: 768px) {
+  .project-detail-header {
+    flex-direction: column;
+  }
+  .technology-categories-grid {
+    grid-template-columns: 1fr;
+  }
+  .project-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -604,6 +604,28 @@ class Database:
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
+    def get_clusters_by_ids(self, cluster_ids: List[str]) -> List[StoryCluster]:
+        if not cluster_ids:
+            return []
+        cursor = self.conn.cursor()
+        ph = ",".join(["?"] * len(cluster_ids))
+        cursor.execute(f"SELECT * FROM story_clusters WHERE id IN ({ph})", tuple(cluster_ids))
+        rows = cursor.fetchall()
+        return [
+            StoryCluster(
+                id=r["id"],
+                canonical_title=r["canonical_title"],
+                event_ids=[],
+                sources=[],
+                cluster_score=r["cluster_score"] or 0.0,
+                source_diversity_score=r["source_diversity_score"] or 0.0,
+                max_event_score=r["max_event_score"] or 0.0,
+                created_at=datetime.fromisoformat(r["created_at"]),
+                updated_at=datetime.fromisoformat(r["updated_at"]),
+            )
+            for r in rows
+        ]
+
     def get_all_clusters(self) -> List[StoryCluster]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT id FROM story_clusters ORDER BY cluster_score DESC")
@@ -1223,6 +1245,30 @@ class Database:
             for row in cursor.fetchall()
         ]
 
+    def get_technology_states_by_cluster_ids(self, cluster_ids: List[str]) -> List[TechnologyState]:
+        if not cluster_ids:
+            return []
+        cursor = self.conn.cursor()
+        ph = ",".join(["?"] * len(cluster_ids))
+        cursor.execute(f"SELECT * FROM technology_states WHERE cluster_id IN ({ph})", tuple(cluster_ids))
+        return [
+            TechnologyState(
+                cluster_id=row["cluster_id"],
+                current_status=row["current_status"],
+                latest_event_at=datetime.fromisoformat(row["latest_event_at"]) if row["latest_event_at"] else None,
+                latest_release=row["latest_release"],
+                latest_claim_revision_at=datetime.fromisoformat(row["latest_claim_revision_at"]) if row["latest_claim_revision_at"] else None,
+                active_claim_count=row["active_claim_count"] or 0,
+                supported_claim_count=row["supported_claim_count"] or 0,
+                contradicted_claim_count=row["contradicted_claim_count"] or 0,
+                superseded_claim_count=row["superseded_claim_count"] or 0,
+                risk_score=row["risk_score"] or 0.0,
+                trend=row["trend"],
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in cursor.fetchall()
+        ]
+
     # --- Session 6: Recheck Queue ---
 
     def insert_recheck_queue_item(self, item: RecheckQueueItem) -> bool:
@@ -1449,7 +1495,7 @@ class Database:
 
     def get_project_by_name(self, name: str) -> Optional[Project]:
         cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM projects WHERE name = ? OR id = ? LIMIT 1", (name, name))
+        cursor.execute("SELECT * FROM projects WHERE LOWER(name) = LOWER(?) OR LOWER(id) = LOWER(?) LIMIT 1", (name, name))
         row = cursor.fetchone()
         return self._row_to_project(row) if row else None
 
@@ -1662,8 +1708,8 @@ class Database:
                 entity_type=r["entity_type"],
                 entity_id=r["entity_id"],
                 match_type=r["match_type"],
-                relevance_score=r["relevance_score"] or 0.0,
-                impact_score=r["impact_score"] or 0.0,
+                relevance_score=r["relevance_score"] if r["relevance_score"] is not None else None,
+                impact_score=r["impact_score"] if r["impact_score"] is not None else None,
                 recommendation=r["recommendation"],
                 reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
                 created_at=datetime.fromisoformat(r["created_at"]),
@@ -1682,8 +1728,8 @@ class Database:
                 entity_type=r["entity_type"],
                 entity_id=r["entity_id"],
                 match_type=r["match_type"],
-                relevance_score=r["relevance_score"] or 0.0,
-                impact_score=r["impact_score"] or 0.0,
+                relevance_score=r["relevance_score"] if r["relevance_score"] is not None else None,
+                impact_score=r["impact_score"] if r["impact_score"] is not None else None,
                 recommendation=r["recommendation"],
                 reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
                 created_at=datetime.fromisoformat(r["created_at"]),
@@ -1691,6 +1737,27 @@ class Database:
             )
             for r in cursor.fetchall()
         ]
+
+    def get_project_match_counts(self) -> Dict[str, int]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT project_id, count(*) as cnt FROM project_matches GROUP BY project_id")
+        return {r["project_id"]: r["cnt"] for r in cursor.fetchall()}
+
+    def get_claim_counts_by_cluster_ids(self, cluster_ids: List[str]) -> Dict[str, int]:
+        if not cluster_ids:
+            return {}
+        cursor = self.conn.cursor()
+        ph = ",".join(["?"] * len(cluster_ids))
+        cursor.execute(f"SELECT cluster_id, count(*) as cnt FROM claims WHERE cluster_id IN ({ph}) GROUP BY cluster_id", tuple(cluster_ids))
+        return {r["cluster_id"]: r["cnt"] for r in cursor.fetchall()}
+
+    def get_event_counts_by_cluster_ids(self, cluster_ids: List[str]) -> Dict[str, int]:
+        if not cluster_ids:
+            return {}
+        cursor = self.conn.cursor()
+        ph = ",".join(["?"] * len(cluster_ids))
+        cursor.execute(f"SELECT cluster_id, count(*) as cnt FROM cluster_events WHERE cluster_id IN ({ph}) GROUP BY cluster_id", tuple(cluster_ids))
+        return {r["cluster_id"]: r["cnt"] for r in cursor.fetchall()}
 
     def clear_project_matches(self, project_id: Optional[str] = None) -> bool:
         if project_id:

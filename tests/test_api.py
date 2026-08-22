@@ -204,3 +204,52 @@ def test_concurrent_readers_and_writers_sqlite(client_with_db):
     t_reader.join()
 
     assert len(errors) == 0, f"Concurrency errors occurred: {errors}"
+
+
+def test_projects_endpoints(client_with_db):
+    client, db = client_with_db
+    now = datetime.now(timezone.utc)
+
+    # 1. Insert Project
+    proj = Project(
+        id="project:test_compiler",
+        name="Test Compiler",
+        path="/secret/path/compiler",
+        description="A test compiler project",
+        languages=["c++", "llvm"],
+        frameworks=["mlir"],
+        is_active=True,
+        last_indexed_at=now,
+    )
+    db.save_project(proj)
+
+    # 2. GET /projects
+    resp = client.get("/projects")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    p_found = next(p for p in data["projects"] if p["project_id"] == "project:test_compiler")
+    assert p_found["name"] == "Test Compiler"
+    assert "c++" in p_found["languages"]
+    assert "path" not in p_found
+
+    # 3. GET /projects/{id}
+    resp_detail = client.get("/projects/project:test_compiler")
+    assert resp_detail.status_code == 200
+    prof = resp_detail.json()
+    assert prof["project_id"] == "project:test_compiler"
+    assert prof["name"] == "Test Compiler"
+    assert "path" not in prof
+
+    # 4. GET /projects/{id}/intelligence
+    resp_intel = client.get("/projects/project:test_compiler/intelligence")
+    assert resp_intel.status_code == 200
+    intel = resp_intel.json()
+    assert intel["project_id"] == "project:test_compiler"
+    assert "technology_profile" in intel
+    assert "intelligence_available" in intel
+    assert "path" not in intel
+
+    # 5. Nonexistent project returns 404
+    resp_404 = client.get("/projects/project:nonexistent/intelligence")
+    assert resp_404.status_code == 404

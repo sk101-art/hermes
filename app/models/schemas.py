@@ -430,9 +430,9 @@ class ProjectMatch(BaseModel):
     entity_type: str = "cluster"  # cluster, claim, event
     entity_id: str
     match_type: str = "general_related"
-    relevance_score: float = 0.0
-    impact_score: float = 0.0
-    recommendation: str = "watch"
+    relevance_score: Optional[float] = None
+    impact_score: Optional[float] = None
+    recommendation: Optional[str] = "watch"
     reason_codes: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

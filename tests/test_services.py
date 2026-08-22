@@ -1473,3 +1473,293 @@ def test_top_developments_null_score_and_genuine_zero_preservation(tmp_path):
     r_norm = by_id["ib_norm"]
     assert r_norm.score == 0.8765
     assert r_norm.project_relevance == 0.4322
+
+
+# --- Phase 11: Project Intelligence & Engineering Context Tests ---
+
+
+def test_list_projects_excludes_path_and_inactive(temp_db):
+    db = temp_db
+    now = datetime.now(timezone.utc)
+
+    # Insert an active project and an inactive project
+    db.save_project(Project(
+        id="project:active_app",
+        name="Active App",
+        path="/secret/local/path/active",
+        description="Active test application",
+        languages=["python", "rust"],
+        frameworks=["fastapi"],
+        is_active=True,
+        last_indexed_at=now,
+    ))
+    db.save_project(Project(
+        id="project:inactive_app",
+        name="Inactive App",
+        path="/secret/local/path/inactive",
+        description="Inactive test application",
+        languages=["c++"],
+        is_active=False,
+        last_indexed_at=now,
+    ))
+
+    projects = projects_service.list_projects(db=db)
+    # Only active projects are listed
+    proj_ids = [p.project_id for p in projects]
+    assert "project:active_app" in proj_ids
+    assert "project:inactive_app" not in proj_ids
+
+    # Path must not be in model dump or schema
+    for p in projects:
+        dump = p.model_dump()
+        assert "path" not in dump
+
+    p_active = next(p for p in projects if p.project_id == "project:active_app")
+    assert p_active.name == "Active App"
+    assert "python" in p_active.languages
+    assert "fastapi" in p_active.frameworks
+
+
+def test_get_project_profile_resolution_and_no_path(temp_db):
+    db = temp_db
+    now = datetime.now(timezone.utc)
+
+    db.save_project(Project(
+        id="project:custom_engine",
+        name="Custom Engine",
+        path="/sensitive/workspace/engine",
+        description="High-performance engine",
+        languages=["c++", "cuda"],
+        frameworks=["tensorrt"],
+        is_active=False,
+        last_indexed_at=now,
+    ))
+
+    # Resolved by canonical id
+    prof_by_id = projects_service.get_project_profile("project:custom_engine", db=db)
+    assert prof_by_id is not None
+    assert prof_by_id["project_id"] == "project:custom_engine"
+    assert prof_by_id["name"] == "Custom Engine"
+    assert prof_by_id["is_active"] is False
+    assert "path" not in prof_by_id
+
+    # Resolved by case-insensitive name
+    prof_by_name = projects_service.get_project_profile("custom engine", db=db)
+    assert prof_by_name is not None
+    assert prof_by_name["project_id"] == "project:custom_engine"
+    assert "path" not in prof_by_name
+
+
+def test_get_project_intelligence_aggregated_contract_and_batch_resolution(temp_db):
+    db = temp_db
+    now = datetime.now(timezone.utc)
+
+    # Create project
+    proj_id = "project:rag_pipeline"
+    db.save_project(Project(
+        id=proj_id,
+        name="RAG Pipeline",
+        path="/local/rag",
+        description="Local RAG pipeline",
+        languages=["python"],
+        frameworks=["langchain"],
+        is_active=True,
+        last_indexed_at=now,
+    ))
+
+    # Existing cluster
+    cl_avail = StoryCluster(
+        id="cl_avail_1",
+        canonical_title="FAISS Vector Index Optimization",
+        event_ids=["ev_1"],
+        sources=["github"],
+        cluster_score=0.85,
+        created_at=now,
+        updated_at=now,
+    )
+    db.save_cluster(cl_avail)
+
+    # 1. Match with available cluster and non-null scores
+    db.save_project_match(ProjectMatch(
+        id="pm_1",
+        project_id=proj_id,
+        entity_id="cl_avail_1",
+        match_type="technology_overlap",
+        relevance_score=0.88765,
+        impact_score=0.76543,
+        recommendation="upgrade_candidate",
+        reason_codes=["framework_match", "technology_overlap"],
+    ))
+
+    # 2. Match with unavailable cluster and null scores
+    db.save_project_match(ProjectMatch(
+        id="pm_2",
+        project_id=proj_id,
+        entity_id="cl_missing_cluster_99",
+        match_type="general_related",
+        relevance_score=None,
+        impact_score=None,
+        recommendation="consider",
+        reason_codes=["topic_match"],
+    ))
+
+    # 3. Match with genuine 0.0 scores
+    db.save_project_match(ProjectMatch(
+        id="pm_3",
+        project_id=proj_id,
+        entity_id="cl_avail_1",
+        match_type="compatible_tool",
+        relevance_score=0.0,
+        impact_score=0.0,
+        recommendation="watch",
+        reason_codes=["tool_match"],
+    ))
+
+    intel = projects_service.get_project_intelligence(proj_id, db=db)
+    assert intel is not None
+    assert intel.project_id == proj_id
+    assert intel.intelligence_available is True
+
+    matches = intel.top_matches
+    assert len(matches) == 3
+
+    # Match 1: story_available=True, rounded scores
+    m1 = next(m for m in matches if m["cluster_id"] == "cl_avail_1" and m["match_type"] == "technology_overlap")
+    assert m1["story_available"] is True
+    assert m1["title"] == "FAISS Vector Index Optimization"
+    assert m1["relevance_score"] == 0.8877
+    assert m1["impact_score"] == 0.7654
+    assert m1["recommendation"] == "upgrade_candidate"
+    assert "framework_match" in m1["reason_codes"]
+
+    # Match 2: story_available=False, None scores preserved
+    m2 = next(m for m in matches if m["cluster_id"] == "cl_missing_cluster_99")
+    assert m2["story_available"] is False
+    assert m2["title"] == "cl_missing_cluster_99"
+    assert m2["relevance_score"] is None
+    assert m2["impact_score"] is None
+
+    # Match 3: genuine 0.0 preserved
+    m3 = next(m for m in matches if m["cluster_id"] == "cl_avail_1" and m["match_type"] == "compatible_tool")
+    assert m3["story_available"] is True
+    assert m3["relevance_score"] == 0.0
+    assert m3["impact_score"] == 0.0
+    assert isinstance(m3["relevance_score"], float)
+    assert isinstance(m3["impact_score"], float)
+
+
+def test_empty_project_intelligence_computed_false(temp_db):
+    db = temp_db
+    now = datetime.now(timezone.utc)
+
+    proj_id = "project:empty_app"
+    db.save_project(Project(
+        id=proj_id,
+        name="Empty App",
+        path="/local/empty",
+        description="Empty app profile",
+        is_active=True,
+        last_indexed_at=now,
+    ))
+
+    intel = projects_service.get_project_intelligence(proj_id, db=db)
+    assert intel is not None
+    assert intel.project_id == proj_id
+    assert intel.intelligence_available is False
+    assert len(intel.top_matches) == 0
+    assert len(intel.risks) == 0
+    assert len(intel.recommendations) == 0
+    assert len(intel.recent_changes) == 0
+
+
+def test_get_project_risks_canonical_risk_and_separation(temp_db):
+    db = temp_db
+    now = datetime.now(timezone.utc)
+
+    proj_id = "project:security_test"
+    db.save_project(Project(
+        id=proj_id,
+        name="Security Test",
+        path="/local/sec",
+        is_active=True,
+    ))
+
+    # Cluster 1: Vulnerability match type, no tech state -> not_assessed
+    cl1 = StoryCluster(id="cl_sec_1", canonical_title="OpenSSL Vulnerability", event_ids=[], sources=[], cluster_score=0.8, created_at=now, updated_at=now)
+    db.save_cluster(cl1)
+    db.save_project_match(ProjectMatch(
+        id="pm_sec_1",
+        project_id=proj_id,
+        entity_id="cl_sec_1",
+        match_type="vulnerability",
+        relevance_score=0.9,
+        impact_score=0.8,
+        reason_codes=["security_vulnerability"],
+    ))
+
+    # Cluster 2: High impact score (>= 0.70) with tech state but no claims/events -> insufficient_data, high_project_impact concern
+    cl2 = StoryCluster(id="cl_sec_2", canonical_title="CUDA 13 High Impact Release", event_ids=[], sources=[], cluster_score=0.75, created_at=now, updated_at=now)
+    db.save_cluster(cl2)
+    db.save_technology_state(TechnologyState(
+        cluster_id="cl_sec_2",
+        current_status="evolving",
+        risk_score=0.65,
+        updated_at=now,
+    ))
+    db.save_project_match(ProjectMatch(
+        id="pm_sec_2",
+        project_id=proj_id,
+        entity_id="cl_sec_2",
+        match_type="technology_overlap",
+        relevance_score=0.8,
+        impact_score=0.75,
+        reason_codes=["technology_overlap"],
+    ))
+
+    # Cluster 3: Technology state with supporting event -> assessed, assessed_risk concern
+    ev3 = Event(id="ev_sec_3", source="nvd", source_type="security_advisory", title="Crit Vulnerability Event", url="http://nvd.nist.gov/3", text_content="Advisory details", created_at=now)
+    db.save_event(ev3)
+    cl3 = StoryCluster(id="cl_sec_3", canonical_title="Critical Kernel Vulnerability", event_ids=["ev_sec_3"], sources=["nvd"], cluster_score=0.9, created_at=now, updated_at=now)
+    db.save_cluster(cl3)
+    db.add_event_to_cluster("cl_sec_3", "ev_sec_3")
+    db.save_technology_state(TechnologyState(
+        cluster_id="cl_sec_3",
+        current_status="declining",
+        risk_score=0.75,
+        updated_at=now,
+    ))
+    db.save_project_match(ProjectMatch(
+        id="pm_sec_3",
+        project_id=proj_id,
+        entity_id="cl_sec_3",
+        match_type="general_related",
+        relevance_score=0.7,
+        impact_score=0.4,
+        reason_codes=["topic_match"],
+    ))
+
+    risks = projects_service.get_project_risks(proj_id, db=db)
+    assert len(risks) == 3
+
+    by_cid = {r["cluster_id"]: r for r in risks}
+
+    # Cluster 1: Concern type vulnerability, canonical risk not_assessed
+    r1 = by_cid["cl_sec_1"]
+    assert r1["concern_type"] == "vulnerability"
+    assert r1["risk_status"] == "not_assessed"
+    assert r1["risk_level"] is None
+    assert r1["risk_score"] is None
+
+    # Cluster 2: High project impact (>= 0.70) does NOT become assessed risk; stays insufficient_data
+    r2 = by_cid["cl_sec_2"]
+    assert r2["concern_type"] == "high_project_impact"
+    assert r2["risk_status"] == "insufficient_data"
+    assert r2["risk_level"] is None
+    assert r2["risk_score"] == 0.65  # Raw score preserved under insufficient_data
+
+    # Cluster 3: Assessed canonical risk
+    r3 = by_cid["cl_sec_3"]
+    assert r3["concern_type"] == "assessed_risk"
+    assert r3["risk_status"] == "assessed"
+    assert r3["risk_level"] == "critical"
+    assert r3["risk_score"] == 0.75

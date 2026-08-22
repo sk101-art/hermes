@@ -77,11 +77,14 @@ export class Router {
         }
       }
 
-      // Check parametric routes e.g. story/cluster:123
+      // Check parametric routes e.g. story/cluster:123, projects/project:cuda-compiler-lab
       const segments = pathPart.split('/');
       if (segments.length >= 2 && segments[0] === 'story') {
         path = 'story';
         params.storyId = segments.slice(1).join('/');
+      } else if (segments.length >= 2 && (segments[0] === 'projects' || segments[0] === 'project')) {
+        path = 'projects';
+        params.projectId = decodeURIComponent(segments.slice(1).join('/'));
       } else {
         path = segments[0] || 'today';
       }
