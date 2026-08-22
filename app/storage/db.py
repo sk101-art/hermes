@@ -1219,7 +1219,7 @@ class Database:
             supported_claim_count=row["supported_claim_count"] or 0,
             contradicted_claim_count=row["contradicted_claim_count"] or 0,
             superseded_claim_count=row["superseded_claim_count"] or 0,
-            risk_score=row["risk_score"] or 0.0,
+            risk_score=row["risk_score"] if row["risk_score"] is not None else None,
             trend=row["trend"],
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -1238,7 +1238,7 @@ class Database:
                 supported_claim_count=row["supported_claim_count"] or 0,
                 contradicted_claim_count=row["contradicted_claim_count"] or 0,
                 superseded_claim_count=row["superseded_claim_count"] or 0,
-                risk_score=row["risk_score"] or 0.0,
+                risk_score=row["risk_score"] if row["risk_score"] is not None else None,
                 trend=row["trend"],
                 updated_at=datetime.fromisoformat(row["updated_at"]),
             )
@@ -1262,7 +1262,7 @@ class Database:
                 supported_claim_count=row["supported_claim_count"] or 0,
                 contradicted_claim_count=row["contradicted_claim_count"] or 0,
                 superseded_claim_count=row["superseded_claim_count"] or 0,
-                risk_score=row["risk_score"] or 0.0,
+                risk_score=row["risk_score"] if row["risk_score"] is not None else None,
                 trend=row["trend"],
                 updated_at=datetime.fromisoformat(row["updated_at"]),
             )

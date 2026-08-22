@@ -333,7 +333,7 @@ class TechnologyState(BaseModel):
     supported_claim_count: int = 0
     contradicted_claim_count: int = 0
     superseded_claim_count: int = 0
-    risk_score: float = 0.0
+    risk_score: Optional[float] = None
     trend: str = "stable"
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -432,7 +432,7 @@ class ProjectMatch(BaseModel):
     match_type: str = "general_related"
     relevance_score: Optional[float] = None
     impact_score: Optional[float] = None
-    recommendation: Optional[str] = "watch"
+    recommendation: Optional[str] = None  # Genuine stored category or None (no fabricated default)
     reason_codes: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -73,7 +73,8 @@ function formatAdvisory(rec) {
     not_recommended_yet: 'Not Recommended Yet — Early stage or unverified stability.',
   };
   if (map[clean]) return map[clean];
-  return `${clean.charAt(0).toUpperCase() + clean.slice(1)} — Advisory context based on match heuristics.`;
+  const humanized = clean.replace(/_/g, ' ');
+  return `${humanized.charAt(0).toUpperCase() + humanized.slice(1)}`;
 }
 
 /**
@@ -109,7 +110,7 @@ async function renderProjectIndexView(container, store) {
         <div>
           <span class="eyebrow">Context Intelligence</span>
           <h1>My Projects</h1>
-          <p class="lead">HERMES derives structured engineering technology profiles from local repository manifests and documentation.</p>
+          <p class="lead">HERMES processes local repository source code, configuration, manifests, and documentation to build technology profiles and relevant engineering context.</p>
         </div>
         <div class="page-header-meta">
           <strong>${projects.length}</strong>
@@ -119,7 +120,7 @@ async function renderProjectIndexView(container, store) {
 
       <div class="privacy-notice" role="note" aria-label="Privacy disclosure" style="margin-bottom:var(--space-5);padding:var(--space-3) var(--space-4);background:var(--bg-panel-subtle);border:1px solid var(--border-subtle);border-radius:var(--radius-md);">
         <p class="text-xs text-muted" style="margin:0;line-height:1.5;">
-          <strong>Local Context Privacy:</strong> HERMES parses local workspace manifests, dependencies, and documentation files to build structured technology profiles stored in your local database. Sensitive credentials (<code>.env</code>, keys, secrets) and binaries are skipped.
+          <strong>Local Workspace Processing:</strong> HERMES processes supported local source files, configurations, manifests, and documentation, storing extracted text, relative paths, content hashes, derived technology profiles, and local embeddings in your local SQLite database. Sensitive filename patterns (such as <code>.env*</code> and keys) and detected binaries are skipped.
         </p>
       </div>
     `;

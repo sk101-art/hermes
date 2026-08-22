@@ -3786,11 +3786,17 @@ test('Phase 11: Project Index View renders single GET /projects request, reads p
 
     const html = container.innerHTML;
 
-    // Audited privacy copy
-    assert.ok(html.includes('Local Context Privacy'));
-    assert.ok(html.includes('HERMES parses local workspace manifests'));
-    assert.ok(html.includes('Sensitive credentials'));
-    assert.ok(html.includes('binaries are skipped'));
+    // Audited privacy copy reflecting local text/embedding persistence
+    assert.ok(html.includes('Local Workspace Processing'));
+    assert.ok(html.includes('supported local source files, configurations, manifests, and documentation'));
+    assert.ok(html.includes('extracted text, relative paths, content hashes, derived technology profiles, and local embeddings'));
+    assert.ok(html.includes('Sensitive filename patterns'));
+    assert.ok(html.includes('detected binaries are skipped'));
+
+    // Anti-regression assertions: must not claim metadata-only or manifests-only
+    assert.ok(!html.includes('metadata only'));
+    assert.ok(!html.includes('manifests and documentation only'));
+    assert.ok(!html.includes('manifests only'));
 
     // Project Cards rendered with canonical project_id
     assert.ok(html.includes('data-project-id="project:cuda-compiler-lab"'));
@@ -4080,6 +4086,87 @@ test('Phase 11: Project Detail View renders truthful empty intelligence state wh
     const html = container.innerHTML;
     assert.ok(html.includes('No Project Intelligence Recorded Yet'));
     assert.ok(html.includes('No matching intelligence items, engineering concerns, or recent changes'));
+  } finally {
+    api.getProjectIntelligence = originalGetIntel;
+  }
+});
+
+test('Phase 11: Missing advisory recommendation produces no Advisory Context in DOM, genuine tokens humanized, unknown degraded neutrally', async () => {
+  const { renderProjectsView } = await import('../src/views/projects.js');
+  const { api } = await import('../src/api/endpoints.js');
+
+  const testStore = {
+    state: {},
+    getState: () => testStore.state,
+    setState: (s) => Object.assign(testStore.state, s),
+    setConnection: () => {},
+    setViewData: () => {},
+  };
+  const container = createMockContainer();
+
+  const originalGetIntel = api.getProjectIntelligence;
+  api.getProjectIntelligence = async () => {
+    return {
+      project_id: 'project:rec_test',
+      name: 'Rec Test',
+      description: 'Advisory tests',
+      is_active: true,
+      last_indexed_at: '2026-08-21T00:00:00Z',
+      intelligence_available: true,
+      technology_profile: {},
+      top_matches: [
+        {
+          cluster_id: 'cl_null_rec',
+          title: 'Null Recommendation Item',
+          match_type: 'technology_overlap',
+          relevance_score: 0.8,
+          impact_score: 0.7,
+          recommendation: null,
+          reason_codes: ['tech_overlap'],
+          story_available: true,
+        },
+        {
+          cluster_id: 'cl_watch_rec',
+          title: 'Watch Recommendation Item',
+          match_type: 'technology_overlap',
+          relevance_score: 0.8,
+          impact_score: 0.7,
+          recommendation: 'watch',
+          reason_codes: ['tech_overlap'],
+          story_available: true,
+        },
+        {
+          cluster_id: 'cl_unknown_rec',
+          title: 'Unknown Custom Recommendation Item',
+          match_type: 'compatible_tool',
+          relevance_score: 0.6,
+          impact_score: 0.5,
+          recommendation: 'custom_experimental_tag',
+          reason_codes: ['tool_overlap'],
+          story_available: true,
+        },
+      ],
+      risks: [],
+      recent_changes: [],
+    };
+  };
+
+  try {
+    await renderProjectsView(container, testStore, { projectId: 'project:rec_test' });
+    const html = container.innerHTML;
+
+    // cl_null_rec must NOT have an advisory box
+    const nullIdx = html.indexOf('Null Recommendation Item');
+    const watchIdx = html.indexOf('Watch Recommendation Item');
+    const nullSection = html.slice(nullIdx, watchIdx);
+    assert.ok(!nullSection.includes('Advisory Context:'));
+
+    // cl_watch_rec must be humanized cautiously
+    assert.ok(html.includes('Watch — Emerging technology in project ecosystem.'));
+
+    // cl_unknown_rec must degrade neutrally without throwing or fabricating advice
+    assert.ok(html.includes('Custom experimental tag'));
+
   } finally {
     api.getProjectIntelligence = originalGetIntel;
   }

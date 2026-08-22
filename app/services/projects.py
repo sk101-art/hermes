@@ -87,6 +87,55 @@ def get_project_profile(
     }
 
 
+# Explicit audited sets of concern reason codes (exact match or structured prefix)
+EXPLICIT_VULNERABILITY_REASON_CODES = frozenset({
+    "vulnerability",
+    "security_vulnerability",
+    "cve",
+    "security_advisory",
+})
+EXPLICIT_VULNERABILITY_PREFIXES = (
+    "vulnerability:",
+    "cve:",
+    "security_vulnerability:",
+    "security_advisory:",
+)
+
+EXPLICIT_BREAKING_CHANGE_REASON_CODES = frozenset({
+    "breaking_change",
+    "incompatible_api",
+    "major_version_bump",
+})
+EXPLICIT_BREAKING_CHANGE_PREFIXES = (
+    "breaking_change:",
+    "incompatible_api:",
+    "major_version_bump:",
+)
+
+EXPLICIT_DEPRECATION_REASON_CODES = frozenset({
+    "deprecation",
+    "deprecated_api",
+    "end_of_life",
+    "eol",
+})
+EXPLICIT_DEPRECATION_PREFIXES = (
+    "deprecation:",
+    "deprecated_api:",
+    "end_of_life:",
+    "eol:",
+)
+
+
+def _matches_explicit_codes(codes: List[str], exact_set: frozenset, prefixes: tuple) -> bool:
+    for code in codes:
+        c_clean = str(code).strip().lower()
+        if c_clean in exact_set:
+            return True
+        if any(c_clean.startswith(p) for p in prefixes):
+            return True
+    return False
+
+
 def _evaluate_canonical_risk(
     tech_state: Optional[Any],
     has_claims: bool,
@@ -96,19 +145,26 @@ def _evaluate_canonical_risk(
     Evaluates canonical risk according to Phase 2 rules:
     - No technology state -> ('not_assessed', None, None)
     - State exists but no claims & no events -> ('insufficient_data', None, tech_state.risk_score)
-    - State exists with claims or events -> ('assessed', risk_level, tech_state.risk_score)
+    - State exists with claims or events:
+        - If risk_score is None -> ('insufficient_data', None, None) (missing score cannot produce assessed RiskLevel)
+        - If risk_score is present -> ('assessed', risk_level, risk_score)
     """
-    if tech_state:
-        if not has_claims and not has_events:
-            return "insufficient_data", None, tech_state.risk_score
-        r_score = tech_state.risk_score
-        r_level = (
-            "critical" if r_score >= 0.7
-            else ("high" if r_score >= 0.4
-                  else ("medium" if r_score >= 0.2 else "low"))
-        )
-        return "assessed", r_level, r_score
-    return "not_assessed", None, None
+    if tech_state is None:
+        return "not_assessed", None, None
+
+    r_score = tech_state.risk_score
+    if not has_claims and not has_events:
+        return "insufficient_data", None, r_score
+
+    if r_score is None:
+        return "insufficient_data", None, None
+
+    r_level = (
+        "critical" if r_score >= 0.7
+        else ("high" if r_score >= 0.4
+              else ("medium" if r_score >= 0.2 else "low"))
+    )
+    return "assessed", r_level, r_score
 
 
 def get_project_recommendations(
@@ -190,13 +246,19 @@ def get_project_risks(
         has_events = events_count_map.get(c_id, 0) > 0
         risk_status, risk_level, risk_score = _evaluate_canonical_risk(ts, has_claims, has_events)
 
-        is_vuln = m.match_type == "vulnerability" or any("vulnerab" in c.lower() for c in m.reason_codes)
-        is_breaking = m.match_type == "breaking_change" or any("breaking" in c.lower() for c in m.reason_codes)
-        is_deprec = m.match_type == "deprecation" or any("deprecat" in c.lower() for c in m.reason_codes)
-        is_high_impact = m.impact_score is not None and m.impact_score >= 0.70
+        is_vuln = m.match_type == "vulnerability" or _matches_explicit_codes(
+            m.reason_codes, EXPLICIT_VULNERABILITY_REASON_CODES, EXPLICIT_VULNERABILITY_PREFIXES
+        )
+        is_breaking = m.match_type == "breaking_change" or _matches_explicit_codes(
+            m.reason_codes, EXPLICIT_BREAKING_CHANGE_REASON_CODES, EXPLICIT_BREAKING_CHANGE_PREFIXES
+        )
+        is_deprec = m.match_type == "deprecation" or _matches_explicit_codes(
+            m.reason_codes, EXPLICIT_DEPRECATION_REASON_CODES, EXPLICIT_DEPRECATION_PREFIXES
+        )
         is_assessed_risk = risk_status == "assessed" and risk_level in ("high", "critical")
+        is_high_impact = m.impact_score is not None and m.impact_score >= 0.70
 
-        if not (is_vuln or is_breaking or is_deprec or is_high_impact or is_assessed_risk):
+        if not (is_vuln or is_breaking or is_deprec or is_assessed_risk or is_high_impact):
             continue
 
         concern_type = (

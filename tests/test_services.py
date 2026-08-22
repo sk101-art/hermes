@@ -1763,3 +1763,213 @@ def test_get_project_risks_canonical_risk_and_separation(temp_db):
     assert r3["risk_status"] == "assessed"
     assert r3["risk_level"] == "critical"
     assert r3["risk_score"] == 0.75
+
+
+def test_project_match_recommendation_nullable_and_preserves_genuine_tokens(temp_db):
+    """
+    Verifies that ProjectMatch.recommendation defaults to None and preserves
+    genuine stored values without fabricating 'watch' defaults.
+    """
+    db = temp_db
+    now = datetime.now(timezone.utc)
+    proj_id = "project:test_rec_null"
+
+    db.save_project(Project(
+        id=proj_id,
+        name="Test Rec Null",
+        path="/tmp/rec_null",
+        is_active=True,
+        last_indexed_at=now,
+    ))
+
+    # Match 1: Missing recommendation (None)
+    db.save_project_match(ProjectMatch(
+        id="pm_null_rec",
+        project_id=proj_id,
+        entity_id="cl_null_rec",
+        match_type="technology_overlap",
+        relevance_score=0.85,
+        impact_score=0.80,
+        recommendation=None,
+    ))
+
+    # Match 2: Genuine 'watch'
+    db.save_project_match(ProjectMatch(
+        id="pm_watch_rec",
+        project_id=proj_id,
+        entity_id="cl_watch_rec",
+        match_type="technology_overlap",
+        relevance_score=0.75,
+        impact_score=0.70,
+        recommendation="watch",
+    ))
+
+    # Match 3: Genuine 'consider'
+    db.save_project_match(ProjectMatch(
+        id="pm_consider_rec",
+        project_id=proj_id,
+        entity_id="cl_consider_rec",
+        match_type="direct_dependency",
+        relevance_score=0.65,
+        impact_score=0.60,
+        recommendation="consider",
+    ))
+
+    # Match 4: Genuine 'upgrade_candidate'
+    db.save_project_match(ProjectMatch(
+        id="pm_upgrade_rec",
+        project_id=proj_id,
+        entity_id="cl_upgrade_rec",
+        match_type="direct_dependency",
+        relevance_score=0.55,
+        impact_score=0.50,
+        recommendation="upgrade_candidate",
+    ))
+
+    recs = projects_service.get_project_recommendations(proj_id, db=db)
+    by_id = {r["cluster_id"]: r for r in recs}
+
+    assert by_id["cl_null_rec"]["recommendation"] is None
+    assert by_id["cl_watch_rec"]["recommendation"] == "watch"
+    assert by_id["cl_consider_rec"]["recommendation"] == "consider"
+    assert by_id["cl_upgrade_rec"]["recommendation"] == "upgrade_candidate"
+
+    intel = projects_service.get_project_intelligence(proj_id, db=db)
+    top_by_id = {m["cluster_id"]: m for m in intel.top_matches}
+    assert top_by_id["cl_null_rec"]["recommendation"] is None
+    assert top_by_id["cl_watch_rec"]["recommendation"] == "watch"
+    assert top_by_id["cl_consider_rec"]["recommendation"] == "consider"
+    assert top_by_id["cl_upgrade_rec"]["recommendation"] == "upgrade_candidate"
+
+
+def test_canonical_risk_evaluation_missing_risk_score_and_genuine_zero():
+    """
+    Verifies that canonical risk evaluation never derives Low, Medium, High, or Critical
+    from a missing risk_score, and keeps genuine 0.0 distinguishable.
+    """
+    now = datetime.now(timezone.utc)
+
+    # 1. No technology state
+    status, level, score = projects_service._evaluate_canonical_risk(None, has_claims=True, has_events=True)
+    assert status == "not_assessed"
+    assert level is None
+    assert score is None
+
+    # 2. Technology state exists but risk_score is None, with claims and events
+    ts_none_score = TechnologyState(
+        cluster_id="cl_none_score",
+        state="active",
+        risk_score=None,
+        created_at=now,
+        updated_at=now,
+    )
+    status, level, score = projects_service._evaluate_canonical_risk(ts_none_score, has_claims=True, has_events=True)
+    assert status == "insufficient_data"
+    assert level is None
+    assert score is None
+
+    # 3. Technology state exists with genuine risk_score = 0.0 and claims
+    ts_zero_score = TechnologyState(
+        cluster_id="cl_zero_score",
+        state="active",
+        risk_score=0.0,
+        created_at=now,
+        updated_at=now,
+    )
+    status, level, score = projects_service._evaluate_canonical_risk(ts_zero_score, has_claims=True, has_events=False)
+    assert status == "assessed"
+    assert level == "low"
+    assert score == 0.0
+
+    # 4. Technology state exists with genuine risk_score = 0.0 but NO claims and NO events
+    status, level, score = projects_service._evaluate_canonical_risk(ts_zero_score, has_claims=False, has_events=False)
+    assert status == "insufficient_data"
+    assert level is None
+    assert score == 0.0
+
+    # 5. Technology state exists with risk_score = None and NO claims and NO events
+    status, level, score = projects_service._evaluate_canonical_risk(ts_none_score, has_claims=False, has_events=False)
+    assert status == "insufficient_data"
+    assert level is None
+    assert score is None
+
+
+def test_explicit_concern_mapping_and_neutral_rejection_of_unknown_substrings(temp_db):
+    """
+    Verifies that concern classification uses explicit canonical match types
+    and audited reason codes, rejecting loose substring matches neutrally.
+    """
+    db = temp_db
+    now = datetime.now(timezone.utc)
+    proj_id = "project:test_concern_semantics"
+
+    db.save_project(Project(
+        id=proj_id,
+        name="Test Concern Semantics",
+        path="/tmp/concern_semantics",
+        is_active=True,
+        last_indexed_at=now,
+    ))
+
+    # Cluster 1: Known vulnerability reason code
+    db.save_cluster(StoryCluster(id="cl_known_vuln", canonical_title="Known Vulnerability", created_at=now, updated_at=now))
+    db.save_project_match(ProjectMatch(
+        id="pm_kv",
+        project_id=proj_id,
+        entity_id="cl_known_vuln",
+        match_type="general_related",
+        relevance_score=0.50,
+        impact_score=0.40,
+        reason_codes=["security_vulnerability", "vulnerability:cve-2026-9999"],
+    ))
+
+    # Cluster 2: Known breaking change reason code
+    db.save_cluster(StoryCluster(id="cl_known_break", canonical_title="Known Breaking", created_at=now, updated_at=now))
+    db.save_project_match(ProjectMatch(
+        id="pm_kb",
+        project_id=proj_id,
+        entity_id="cl_known_break",
+        match_type="general_related",
+        relevance_score=0.50,
+        impact_score=0.40,
+        reason_codes=["incompatible_api", "major_version_bump:3.0"],
+    ))
+
+    # Cluster 3: Known deprecation reason code
+    db.save_cluster(StoryCluster(id="cl_known_deprec", canonical_title="Known Deprecation", created_at=now, updated_at=now))
+    db.save_project_match(ProjectMatch(
+        id="pm_kd",
+        project_id=proj_id,
+        entity_id="cl_known_deprec",
+        match_type="general_related",
+        relevance_score=0.50,
+        impact_score=0.40,
+        reason_codes=["deprecated_api", "end_of_life:python3.8"],
+    ))
+
+    # Cluster 4: Similar-looking unknown substrings (should NOT trigger concern)
+    db.save_cluster(StoryCluster(id="cl_loose_subs", canonical_title="Loose Substrings", created_at=now, updated_at=now))
+    db.save_project_match(ProjectMatch(
+        id="pm_ls",
+        project_id=proj_id,
+        entity_id="cl_loose_subs",
+        match_type="general_related",
+        relevance_score=0.50,
+        impact_score=0.40,  # Below 0.70 high impact threshold
+        reason_codes=["breaking_the_ice", "not_a_vulnerability_pattern", "deprecate_unrelated_custom"],
+    ))
+
+    risks = projects_service.get_project_risks(proj_id, db=db)
+    by_cid = {r["cluster_id"]: r for r in risks}
+
+    assert "cl_known_vuln" in by_cid
+    assert by_cid["cl_known_vuln"]["concern_type"] == "vulnerability"
+
+    assert "cl_known_break" in by_cid
+    assert by_cid["cl_known_break"]["concern_type"] == "breaking_change"
+
+    assert "cl_known_deprec" in by_cid
+    assert by_cid["cl_known_deprec"]["concern_type"] == "deprecation"
+
+    # Loose substrings must NOT trigger a concern entry
+    assert "cl_loose_subs" not in by_cid
