@@ -35,7 +35,7 @@ import {
 export function renderVerificationBadge(status, score = null) {
   const meta = getVerificationMeta(status);
   const iconSvg = meta.icon ? getIcon(meta.icon) : '';
-  const scoreStr = (score !== null && score !== undefined && typeof score === 'number' && !isNaN(score))
+  const scoreStr = isValidNormalizedScore(score)
     ? ` (${formatScorePercentage(score)})`
     : '';
 

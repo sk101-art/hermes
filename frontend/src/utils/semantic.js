@@ -13,6 +13,11 @@
  * Never defaults to positive or invented values.
  */
 
+import {
+  isValidNormalizedScore,
+  formatScorePercentage,
+} from './adapters.js';
+
 // 1. Canonical Claim Statuses (All 8 exact backend values)
 export const CLAIM_STATUS = {
   STRONGLY_SUPPORTED: 'strongly_supported',
@@ -236,8 +241,8 @@ export function getRiskMeta(status, level, score = null) {
 
   // Assessed with valid level
   const normLevel = String(level).toLowerCase().trim();
-  const scoreSuffix = (score !== null && score !== undefined && typeof score === 'number' && !isNaN(score))
-    ? ` (${Math.round(score * 100)}%)`
+  const scoreSuffix = isValidNormalizedScore(score)
+    ? ` (${formatScorePercentage(score)})`
     : '';
 
   if (normLevel === 'critical') {

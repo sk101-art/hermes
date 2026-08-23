@@ -6646,3 +6646,214 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
   assert.ok(!runtimeContainer.innerHTML.includes('Not assessed'));
   assert.ok(!runtimeContainer.innerHTML.includes('badge-rank'));
 });
+
+test('Phase 14: Search ranking explanation factors strictly distinguish genuine zeros from missing or invalid factors', () => {
+  // Case 1: Genuine zeros
+  const zeroExplain = {
+    lexical_score: 0.0,
+    semantic_score: 0.0,
+    verification_adjustment: 0.0,
+    freshness_adjustment: 0.0,
+    project_boost: 0.0,
+    final_score: 0.0,
+  };
+  const zeroHtml = renderRankingDecomposition(zeroExplain);
+  assert.ok(zeroHtml.includes('0.0000'));
+  assert.ok(!zeroHtml.includes('—'));
+
+  // Case 2: Positive floats
+  const floatExplain = {
+    lexical_score: 0.1234,
+    semantic_score: 0.5678,
+    verification_adjustment: 0.05,
+    freshness_adjustment: 0.1,
+    project_boost: 0.25,
+    final_score: 0.85,
+  };
+  const floatHtml = renderRankingDecomposition(floatExplain);
+  assert.ok(floatHtml.includes('0.1234'));
+  assert.ok(floatHtml.includes('0.5678'));
+  assert.ok(floatHtml.includes('0.0500'));
+  assert.ok(floatHtml.includes('0.1000'));
+  assert.ok(floatHtml.includes('0.2500'));
+  assert.ok(floatHtml.includes('0.8500'));
+
+  // Case 3: Missing, null, undefined, NaN, Infinity, strings, and objects
+  const invalidExplain = {
+    lexical_score: null,
+    semantic_score: undefined,
+    verification_adjustment: NaN,
+    freshness_adjustment: Infinity,
+    project_boost: -Infinity,
+    final_score: '0.95',
+  };
+  const invalidHtml = renderRankingDecomposition(invalidExplain);
+  assert.ok(!invalidHtml.includes('0.0000'));
+  assert.ok(!invalidHtml.includes('NaN'));
+  assert.ok(!invalidHtml.includes('Infinity'));
+  assert.ok(!invalidHtml.includes('0.9500'));
+  // All 6 items should have '—'
+  const dashCount = (invalidHtml.match(/—/g) || []).length;
+  assert.strictEqual(dashCount, 6);
+});
+
+test('Phase 14: Verification badge strictly applies normalized validation to verification scores', () => {
+  // Valid [0, 1] inputs: render percentage suffix
+  assert.ok(renderVerificationBadge('supported', 0.85).includes('Supported (85%)'));
+  assert.ok(renderVerificationBadge('strongly_supported', 0.0).includes('Strongly Supported (0%)'));
+  assert.ok(renderVerificationBadge('weakly_supported', 1.0).includes('Weakly Supported (100%)'));
+
+  // Missing or null inputs: status only, no percentage suffix
+  assert.ok(renderVerificationBadge('supported', null).includes('Supported'));
+  assert.ok(!renderVerificationBadge('supported', null).includes('('));
+  assert.ok(renderVerificationBadge('supported', undefined).includes('Supported'));
+  assert.ok(!renderVerificationBadge('supported', undefined).includes('('));
+
+  // Invalid, non-finite, negative, out-of-range, or non-numeric inputs: status only, no percentage suffix
+  const invalidScores = [NaN, Infinity, -Infinity, -0.01, -1.0, 1.01, 1.5, '0.85', '85%', {}, [], true, false];
+  for (const inv of invalidScores) {
+    const html = renderVerificationBadge('supported', inv);
+    assert.ok(html.includes('Supported'));
+    assert.ok(!html.includes('('), `Expected no '(' for score ${inv}`);
+    assert.ok(!html.includes('NaN%'), `Expected no NaN% for score ${inv}`);
+    assert.ok(!html.includes('Infinity%'), `Expected no Infinity% for score ${inv}`);
+    assert.ok(!html.includes('—'), `Expected no — for score ${inv}`);
+  }
+});
+
+test('Phase 14: Risk badge strictly applies normalized validation to risk scores across all statuses and levels', () => {
+  // 1. Assessed with valid [0, 1] scores
+  assert.ok(renderRiskBadge('assessed', 'critical', 0.95).includes('Critical risk (95%)'));
+  assert.ok(renderRiskBadge('assessed', 'high', 0.75).includes('High risk (75%)'));
+  assert.ok(renderRiskBadge('assessed', 'medium', 0.0).includes('Medium risk (0%)'));
+  assert.ok(renderRiskBadge('assessed', 'low', 1.0).includes('Low risk (100%)'));
+
+  // 2. Assessed with null or missing scores
+  const nullRisk = renderRiskBadge('assessed', 'high', null);
+  assert.ok(nullRisk.includes('High risk'));
+  assert.ok(!nullRisk.includes('('));
+
+  // 3. Assessed with invalid, nonfinite, negative, or >1 scores
+  const invalidRiskScores = [NaN, Infinity, -Infinity, -0.01, -1.0, 1.01, 1.5, '0.75', {}, [], true, false];
+  for (const inv of invalidRiskScores) {
+    const html = renderRiskBadge('assessed', 'high', inv);
+    assert.ok(html.includes('High risk'));
+    assert.ok(!html.includes('('), `Expected no '(' for risk score ${inv}`);
+    assert.ok(!html.includes('NaN%'));
+    assert.ok(!html.includes('Infinity%'));
+  }
+
+  // 4. Non-assessed statuses never fabricate assessed risk even if score is provided
+  assert.ok(renderRiskBadge('not_assessed', null, 0.95).includes('Risk: Not assessed'));
+  assert.ok(!renderRiskBadge('not_assessed', null, 0.95).includes('95%'));
+  assert.ok(renderRiskBadge('insufficient_data', null, 0.95).includes('Risk: Insufficient data'));
+  assert.ok(!renderRiskBadge('insufficient_data', null, 0.95).includes('95%'));
+});
+
+test('Phase 14: Saved verification shift calculation requires both historical and current scores to be valid normalized floats', async () => {
+  const { computeEvolutionDiff } = await import('../src/views/saved.js');
+
+  // Case 1: Two valid scores with >= 5% shift
+  const itemUp = {
+    verification_score: 0.60,
+    current_state: { verification_score: 0.80 },
+  };
+  const diffUp = computeEvolutionDiff(itemUp);
+  assert.ok(diffUp.diffs.some(d => d.label === 'Verification shift: +20%'));
+
+  const itemDown = {
+    verification_score: 0.80,
+    current_state: { verification_score: 0.65 },
+  };
+  const diffDown = computeEvolutionDiff(itemDown);
+  assert.ok(diffDown.diffs.some(d => d.label === 'Verification shift: -15%'));
+
+  // Case 2: Genuine equal zeros produce no fabricated change
+  const itemZero = {
+    verification_score: 0.0,
+    current_state: { verification_score: 0.0 },
+  };
+  const diffZero = computeEvolutionDiff(itemZero);
+  assert.strictEqual(diffZero.status, 'unchanged');
+  assert.strictEqual(diffZero.diffs.length, 0);
+
+  // Case 3: One or both scores invalid, out-of-range, null, or string: no score shift diff
+  const invalidCombos = [
+    { hist: null, curr: 0.80 },
+    { hist: 0.80, curr: null },
+    { hist: undefined, curr: 0.80 },
+    { hist: NaN, curr: 0.80 },
+    { hist: 0.80, curr: Infinity },
+    { hist: -0.05, curr: 0.80 },
+    { hist: 1.20, curr: 0.80 },
+    { hist: '0.60', curr: 0.80 },
+    { hist: 0.60, curr: '0.80' },
+  ];
+
+  for (const combo of invalidCombos) {
+    const item = {
+      verification_score: combo.hist,
+      current_state: { verification_score: combo.curr },
+    };
+    const diff = computeEvolutionDiff(item);
+    assert.ok(!diff.diffs.some(d => d.type === 'score'), `Expected no score diff for combo hist=${combo.hist}, curr=${combo.curr}`);
+  }
+});
+
+test('Phase 14: Story card obeys canonical claim_status precedence and maintains cross-surface parity', async () => {
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+  const { renderSearchResultCard } = await import('../src/views/search.js');
+  const { renderSavedCard } = await import('../src/views/saved.js');
+
+  // Precedence 1: top-level claim_status is used
+  const storyTopLevel = {
+    id: 'st-1',
+    title: 'Top Level Story',
+    claim_status: 'strongly_supported',
+    verification_status: 'supported', // should be ignored
+    verification: { claim_status: 'weakly_supported' }, // should be ignored
+    verification_score: 0.92,
+  };
+  const cardHtml1 = renderStoryCard(storyTopLevel);
+  assert.ok(cardHtml1.includes('Strongly Supported (92%)'));
+
+  // Precedence 2: verification_status compatibility field when claim_status is null
+  const storyCompat = {
+    id: 'st-2',
+    title: 'Compat Story',
+    claim_status: null,
+    verification_status: 'supported',
+    verification: { claim_status: 'weakly_supported' }, // should be ignored
+    verification_score: 0.85,
+  };
+  const cardHtml2 = renderStoryCard(storyCompat);
+  assert.ok(cardHtml2.includes('Supported (85%)'));
+
+  // Precedence 3: nested verification.claim_status when both top-level are null
+  const storyNested = {
+    id: 'st-3',
+    title: 'Nested Story',
+    claim_status: null,
+    verification_status: null,
+    verification: { claim_status: 'weakly_supported', verification_score: 0.55 },
+  };
+  const cardHtml3 = renderStoryCard(storyNested);
+  assert.ok(cardHtml3.includes('Weakly Supported (55%)'));
+
+  // Cross-surface parity: Same canonical claim_status 'weakly_supported' (0.60) in Story Card, Search, and Saved
+  const testPayload = {
+    id: 'parity-1',
+    title: 'Parity Test Item',
+    claim_status: 'weakly_supported',
+    verification_score: 0.60,
+    sources: ['arxiv'],
+  };
+
+  const storyBadge = renderStoryCard(testPayload);
+  const searchBadge = renderSearchResultCard({ entity_id: 'parity-1', title: 'Parity Test Item', claim_status: 'weakly_supported', verification_score: 0.60, sources: ['arxiv'] });
+  const savedBadge = renderSavedCard({ id: 'save-p', story_cluster_id: 'parity-1', title_snapshot: 'Parity Test Item', claim_status: 'weakly_supported', verification_score: 0.60, current_state: { claim_status: 'weakly_supported', verification_score: 0.60 } });
+
+  assert.ok(storyBadge.includes('Weakly Supported (60%)'));
+  assert.ok(searchBadge.includes('Weakly Supported (60%)'));
+  assert.ok(savedBadge.includes('Weakly Supported (60%)'));
+});

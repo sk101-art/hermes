@@ -413,13 +413,11 @@ export function resetSearchFilterCatalogsCache() {
 export function renderSearchResultCard(item) {
   const entityId = item.entity_id || item.id || '';
   const title = item.title || item.canonical_title || 'Untitled Discovery';
-  const scoreVal = typeof item.score === 'number' ? item.score.toFixed(2) : null;
   const verifScore = typeof item.verification_score === 'number' ? item.verification_score : null;
   const claimStatus = item.claim_status ?? null;
   const maturity = item.maturity || null;
   const riskLevel = item.risk || null;
   const riskStatus = item.risk_status ?? null;
-  const projectRel = typeof item.project_relevance === 'number' && item.project_relevance > 0 ? Math.round(item.project_relevance * 100) : null;
   const sources = ensureArray(item.sources);
   const isSynthesized = Boolean(item.is_synthesized);
   const summary = item.summary || null;
@@ -475,11 +473,17 @@ export function renderSearchResultCard(item) {
 
 /**
  * Renders the score decomposition breakdown panel.
+ * Strictly distinguishes genuine numeric zeros from missing, null, or invalid factors.
  */
 export function renderRankingDecomposition(explain) {
   if (!explain || typeof explain !== 'object') return '';
 
-  const formatFactor = (val) => typeof val === 'number' ? val.toFixed(4) : '0.0000';
+  const formatFactor = (val) => {
+    if (typeof val === 'number' && Number.isFinite(val)) {
+      return val.toFixed(4);
+    }
+    return '—';
+  };
 
   return `
     <div class="ranking-explain-panel" role="region" aria-label="Search Ranking Explanation">

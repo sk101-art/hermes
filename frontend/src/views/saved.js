@@ -22,6 +22,7 @@ import {
   formatDate,
   ensureArray,
   formatScorePercentage,
+  isValidNormalizedScore,
 } from '../utils/adapters.js';
 
 export const CANONICAL_MATURITY_LABELS = {
@@ -104,8 +105,8 @@ export function computeEvolutionDiff(item) {
 
   // 4. Significant verification score shift (>= 5%)
   if (
-    typeof item.verification_score === 'number' &&
-    typeof current.verification_score === 'number'
+    isValidNormalizedScore(item.verification_score) &&
+    isValidNormalizedScore(current.verification_score)
   ) {
     const diffScore = current.verification_score - item.verification_score;
     if (Math.abs(diffScore) >= 0.05) {

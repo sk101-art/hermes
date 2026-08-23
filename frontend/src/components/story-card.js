@@ -36,10 +36,20 @@ export function renderStoryCard(story) {
   const sources = ensureArray(story.sources || story.source_names || (story.source ? [story.source] : []));
 
   // Epistemic properties (preserve null if unassessed)
-  const verifStatus = story.verification_status || (story.verification ? story.verification.claim_status : null);
-  const verifScore = typeof story.verification_score === 'number'
+  // Authoritative claim_status precedence: top-level claim_status -> compatibility verification_status -> nested verification.claim_status -> null
+  const verifStatus = (story.claim_status !== undefined && story.claim_status !== null)
+    ? story.claim_status
+    : (story.verification_status !== undefined && story.verification_status !== null)
+      ? story.verification_status
+      : (story.verification && story.verification.claim_status !== undefined && story.verification.claim_status !== null)
+        ? story.verification.claim_status
+        : null;
+
+  const verifScore = (story.verification_score !== undefined && story.verification_score !== null)
     ? story.verification_score
-    : (story.verification && typeof story.verification.verification_score === 'number' ? story.verification.verification_score : null);
+    : (story.verification && story.verification.verification_score !== undefined && story.verification.verification_score !== null)
+      ? story.verification.verification_score
+      : null;
 
   const maturityStage = story.maturity_stage || story.maturity || null;
 
