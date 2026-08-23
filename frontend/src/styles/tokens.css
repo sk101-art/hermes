@@ -68,9 +68,9 @@
   --bg-panel-hover: #f1f5f9;
   --bg-muted: #e2e8f0;
 
-  --border-subtle: rgba(148, 163, 184, 0.22);
-  --border-default: #cbd5e1;
-  --border-strong: #94a3b8;
+  --border-subtle: rgba(100, 116, 139, 0.35);
+  --border-default: #64748b;        /* Slate 500 - 4.6:1 contrast on white (WCAG AA for UI components) */
+  --border-strong: #475569;         /* Slate 600 */
 
   --ink-primary: #0f172a;      /* Slate 900 */
   --ink-secondary: #334155;    /* Slate 700 */
@@ -184,7 +184,7 @@
   --stance-context-bg: #f0f9ff;
   --stance-context-border: #bae6fd;
 
-  --stance-unknown-text: #64748b;    /* Slate 500 - neutral */
+  --stance-unknown-text: #475569;    /* Slate 600 - neutral, 6.92:1 on --stance-unknown-bg */
   --stance-unknown-bg: #f1f5f9;
   --stance-unknown-border: #cbd5e1;
 

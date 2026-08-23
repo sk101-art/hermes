@@ -429,7 +429,7 @@ export function renderSearchResultCard(item) {
       <div class="search-result-header">
         <div class="search-result-title-group">
           <h3 class="search-result-title">
-            <a href="#/story/${encodeURIComponent(entityId)}" class="search-result-title-link" aria-label="Open Story Dossier for ${escapeHtml(title)}">
+            <a href="#/story/${encodeURIComponent(entityId)}" class="search-result-title-link" data-testid="search-story-link-${escapeHtml(entityId)}" aria-label="Open Story Dossier for ${escapeHtml(title)}">
               ${escapeHtml(title)}
             </a>
           </h3>
@@ -463,7 +463,7 @@ export function renderSearchResultCard(item) {
       ${explain ? renderRankingDecomposition(explain) : ''}
 
       <div class="search-result-footer">
-        <a href="#/story/${encodeURIComponent(entityId)}" class="btn btn-secondary btn-sm" aria-label="Investigate Story Dossier for ${escapeHtml(title)}">
+        <a href="#/story/${encodeURIComponent(entityId)}" class="btn btn-secondary btn-sm" data-testid="search-open-story-${escapeHtml(entityId)}" aria-label="Investigate Story Dossier for ${escapeHtml(title)}">
           Open Story Dossier &rarr;
         </a>
       </div>

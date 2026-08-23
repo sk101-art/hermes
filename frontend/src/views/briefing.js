@@ -239,7 +239,7 @@ export function renderBriefingItemCard(item) {
   let titleHtml = '';
   if (item.title) {
     if (hasStoryLink) {
-      titleHtml = `<a href="#/story/${encodeURIComponent(item.story_cluster_id)}" class="briefing-title-link">${escapeHtml(item.title)}</a>`;
+      titleHtml = `<a href="#/story/${encodeURIComponent(item.story_cluster_id)}" class="briefing-title-link" data-testid="briefing-story-link-${escapeHtml(item.inbox_item_id || item.story_cluster_id)}">${escapeHtml(item.title)}</a>`;
     } else {
       titleHtml = `<span class="text-semibold text-foreground">${escapeHtml(item.title)}</span>`;
     }
@@ -311,7 +311,7 @@ export function renderBriefingItemCard(item) {
 
         ${
           hasStoryLink
-            ? `<div style="margin-left:auto;"><a href="#/story/${encodeURIComponent(item.story_cluster_id)}" class="btn btn-secondary btn-xs">Open Story Dossier →</a></div>`
+            ? `<div style="margin-left:auto;"><a href="#/story/${encodeURIComponent(item.story_cluster_id)}" class="btn btn-secondary btn-xs" data-testid="briefing-open-story-${escapeHtml(item.inbox_item_id || item.story_cluster_id)}">Open Story Dossier →</a></div>`
             : item.story_cluster_id
             ? `<div style="margin-left:auto;"><span class="text-xs text-muted briefing-story-unavailable">Story unavailable</span></div>`
             : ''

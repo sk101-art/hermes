@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,8 +14,12 @@ from app.storage.db import Database
 router = APIRouter()
 
 
+def get_db_path() -> str:
+    return os.getenv("HERMES_DB_PATH", "data/tech_intel.db")
+
+
 def get_db():
-    return Database()
+    return Database(db_path=get_db_path())
 
 
 @router.get("/health", summary="Health check")

@@ -117,10 +117,6 @@ export function renderShell(state) {
       <main class="content-area" id="main-content" role="main" tabindex="-1">
         <!-- Dynamic View Content Inserted Here -->
       </main>
-
-      <footer role="contentinfo" class="app-footer">
-        <span class="sr-only">HERMES Local Intelligence Engine</span>
-      </footer>
     </div>
   </div>`;
 }

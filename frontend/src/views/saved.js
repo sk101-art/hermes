@@ -197,7 +197,7 @@ export function renderSavedCard(item) {
         <div>
           <h2 class="saved-card-title">
             ${current ? `
-              <a href="#/story/${encodeURIComponent(clusterId)}" class="saved-title-link" aria-label="Open Story Dossier for ${escapeHtml(title)}">
+              <a href="#/story/${encodeURIComponent(clusterId)}" class="saved-title-link" data-testid="saved-story-link-${escapeHtml(savedId)}" aria-label="Open Story Dossier for ${escapeHtml(title)}">
                 ${escapeHtml(title)}
               </a>
             ` : `
@@ -211,7 +211,7 @@ export function renderSavedCard(item) {
 
         <div class="saved-card-actions">
           ${current ? `
-            <a href="#/story/${encodeURIComponent(clusterId)}" class="btn btn-secondary btn-sm" aria-label="Open Story Dossier for ${escapeHtml(title)}">
+            <a href="#/story/${encodeURIComponent(clusterId)}" class="btn btn-secondary btn-sm" data-testid="saved-open-story-${escapeHtml(savedId)}" aria-label="Open Story Dossier for ${escapeHtml(title)}">
               Open Story Dossier &rarr;
             </a>
           ` : ''}

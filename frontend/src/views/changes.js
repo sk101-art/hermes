@@ -292,7 +292,7 @@ export function renderChangeCard(change) {
 
         <div>
           ${clusterId ? `
-            <a href="#/story/${encodeURIComponent(clusterId)}" class="btn btn-secondary btn-sm" aria-label="Open Story Dossier for cluster ${escapeHtml(clusterId)}">
+            <a href="#/story/${encodeURIComponent(clusterId)}" class="btn btn-secondary btn-sm" data-testid="changes-open-story-${escapeHtml(clusterId)}" aria-label="Open Story Dossier for cluster ${escapeHtml(clusterId)}">
               Open Story Dossier &rarr;
             </a>
           ` : `

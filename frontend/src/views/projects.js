@@ -366,7 +366,7 @@ async function renderProjectDetailView(container, store, projectId) {
                   }
 
                   const titleHtml = r.story_available && r.cluster_id
-                    ? `<a href="#/story/${encodeURIComponent(r.cluster_id)}" class="concern-title-link" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(r.title)}</a>`
+                    ? `<a href="#/story/${encodeURIComponent(r.cluster_id)}" class="concern-title-link" data-testid="projects-concern-link-${escapeHtml(r.cluster_id)}" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(r.title)}</a>`
                     : `<span style="font-weight:600;">${escapeHtml(r.title)}</span> <span class="badge badge-subtle">Story unavailable</span>`;
 
                   return `
@@ -419,7 +419,7 @@ async function renderProjectDetailView(container, store, projectId) {
               <div class="matches-list" style="display:flex;flex-direction:column;gap:var(--space-3);">
                 ${topMatches.map((m) => {
                   const titleHtml = m.story_available && m.cluster_id
-                    ? `<a href="#/story/${encodeURIComponent(m.cluster_id)}" class="match-title-link" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(m.title)}</a>`
+                    ? `<a href="#/story/${encodeURIComponent(m.cluster_id)}" class="match-title-link" data-testid="projects-match-link-${escapeHtml(m.cluster_id)}" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(m.title)}</a>`
                     : `<span style="font-weight:600;">${escapeHtml(m.title)}</span> <span class="badge badge-subtle">Story unavailable</span>`;
 
                   const reasons = ensureArray(m.reason_codes);
@@ -498,7 +498,7 @@ async function renderProjectDetailView(container, store, projectId) {
 
                       ${ch.cluster_id ? `
                         <div style="margin-top:var(--space-2);">
-                          <a href="#/story/${encodeURIComponent(ch.cluster_id)}" class="mono text-xs" style="color:var(--accent-primary);text-decoration:none;">
+                          <a href="#/story/${encodeURIComponent(ch.cluster_id)}" class="mono text-xs" data-testid="projects-change-link-${escapeHtml(ch.cluster_id)}" style="color:var(--accent-primary);text-decoration:none;">
                             View Story Dossier →
                           </a>
                         </div>

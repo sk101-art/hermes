@@ -245,11 +245,11 @@ export function renderInboxCard(item) {
     : '';
 
   const titleHtml = isResolvable
-    ? `<a href="#/story/${encodeURIComponent(cid)}" class="inbox-title-link">${escapeHtml(title)}</a>`
+    ? `<a href="#/story/${encodeURIComponent(cid)}" class="inbox-title-link" data-testid="inbox-story-link-${escapeHtml(id)}">${escapeHtml(title)}</a>`
     : escapeHtml(title);
 
   const storyActionHtml = isResolvable
-    ? `<a href="#/story/${encodeURIComponent(cid)}" class="btn btn-sm btn-primary story-nav-btn" aria-label="Open Story Dossier for ${escapeHtml(title)}">Open Story Dossier &rarr;</a>`
+    ? `<a href="#/story/${encodeURIComponent(cid)}" class="btn btn-sm btn-primary story-nav-btn" data-testid="inbox-open-story-${escapeHtml(id)}" aria-label="Open Story Dossier for ${escapeHtml(title)}">Open Story Dossier &rarr;</a>`
     : `<span class="inbox-unavailable-note text-muted text-sm" role="status">Story dossier currently unavailable</span>`;
 
   const saveBtnHtml = isStarred
