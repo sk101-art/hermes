@@ -9,6 +9,7 @@ import sqlite3
 import socket
 import signal
 import uuid
+import json
 import pytest
 from playwright.sync_api import sync_playwright
 
@@ -347,6 +348,10 @@ def ensure_test_servers():
     os.environ["HERMES_DB_PATH"] = TEST_DB_PATH
     os.environ["HERMES_TEST_INSTANCE_ID"] = TEST_INSTANCE_ID
     
+    popen_kwargs = {}
+    if sys.platform != "win32":
+        popen_kwargs["start_new_session"] = True
+
     spawned_processes = []
     
     # Check if backend is already running
@@ -362,10 +367,6 @@ def ensure_test_servers():
                              f"Please free the port or use a different port range. Error: {e}")
     else:
         # Start our own backend
-        popen_kwargs = {}
-        if sys.platform != "win32":
-            popen_kwargs["start_new_session"] = True
-
         backend_env = os.environ.copy()
         proc = subprocess.Popen([sys.executable, "-m", "app.api.server", "--port", str(API_PORT)], env=backend_env, **popen_kwargs)
         spawned_processes.append(("backend", proc))
@@ -766,7 +767,7 @@ def test_playwright_exact_route_focus_restoration(test_servers):
             }""", test_id)
             assert testid_restored, f"Returning from dossier to {v_name} must restore focus to initiating link with data-testid={test_id}"
 
-        # Test fallback heading focus when initiating link is missing / removed
+        # Test fallback heading focus when initiating link is missing upon return
         page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
         page.wait_for_selector("a[data-testid^='inbox-story-link-']", timeout=15000)
         story_link = page.locator("a[data-testid^='inbox-story-link-']").first
@@ -775,25 +776,38 @@ def test_playwright_exact_route_focus_restoration(test_servers):
         page.wait_for_selector("h1", timeout=15000)
         page.wait_for_timeout(300)
 
-        # Go back to Today
+        # Intercept /inbox so that the initiating story card is absent upon return
+        page.route("**/inbox?*", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"count": 0, "inbox_items": []})
+        ))
+
+        # Trigger real browser history restoration path
         page.go_back()
         page.wait_for_selector("#main-content", timeout=15000)
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(500)
 
-        # Remove the initiating link from the DOM and test fallback focus to view h1
-        page.evaluate("""() => {
-            const initiating = document.querySelector("a[data-testid^='inbox-story-link-']");
-            if (initiating) {
-                initiating.remove();
-            }
-            const h1 = document.querySelector('#main-content h1, h1');
-            if (h1 && document.activeElement !== h1) {
-                h1.setAttribute('tabindex', '-1');
-                h1.focus();
-            }
-        }""")
+        # Assert HERMES production loadView/restoreRouteFocus independently focused the view h1 without calling .focus() from test
         h1_focused = page.evaluate("() => document.activeElement && document.activeElement.tagName === 'H1'")
-        assert h1_focused, "When initiating link is missing, view h1 must receive focus"
+        assert h1_focused, "When initiating link is missing upon history navigation return, production loadView must independently focus view h1"
+        
+        # Clean up route interception
+        page.unroute("**/inbox?*")
+
+        # Also test calling exported production restoreRouteFocus directly with an absent target
+        fallback_called = page.evaluate("""async () => {
+            const { restoreRouteFocus } = await import('./src/app.js');
+            const main = document.getElementById('main-content');
+            if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+            const found = restoreRouteFocus(main, 'non-existent-target-999');
+            return {
+                found,
+                activeTag: document.activeElement ? document.activeElement.tagName : null
+            };
+        }""")
+        assert fallback_called["found"] is False, "restoreRouteFocus must return False when target is absent"
+        assert fallback_called["activeTag"] == "H1", "restoreRouteFocus must independently focus view h1 on fallback"
 
         browser.close()
 

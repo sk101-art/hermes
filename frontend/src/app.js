@@ -19,7 +19,7 @@ import {
   MOBILE_DRAWER_QUERY,
   VIEW_TITLES
 } from './utils/a11y.js';
-export { VIEW_TITLES, openMobileDrawer, closeMobileDrawer, focusPageHeading, syncDrawerAccessibility };
+export { VIEW_TITLES, openMobileDrawer, closeMobileDrawer, focusPageHeading, syncDrawerAccessibility, restoreRouteFocus };
 
 // Views
 import { renderTodayView } from './views/today.js';
@@ -111,10 +111,24 @@ function captureStoryFocusReturn(routeKey) {
   };
 }
 
-function restoreStoryFocus(container) {
+/**
+ * Restores focus to the initiating element or falls back to focusing the page heading.
+ * @param {HTMLElement} container - The content container element.
+ * @param {string} [targetId] - Optional specific data-testid to focus.
+ * @returns {boolean} True if specific element was focused, false if fallback heading was focused.
+ */
+function restoreRouteFocus(container, targetId) {
+  if (!container) return false;
   let target = null;
 
-  if (storyFocusReturn?.testId) {
+  if (targetId) {
+    const selector = typeof CSS !== 'undefined' && CSS.escape
+      ? `[data-testid="${CSS.escape(targetId)}"]`
+      : `[data-testid="${targetId}"]`;
+    target = container.querySelector(selector);
+  }
+
+  if (!target && storyFocusReturn?.testId) {
     const selector = typeof CSS !== 'undefined' && CSS.escape
       ? `[data-testid="${CSS.escape(storyFocusReturn.testId)}"]`
       : `[data-testid="${storyFocusReturn.testId}"]`;
@@ -141,6 +155,8 @@ function restoreStoryFocus(container) {
     return true;
   }
 
+  // Fallback: when initiating target is absent or missing, independently focus the view heading
+  focusPageHeading(container);
   return false;
 }
 
@@ -182,12 +198,9 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
   // - initial page load: leave focus on body so first Tab reaches .skip-link
   // - subsequent SPA route changes: focus new view h1
   if (isLeavingStory && typeof document !== 'undefined') {
-    const restored = restoreStoryFocus(contentContainer);
+    restoreRouteFocus(contentContainer);
     storyFocusReturn = null;
     lastInitiatingStoryId = null;
-    if (!restored) {
-      focusPageHeading(contentContainer);
-    }
   } else if (isEnteringStory) {
     focusPageHeading(contentContainer);
   } else if (!hasCompletedInitialNavigation) {
