@@ -9,8 +9,15 @@ import { getApiBaseUrl } from './api/client.js';
 import { router } from './state/router.js';
 import { store } from './state/store.js';
 import { renderShell } from './components/shell.js';
-import { trapFocus, announceToScreenReader, VIEW_TITLES } from './utils/a11y.js';
-export { VIEW_TITLES };
+import {
+  trapFocus,
+  announceToScreenReader,
+  focusPageHeading,
+  openMobileDrawer,
+  closeMobileDrawer,
+  VIEW_TITLES
+} from './utils/a11y.js';
+export { VIEW_TITLES, openMobileDrawer, closeMobileDrawer, focusPageHeading };
 
 // Views
 import { renderTodayView } from './views/today.js';
@@ -108,13 +115,28 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
   bindViewInteractions(contentContainer);
 
   // Focus management: restore to initiating card/link if returning from story, else focus h1/container
-  if (isLeavingStory && lastInitiatingStoryId && typeof document !== 'undefined') {
-    const targetLink = contentContainer.querySelector(`[data-story-id="${CSS.escape ? CSS.escape(lastInitiatingStoryId) : lastInitiatingStoryId}"] .story-title-link, [data-result-id="${CSS.escape ? CSS.escape(lastInitiatingStoryId) : lastInitiatingStoryId}"] .search-result-title-link, [data-saved-id] a[href*="${encodeURIComponent(lastInitiatingStoryId)}"]`);
-    if (targetLink && typeof targetLink.focus === 'function') {
-      targetLink.focus();
-      lastInitiatingStoryId = null;
-      lastActiveElementBeforeStory = null;
-    } else {
+  if (isLeavingStory && typeof document !== 'undefined') {
+    let restored = false;
+    if (lastActiveElementBeforeStory && document.body.contains(lastActiveElementBeforeStory) && typeof lastActiveElementBeforeStory.focus === 'function') {
+      lastActiveElementBeforeStory.focus();
+      restored = true;
+    } else if (lastInitiatingStoryId) {
+      const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(lastInitiatingStoryId) : lastInitiatingStoryId;
+      const targetLink = contentContainer.querySelector(
+        `[data-story-id="${escapedId}"] .story-title-link, ` +
+        `[data-result-id="${escapedId}"] .search-result-title-link, ` +
+        `[data-saved-id] a[href*="${encodeURIComponent(lastInitiatingStoryId)}"], ` +
+        `[data-cluster-id="${escapedId}"] a, ` +
+        `a[href*="#/story/${encodeURIComponent(lastInitiatingStoryId)}"]`
+      );
+      if (targetLink && typeof targetLink.focus === 'function') {
+        targetLink.focus();
+        restored = true;
+      }
+    }
+    lastInitiatingStoryId = null;
+    lastActiveElementBeforeStory = null;
+    if (!restored) {
       focusPageHeading(contentContainer);
     }
   } else {
@@ -123,17 +145,6 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
 
   // Announce view transition to screen readers
   announceToScreenReader(`Navigated to ${pageTitle}`);
-}
-
-function focusPageHeading(container) {
-  if (!container || typeof container.querySelector !== 'function') return;
-  const heading = container.querySelector('h1');
-  if (heading && typeof heading.focus === 'function') {
-    heading.setAttribute('tabindex', '-1');
-    heading.focus();
-  } else if (typeof container.focus === 'function') {
-    container.focus();
-  }
 }
 
 /**
@@ -187,14 +198,34 @@ function bindShellEvents() {
 
   const mobileToggle = document.getElementById('mobile-menu-toggle');
   const sidebar = document.getElementById('app-sidebar');
-  
-  mobileToggle?.addEventListener('click', () => {
+  const closeBtn = document.getElementById('sidebar-close-btn');
+  const backdrop = document.getElementById('sidebar-backdrop');
+
+  mobileToggle?.addEventListener('click', (e) => {
+    e.stopPropagation();
     const isOpen = sidebar?.classList.contains('open');
     if (isOpen) {
       closeMobileDrawer(true);
     } else {
       openMobileDrawer();
     }
+  });
+
+  closeBtn?.addEventListener('click', () => {
+    closeMobileDrawer(true);
+  });
+
+  backdrop?.addEventListener('click', () => {
+    closeMobileDrawer(true);
+  });
+
+  // Close drawer when any nav-link inside sidebar is clicked
+  sidebar?.querySelectorAll('.nav-link').forEach((link) => {
+    link.addEventListener('click', () => {
+      if (sidebar.classList.contains('open')) {
+        closeMobileDrawer(false);
+      }
+    });
   });
 
   // Close sidebar on click outside in mobile view
@@ -206,27 +237,6 @@ function bindShellEvents() {
       }
     }
   });
-}
-
-function openMobileDrawer() {
-  const sidebar = document.getElementById('app-sidebar');
-  const mobileToggle = document.getElementById('mobile-menu-toggle');
-  sidebar?.classList.add('open');
-  mobileToggle?.setAttribute('aria-expanded', 'true');
-  const firstNav = sidebar?.querySelector('.nav-link');
-  firstNav?.focus();
-}
-
-function closeMobileDrawer(returnFocus = true) {
-  const sidebar = document.getElementById('app-sidebar');
-  const mobileToggle = document.getElementById('mobile-menu-toggle');
-  if (sidebar?.classList.contains('open')) {
-    sidebar.classList.remove('open');
-    mobileToggle?.setAttribute('aria-expanded', 'false');
-    if (returnFocus && mobileToggle && typeof mobileToggle.focus === 'function') {
-      mobileToggle.focus();
-    }
-  }
 }
 
 /**

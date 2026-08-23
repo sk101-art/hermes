@@ -136,6 +136,7 @@ async function renderProjectIndexView(container, store) {
       );
     } else {
       html += `
+        <h2 class="sr-only">Indexed Projects</h2>
         <div class="grid-3 project-cards-grid">
           ${projects.map((p) => {
             const canonicalId = p.project_id || p.id || '';
@@ -150,13 +151,13 @@ async function renderProjectIndexView(container, store) {
             const matchCount = typeof p.matches_count === 'number' ? p.matches_count : 0;
 
             return `
-              <article class="project-card-item" data-project-id="${escapeHtml(canonicalId)}" tabindex="0" role="link" aria-label="Project profile: ${escapeHtml(p.name)}">
+              <article class="project-card-item" data-project-id="${escapeHtml(canonicalId)}" aria-labelledby="project-title-${escapeHtml(canonicalId)}">
                 <div class="project-card-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2);">
                   <span class="mono text-xs text-muted">${escapeHtml(canonicalId)}</span>
                   <span class="badge ${p.is_active ? 'badge-neutral' : 'badge-subtle'}">${p.is_active ? 'Active' : 'Inactive'}</span>
                 </div>
 
-                <h3 class="project-card-title" style="margin-top:var(--space-2);font-size:var(--text-md);">
+                <h3 id="project-title-${escapeHtml(canonicalId)}" class="project-card-title" style="margin-top:var(--space-2);font-size:var(--text-md);">
                   <a href="#/projects/${encodeURIComponent(canonicalId)}" class="project-card-link" style="color:var(--ink-primary);text-decoration:none;">
                     ${escapeHtml(p.name)}
                   </a>

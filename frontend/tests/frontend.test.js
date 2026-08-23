@@ -7110,3 +7110,164 @@ test('Phase 15: 9. Axe-core accessibility scan on key rendered templates reports
     `Axe found serious/critical accessibility violations: ${JSON.stringify(seriousOrCritical.map(v => ({ id: v.id, help: v.help, nodes: v.nodes.length })))}`
   );
 });
+
+test('Phase 15: 10. getFocusableElements dynamically filters disabled, inert, aria-hidden, and negative tabindex elements', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { getFocusableElements } = await import('../src/utils/a11y.js');
+
+  const dom = new JSDOM(`
+    <div id="container">
+      <a href="#link1" id="link1">Link 1</a>
+      <button id="btn1">Button 1</button>
+      <button id="btn-disabled" disabled>Disabled Button</button>
+      <button id="btn-aria-disabled" aria-disabled="true">Aria Disabled</button>
+      <input type="text" id="input1" />
+      <input type="hidden" id="input-hidden" />
+      <div tabindex="0" id="div-tabindex-0">Focusable Div</div>
+      <div tabindex="-1" id="div-tabindex-neg">Non-focusable Div</div>
+      <div inert id="inert-parent">
+        <button id="btn-inside-inert">Inside Inert</button>
+      </div>
+      <div aria-hidden="true" id="aria-hidden-parent">
+        <a href="#link-hidden" id="link-inside-aria-hidden">Hidden Link</a>
+      </div>
+    </div>
+  `);
+
+  const container = dom.window.document.getElementById('container');
+  const focusable = getFocusableElements(container);
+  const ids = focusable.map(el => el.id);
+
+  assert.ok(ids.includes('link1'), 'Valid href link must be focusable');
+  assert.ok(ids.includes('btn1'), 'Standard button must be focusable');
+  assert.ok(ids.includes('input1'), 'Standard input must be focusable');
+  assert.ok(ids.includes('div-tabindex-0'), 'Div with tabindex="0" must be focusable');
+
+  assert.ok(!ids.includes('btn-disabled'), 'Disabled button must be excluded');
+  assert.ok(!ids.includes('btn-aria-disabled'), 'aria-disabled="true" must be excluded');
+  assert.ok(!ids.includes('input-hidden'), 'Hidden input must be excluded');
+  assert.ok(!ids.includes('div-tabindex-neg'), 'tabindex="-1" must be excluded');
+  assert.ok(!ids.includes('btn-inside-inert'), 'Controls inside [inert] must be excluded');
+  assert.ok(!ids.includes('link-inside-aria-hidden'), 'Controls inside [aria-hidden="true"] must be excluded');
+});
+
+test('Phase 15: 11. trapFocus wraps focus on Tab/Shift+Tab and cleans up idempotently', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { trapFocus } = await import('../src/utils/a11y.js');
+
+  const dom = new JSDOM(`
+    <div id="dialog">
+      <button id="first">First</button>
+      <button id="middle">Middle</button>
+      <button id="last">Last</button>
+    </div>
+  `);
+
+  const doc = dom.window.document;
+  const dialog = doc.getElementById('dialog');
+  const first = doc.getElementById('first');
+  const middle = doc.getElementById('middle');
+  const last = doc.getElementById('last');
+
+  globalThis.document = doc;
+  globalThis.window = dom.window;
+
+  try {
+    const releaseTrap = trapFocus(dialog);
+
+    // Initial focus on first
+    assert.strictEqual(doc.activeElement, first);
+
+    // Tab from last wraps to first
+    last.focus();
+    const tabEvent = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    dialog.dispatchEvent(tabEvent);
+    assert.strictEqual(doc.activeElement, first);
+
+    // Shift+Tab from first wraps to last
+    first.focus();
+    const shiftTabEvent = new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    dialog.dispatchEvent(shiftTabEvent);
+    assert.strictEqual(doc.activeElement, last);
+
+    // Cleanup releases listener
+    releaseTrap();
+    releaseTrap(); // Idempotent second call should not throw
+
+    // After cleanup, Tab from last should not be intercepted
+    last.focus();
+    const tabAfterCleanup = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    dialog.dispatchEvent(tabAfterCleanup);
+    assert.strictEqual(doc.activeElement, last);
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+  }
+});
+
+test('Phase 15: 12. announceToScreenReader reliably clears and re-announces identical consecutive messages', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { announceToScreenReader } = await import('../src/utils/a11y.js');
+
+  const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`);
+  globalThis.document = dom.window.document;
+
+  try {
+    announceToScreenReader('Search results updated: 14 matches', 'polite');
+    const live = dom.window.document.getElementById('hermes-a11y-live');
+    assert.ok(live);
+    assert.strictEqual(live.textContent, 'Search results updated: 14 matches');
+    assert.strictEqual(live.getAttribute('aria-live'), 'polite');
+
+    // Repeated identical announcement
+    announceToScreenReader('Search results updated: 14 matches', 'assertive');
+    assert.strictEqual(live.textContent, 'Search results updated: 14 matches');
+    assert.strictEqual(live.getAttribute('aria-live'), 'assertive');
+
+    // Unknown politeness degrades to polite
+    announceToScreenReader('Minor update', 'invalid_politeness');
+    assert.strictEqual(live.getAttribute('aria-live'), 'polite');
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test('Phase 15: 13. Mobile drawer lifecycle manages inert, aria-expanded, and focus trapping', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { renderShell } = await import('../src/components/shell.js');
+  const { openMobileDrawer, closeMobileDrawer } = await import('../src/utils/a11y.js');
+
+  const shellHtml = renderShell({ view: 'today', connectionStatus: 'healthy', isOffline: false });
+  const dom = new JSDOM(`<!DOCTYPE html><html><body>${shellHtml}</body></html>`);
+
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+
+  try {
+    const sidebar = dom.window.document.getElementById('app-sidebar');
+    const toggle = dom.window.document.getElementById('mobile-menu-toggle');
+    const backdrop = dom.window.document.getElementById('sidebar-backdrop');
+    const mainWrapper = dom.window.document.getElementById('app-main-wrapper');
+
+    assert.ok(sidebar && toggle && backdrop && mainWrapper);
+    assert.strictEqual(toggle.getAttribute('aria-expanded'), 'false');
+    assert.ok(!sidebar.classList.contains('open'));
+
+    // Open mobile drawer
+    openMobileDrawer();
+    assert.ok(sidebar.classList.contains('open'));
+    assert.strictEqual(toggle.getAttribute('aria-expanded'), 'true');
+    assert.ok(backdrop.classList.contains('active'));
+    assert.ok(mainWrapper.hasAttribute('inert'), 'Main wrapper must be inert when drawer is modal');
+
+    // Close mobile drawer
+    closeMobileDrawer(false);
+    assert.ok(!sidebar.classList.contains('open'));
+    assert.strictEqual(toggle.getAttribute('aria-expanded'), 'false');
+    assert.ok(!backdrop.classList.contains('active'));
+    assert.ok(!mainWrapper.hasAttribute('inert'), 'Inert must be removed from main wrapper on close');
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+  }
+});

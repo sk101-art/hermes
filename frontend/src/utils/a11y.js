@@ -17,60 +17,241 @@ export const VIEW_TITLES = Object.freeze({
 
 /**
  * Announces a message to assistive technology via an aria-live region.
+ * Automatically clears and updates the live region to ensure repeated identical
+ * announcements are reliably dispatched by screen readers.
  * @param {string} message 
  * @param {'polite'|'assertive'} [politeness='polite']
  */
 export function announceToScreenReader(message, politeness = 'polite') {
-  if (typeof document === 'undefined') return;
+  if (typeof document === 'undefined' || !message) return;
 
+  const validPoliteness = politeness === 'assertive' ? 'assertive' : 'polite';
   let liveRegion = document.getElementById('hermes-a11y-live');
   if (!liveRegion) {
     liveRegion = document.createElement('div');
     liveRegion.id = 'hermes-a11y-live';
     liveRegion.className = 'sr-only';
+    liveRegion.setAttribute('aria-live', validPoliteness);
+    liveRegion.setAttribute('aria-atomic', 'true');
     liveRegion.style.cssText = 'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;';
     document.body.appendChild(liveRegion);
   }
 
-  liveRegion.setAttribute('aria-live', politeness);
+  liveRegion.setAttribute('aria-live', validPoliteness);
   liveRegion.setAttribute('aria-atomic', 'true');
+
+  // Clear first so consecutive identical messages trigger a DOM mutation event
+  liveRegion.textContent = '';
   liveRegion.textContent = message;
 }
 
 /**
- * Traps focus inside a modal or drawer container.
- * @param {HTMLElement} element 
- * @returns {() => void} Cleanup function
+ * Returns all currently visible, non-disabled, keyboard-focusable elements inside a container.
+ * Evaluates dynamically at query time to support dynamic DOM alterations.
+ * @param {HTMLElement} container
+ * @returns {HTMLElement[]}
  */
-export function trapFocus(element) {
-  if (!element) return () => {};
+export function getFocusableElements(container) {
+  if (!container || typeof container.querySelectorAll !== 'function') return [];
 
-  const focusableEls = element.querySelectorAll(
-    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-  );
-  const firstFocusableEl = focusableEls[0];
-  const lastFocusableEl = focusableEls[focusableEls.length - 1];
+  const selector = [
+    'a[href]',
+    'button:not([disabled])',
+    'input:not([disabled]):not([type="hidden"])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])',
+    '[contenteditable="true"]',
+  ].join(', ');
+
+  const nodes = Array.from(container.querySelectorAll(selector));
+
+  return nodes.filter((el) => {
+    if (!el) return false;
+    if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+    if (el.getAttribute('tabindex') === '-1') return false;
+    if (el.hasAttribute('inert') || (el.closest && el.closest('[inert]'))) return false;
+    if (el.getAttribute('aria-hidden') === 'true' || (el.closest && el.closest('[aria-hidden="true"]'))) return false;
+
+    // Check computed visibility if getComputedStyle is available in browser
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
+          return false;
+        }
+      } catch {}
+    }
+
+    return true;
+  });
+}
+
+/**
+ * Traps focus inside a modal or drawer container.
+ * Features:
+ * - Dynamically evaluates focusable elements on keydown.
+ * - Handles 0, 1, or N focusable controls safely.
+ * - Supports Shift+Tab wrap-around.
+ * - Idempotent cleanup function.
+ * @param {HTMLElement} element 
+ * @param {Object} [options]
+ * @param {HTMLElement} [options.initialFocus]
+ * @returns {() => void} releaseFocusTrap cleanup function
+ */
+export function trapFocus(element, options = {}) {
+  if (!element || typeof element.addEventListener !== 'function') return () => {};
+
+  let isCleanedUp = false;
 
   function handleKeyDown(e) {
-    if (e.key === 'Tab') {
-      if (e.shiftKey) {
-        if (document.activeElement === firstFocusableEl) {
-          lastFocusableEl.focus();
-          e.preventDefault();
-        }
-      } else {
-        if (document.activeElement === lastFocusableEl) {
-          firstFocusableEl.focus();
-          e.preventDefault();
-        }
+    if (isCleanedUp) return;
+    if (e.key !== 'Tab') return;
+
+    const focusable = getFocusableElements(element);
+
+    if (focusable.length === 0) {
+      e.preventDefault();
+      if (typeof element.focus === 'function') {
+        element.focus();
+      }
+      return;
+    }
+
+    if (focusable.length === 1) {
+      e.preventDefault();
+      focusable[0].focus();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+
+    if (e.shiftKey) {
+      if (active === first || !element.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !element.contains(active)) {
+        e.preventDefault();
+        first.focus();
       }
     }
   }
 
   element.addEventListener('keydown', handleKeyDown);
-  if (firstFocusableEl) firstFocusableEl.focus();
 
-  return () => {
-    element.removeEventListener('keydown', handleKeyDown);
+  // Set initial focus
+  if (options.initialFocus && typeof options.initialFocus.focus === 'function' && element.contains(options.initialFocus)) {
+    options.initialFocus.focus();
+  } else {
+    const initialFocusable = getFocusableElements(element);
+    if (initialFocusable.length > 0 && typeof initialFocusable[0].focus === 'function') {
+      initialFocusable[0].focus();
+    } else if (typeof element.focus === 'function') {
+      element.setAttribute('tabindex', '-1');
+      element.focus();
+    }
+  }
+
+  return function releaseFocusTrap() {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
+    if (typeof element.removeEventListener === 'function') {
+      element.removeEventListener('keydown', handleKeyDown);
+    }
   };
+}
+
+/**
+ * Moves focus to the primary view heading or main content container.
+ * @param {HTMLElement} container
+ */
+export function focusPageHeading(container) {
+  if (!container || typeof container.querySelector !== 'function') return;
+  const heading = container.querySelector('h1');
+  if (heading && typeof heading.focus === 'function') {
+    heading.setAttribute('tabindex', '-1');
+    heading.focus();
+  } else if (typeof container.focus === 'function') {
+    container.focus();
+  }
+}
+
+let releaseDrawerFocusTrap = null;
+
+/**
+ * Open the mobile navigation drawer with modal focus trapping.
+ */
+export function openMobileDrawer() {
+  if (typeof document === 'undefined') return;
+
+  const sidebar = document.getElementById('app-sidebar');
+  const mobileToggle = document.getElementById('mobile-menu-toggle');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  const mainWrapper = document.getElementById('app-main-wrapper');
+
+  if (!sidebar) return;
+
+  sidebar.classList.add('open');
+  if (backdrop) {
+    backdrop.classList.add('active');
+  }
+  if (mobileToggle) {
+    mobileToggle.setAttribute('aria-expanded', 'true');
+    mobileToggle.setAttribute('aria-label', 'Close navigation menu');
+  }
+  if (mainWrapper && typeof mainWrapper.setAttribute === 'function') {
+    mainWrapper.setAttribute('inert', '');
+  }
+
+  // Release any existing trap first to avoid duplicate listeners
+  if (releaseDrawerFocusTrap) {
+    releaseDrawerFocusTrap();
+    releaseDrawerFocusTrap = null;
+  }
+
+  // Trap focus inside sidebar
+  releaseDrawerFocusTrap = trapFocus(sidebar);
+}
+
+/**
+ * Close the mobile navigation drawer and release focus trapping.
+ * @param {boolean} [returnFocus=true]
+ */
+export function closeMobileDrawer(returnFocus = true) {
+  if (typeof document === 'undefined') return;
+
+  const sidebar = document.getElementById('app-sidebar');
+  const mobileToggle = document.getElementById('mobile-menu-toggle');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  const mainWrapper = document.getElementById('app-main-wrapper');
+
+  if (!sidebar) return;
+
+  // Release trap first
+  if (releaseDrawerFocusTrap) {
+    releaseDrawerFocusTrap();
+    releaseDrawerFocusTrap = null;
+  }
+
+  // Remove inert from background
+  if (mainWrapper && typeof mainWrapper.removeAttribute === 'function') {
+    mainWrapper.removeAttribute('inert');
+  }
+
+  sidebar.classList.remove('open');
+  if (backdrop) {
+    backdrop.classList.remove('active');
+  }
+  if (mobileToggle) {
+    mobileToggle.setAttribute('aria-expanded', 'false');
+    mobileToggle.setAttribute('aria-label', 'Toggle navigation menu');
+  }
+
+  if (returnFocus && mobileToggle && typeof mobileToggle.focus === 'function') {
+    mobileToggle.focus();
+  }
 }

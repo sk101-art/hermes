@@ -290,7 +290,8 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
     container.innerHTML = renderEmptyState(
       'No Story Selected',
       'Select a development from Today, Search, or Saved Library to inspect its verified claims and evidence trail.',
-      `<a href="#/today" class="btn btn-primary btn-sm">${getIcon('arrowLeft')} Back to Today</a>`
+      `<a href="#/today" class="btn btn-primary btn-sm">${getIcon('arrowLeft')} Back to Today</a>`,
+      'h1'
     );
     return;
   }

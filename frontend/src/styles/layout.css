@@ -329,6 +329,14 @@
   }
 }
 
+.sidebar-close-btn {
+  display: none;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
 @media (max-width: 840px) {
   .sidebar {
     transform: translateX(-100%);
@@ -340,11 +348,35 @@
   }
 
   .sidebar-backdrop {
+    display: none;
     position: fixed;
     inset: 0;
     background-color: rgba(15, 23, 42, 0.4);
     z-index: 35;
     backdrop-filter: blur(2px);
+  }
+
+  .sidebar-backdrop.active {
+    display: block;
+  }
+
+  .sidebar-close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: var(--ink-muted);
+    margin-left: auto;
+    border-radius: var(--radius-md);
+  }
+
+  .sidebar-close-btn:focus-visible {
+    outline: 3px solid var(--focus-ring-color);
+    outline-offset: 2px;
   }
 
   .main-wrapper {
@@ -394,12 +426,33 @@
   }
 
   .btn-icon {
-    min-width: 40px;
-    min-height: 40px;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .mobile-menu-btn {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  .nav-link {
+    min-height: 44px;
+  }
+
+  .btn {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 360px) {
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: var(--space-2) var(--space-2);
+  }
+
+  .topbar-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }

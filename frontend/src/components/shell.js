@@ -40,6 +40,9 @@ export function renderShell(state) {
           <span class="brand-title">HERMES</span>
           <span class="brand-subtitle">Intelligence Engine</span>
         </div>
+        <button class="sidebar-close-btn" id="sidebar-close-btn" aria-label="Close navigation menu">
+          ${getIcon('x')}
+        </button>
       </div>
 
       <nav class="nav-section" aria-label="Primary Navigation">
@@ -72,8 +75,11 @@ export function renderShell(state) {
       </div>
     </aside>
 
+    <!-- Mobile Drawer Backdrop -->
+    <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
+
     <!-- Main Content Landmark -->
-    <div class="main-wrapper">
+    <div class="main-wrapper" id="app-main-wrapper">
       <header class="topbar" role="banner">
         <div class="breadcrumb-area">
           <button class="mobile-menu-btn" id="mobile-menu-toggle" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="app-sidebar">
