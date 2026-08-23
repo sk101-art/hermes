@@ -27,6 +27,16 @@ def health(db: Database = Depends(get_db)):
     return runtime_service.get_health(db=db)
 
 
+@router.get("/health/ready", summary="Readiness check", include_in_schema=False)
+def readiness(db: Database = Depends(get_db)):
+    db.conn.execute("SELECT 1").fetchone()
+    return {
+        "status": "ready",
+        "database_path": str(db.db_path),
+        "test_instance_id": os.getenv("HERMES_TEST_INSTANCE_ID"),
+    }
+
+
 @router.get("/runtime", summary="Runtime daemon and jobs operational overview")
 @router.get("/runtime/overview", summary="Runtime operational overview alias")
 def get_runtime(db: Database = Depends(get_db)):

@@ -15,9 +15,11 @@ import {
   focusPageHeading,
   openMobileDrawer,
   closeMobileDrawer,
+  syncDrawerAccessibility,
+  MOBILE_DRAWER_QUERY,
   VIEW_TITLES
 } from './utils/a11y.js';
-export { VIEW_TITLES, openMobileDrawer, closeMobileDrawer, focusPageHeading };
+export { VIEW_TITLES, openMobileDrawer, closeMobileDrawer, focusPageHeading, syncDrawerAccessibility };
 
 // Views
 import { renderTodayView } from './views/today.js';
@@ -30,6 +32,7 @@ import { renderRuntimeView } from './views/runtime.js';
 import { renderStoryDetailView } from './views/story-detail.js';
 
 const appRoot = document.getElementById('app');
+let hasCompletedInitialNavigation = false;
 
 /**
  * Mount and initialize the HERMES Application.
@@ -37,15 +40,22 @@ const appRoot = document.getElementById('app');
 export function initApp() {
   if (!appRoot) return;
 
-  // Inject skip link as FIRST element in app-root (before shell) for proper tab order
-  const skipLink = document.createElement('a');
-  skipLink.href = '#main-content';
-  skipLink.className = 'skip-link';
-  skipLink.textContent = 'Skip to main content';
-  appRoot.insertBefore(skipLink, appRoot.firstChild);
+  // Initial shell render with skip link as first child
+  appRoot.innerHTML = renderShell(store.getState());
 
-  // Initial shell render
-  appRoot.innerHTML = skipLink.outerHTML + renderShell(store.getState());
+  // Synchronize drawer accessibility immediately after shell creation
+  syncDrawerAccessibility();
+
+  // Listen for mobile media query changes to synchronize drawer accessibility
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    const mql = window.matchMedia(MOBILE_DRAWER_QUERY);
+    const mqlHandler = () => syncDrawerAccessibility();
+    if (typeof mql.addEventListener === 'function') {
+      mql.addEventListener('change', mqlHandler);
+    } else if (typeof mql.addListener === 'function') {
+      mql.addListener(mqlHandler);
+    }
+  }
 
   // Bind shell-level interactive elements
   bindShellEvents();
@@ -91,10 +101,13 @@ function captureStoryFocusReturn(routeKey) {
   const active = document.activeElement;
   if (!active) return;
 
+  const testIdEl = active.closest ? active.closest('[data-testid]') : null;
+  const linkEl = active.closest ? active.closest('a[href]') : null;
+
   storyFocusReturn = {
     routeKey,
-    testId: active.getAttribute('data-testid'),
-    href: active.getAttribute('href'),
+    testId: (testIdEl && testIdEl.getAttribute('data-testid')) || active.getAttribute('data-testid'),
+    href: (linkEl && linkEl.getAttribute('href')) || active.getAttribute('href'),
   };
 }
 
@@ -163,7 +176,11 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
   // Bind view-level interactive elements (retry, cards)
   bindViewInteractions(contentContainer);
 
-  // Focus management: restore to initiating card/link if returning from story, else focus h1/container
+  // Focus management:
+  // - returning from story: restore to initiating card/link, else focus h1/container
+  // - entering story: focus story dossier h1
+  // - initial page load: leave focus on body so first Tab reaches .skip-link
+  // - subsequent SPA route changes: focus new view h1
   if (isLeavingStory && typeof document !== 'undefined') {
     const restored = restoreStoryFocus(contentContainer);
     storyFocusReturn = null;
@@ -171,6 +188,11 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
     if (!restored) {
       focusPageHeading(contentContainer);
     }
+  } else if (isEnteringStory) {
+    focusPageHeading(contentContainer);
+  } else if (!hasCompletedInitialNavigation) {
+    hasCompletedInitialNavigation = true;
+    // Leave focus on body on initial load so the first Tab reaches .skip-link
   } else {
     focusPageHeading(contentContainer);
   }

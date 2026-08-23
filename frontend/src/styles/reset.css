@@ -77,33 +77,26 @@ body {
 /* Utility: Skip Navigation Link (WCAG 2.2 AA) */
 .skip-link {
   position: fixed;
-  top: var(--space-2);
+  top: -120px;
   left: var(--space-4);
   z-index: 10000;
-  padding: var(--space-1) var(--space-2);
-  background-color: var(--accent-primary-subtle);
-  color: var(--accent-primary) !important;
+  padding: var(--space-2) var(--space-4);
+  background-color: var(--accent-primary);
+  color: var(--ink-inverse) !important;
   font-weight: var(--font-weight-semibold);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-lg);
   text-decoration: none;
-  transition: all 0.15s ease-in-out;
-  opacity: 0.6;
+  transition: top 0.15s ease-in-out;
   white-space: nowrap;
 }
 
 .skip-link:focus,
 .skip-link:focus-visible {
-  opacity: 1;
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--text-sm);
-  background-color: var(--accent-primary);
-  color: var(--ink-inverse) !important;
-  box-shadow: var(--shadow-lg);
-  outline: 3px solid var(--ink-inverse);
+  top: var(--space-2);
+  outline: 3px solid var(--focus-ring-color);
   outline-offset: 2px;
-  white-space: normal;
 }
 
 /* Accessibility Focus Styles (WCAG 2.2 AA) */

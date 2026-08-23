@@ -28,7 +28,8 @@ export function renderShell(state) {
     ? 'Local API · Online'
     : (state.connectionStatus === 'degraded' ? 'Local API · Degraded' : (state.connectionStatus === 'offline' ? 'Local API · Offline' : 'Connecting…'));
 
-  return `<div class="app-shell">
+  return `<a href="#main-content" class="skip-link">Skip to main content</a>
+  <div class="app-shell">
     <!-- Sidebar Navigation Landmark -->
     <aside class="sidebar" id="app-sidebar" aria-label="Sidebar">
       <div class="brand-section">

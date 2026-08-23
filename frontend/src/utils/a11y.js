@@ -199,10 +199,19 @@ export function focusPageHeading(container) {
 
 let releaseDrawerFocusTrap = null;
 
+export const MOBILE_DRAWER_QUERY = '(max-width: 768px)';
+
+export function isMobileViewport() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia(MOBILE_DRAWER_QUERY).matches;
+}
+
 /**
- * Open the mobile navigation drawer with modal focus trapping.
+ * Synchronizes drawer accessibility attributes based on viewport and open/closed state.
  */
-export function openMobileDrawer() {
+export function syncDrawerAccessibility() {
   if (typeof document === 'undefined') return;
 
   const sidebar = document.getElementById('app-sidebar');
@@ -212,17 +221,69 @@ export function openMobileDrawer() {
 
   if (!sidebar) return;
 
+  const isMobile = isMobileViewport();
+  const isOpen = sidebar.classList.contains('open');
+
+  if (isOpen) {
+    sidebar.classList.add('open');
+    sidebar.removeAttribute('inert');
+    sidebar.setAttribute('aria-hidden', 'false');
+    if (backdrop) {
+      backdrop.classList.add('active');
+      backdrop.setAttribute('aria-hidden', 'false');
+    }
+    if (mobileToggle) {
+      mobileToggle.setAttribute('aria-expanded', 'true');
+      mobileToggle.setAttribute('aria-label', 'Close navigation menu');
+    }
+    if (mainWrapper && typeof mainWrapper.setAttribute === 'function') {
+      mainWrapper.setAttribute('inert', '');
+    }
+  } else if (isMobile) {
+    sidebar.classList.remove('open');
+    sidebar.setAttribute('inert', '');
+    sidebar.setAttribute('aria-hidden', 'true');
+    if (backdrop) {
+      backdrop.classList.remove('active');
+      backdrop.setAttribute('aria-hidden', 'true');
+    }
+    if (mobileToggle) {
+      mobileToggle.setAttribute('aria-expanded', 'false');
+      mobileToggle.setAttribute('aria-label', 'Toggle navigation menu');
+    }
+    if (mainWrapper && typeof mainWrapper.removeAttribute === 'function') {
+      mainWrapper.removeAttribute('inert');
+    }
+  } else {
+    // Desktop view: persistent sidebar
+    sidebar.classList.remove('open');
+    sidebar.removeAttribute('inert');
+    sidebar.removeAttribute('aria-hidden');
+    if (backdrop) {
+      backdrop.classList.remove('active');
+      backdrop.setAttribute('aria-hidden', 'true');
+    }
+    if (mobileToggle) {
+      mobileToggle.setAttribute('aria-expanded', 'false');
+      mobileToggle.setAttribute('aria-label', 'Toggle navigation menu');
+    }
+    if (mainWrapper && typeof mainWrapper.removeAttribute === 'function') {
+      mainWrapper.removeAttribute('inert');
+    }
+  }
+}
+
+/**
+ * Open the mobile navigation drawer with modal focus trapping.
+ */
+export function openMobileDrawer() {
+  if (typeof document === 'undefined') return;
+
+  const sidebar = document.getElementById('app-sidebar');
+  if (!sidebar) return;
+
   sidebar.classList.add('open');
-  if (backdrop) {
-    backdrop.classList.add('active');
-  }
-  if (mobileToggle) {
-    mobileToggle.setAttribute('aria-expanded', 'true');
-    mobileToggle.setAttribute('aria-label', 'Close navigation menu');
-  }
-  if (mainWrapper && typeof mainWrapper.setAttribute === 'function') {
-    mainWrapper.setAttribute('inert', '');
-  }
+  syncDrawerAccessibility();
 
   // Release any existing trap first to avoid duplicate listeners
   if (releaseDrawerFocusTrap) {
@@ -243,8 +304,6 @@ export function closeMobileDrawer(returnFocus = true) {
 
   const sidebar = document.getElementById('app-sidebar');
   const mobileToggle = document.getElementById('mobile-menu-toggle');
-  const backdrop = document.getElementById('sidebar-backdrop');
-  const mainWrapper = document.getElementById('app-main-wrapper');
 
   if (!sidebar) return;
 
@@ -254,21 +313,11 @@ export function closeMobileDrawer(returnFocus = true) {
     releaseDrawerFocusTrap = null;
   }
 
-  // Remove inert from background
-  if (mainWrapper && typeof mainWrapper.removeAttribute === 'function') {
-    mainWrapper.removeAttribute('inert');
-  }
-
   sidebar.classList.remove('open');
-  if (backdrop) {
-    backdrop.classList.remove('active');
-  }
-  if (mobileToggle) {
-    mobileToggle.setAttribute('aria-expanded', 'false');
-    mobileToggle.setAttribute('aria-label', 'Toggle navigation menu');
-  }
+  syncDrawerAccessibility();
 
   if (returnFocus && mobileToggle && typeof mobileToggle.focus === 'function') {
     mobileToggle.focus();
   }
 }
+

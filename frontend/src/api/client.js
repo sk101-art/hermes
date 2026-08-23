@@ -16,8 +16,18 @@ export class ApiError extends Error {
 }
 
 export function getApiBaseUrl() {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    return window.localStorage.getItem('hermes_api_url') || 'http://127.0.0.1:8765';
+  if (typeof window !== 'undefined') {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('api_url')) return urlParams.get('api_url');
+      if (urlParams.get('api_port')) return `http://127.0.0.1:${urlParams.get('api_port')}`;
+    } catch {}
+    if (window.localStorage) {
+      try {
+        const stored = window.localStorage.getItem('hermes_api_url');
+        if (stored) return stored;
+      } catch {}
+    }
   }
   return 'http://127.0.0.1:8765';
 }
