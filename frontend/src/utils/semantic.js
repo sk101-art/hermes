@@ -328,18 +328,8 @@ export function getEvidenceStanceMeta(stance) {
   if (EVIDENCE_STANCE_MAP[key] && key !== 'unknown') {
     return EVIDENCE_STANCE_MAP[key];
   }
-  // Isolated backend compatibility normalization aliases
-  const aliases = {
-    refutes: 'contradicts',
-    opposes: 'contradicts',
-    neutral: 'context',
-    background: 'context',
-  };
-  if (aliases[key] && EVIDENCE_STANCE_MAP[aliases[key]]) {
-    return EVIDENCE_STANCE_MAP[aliases[key]];
-  }
   return {
-    label: toTitleCase(key) || 'Unspecified',
+    label: 'Unspecified',
     cssClass: 'badge-stance-unknown',
     description: 'Unrecognized evidence stance',
   };

@@ -225,7 +225,7 @@ export function renderInboxCard(item) {
   let projectContextHtml = '';
   if (matchedProjects.length > 0 || (projectImpact !== null && projectImpact > 0)) {
     const scoreText = projectImpact !== null && projectImpact > 0
-      ? `<span class="project-impact-pill">Project Relevance: <strong>${Math.round(projectImpact * 100)}%</strong></span>`
+      ? `<span class="project-impact-pill">Project Impact: <strong>${Math.round(projectImpact * 100)}%</strong></span>`
       : '';
     projectContextHtml = `
       <div class="inbox-project-context" data-matched-projects="${escapeHtml(matchedProjects.join(','))}">

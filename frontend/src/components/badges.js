@@ -82,20 +82,162 @@ export function renderEvidenceStanceBadge(stance) {
 }
 
 /**
- * Render a Ranking / Relevance Score Badge.
- * Strictly labeled Relevance or Rank, NEVER Confidence or Verification.
- * @param {number|null} score 
- * @param {string} [label='Relevance'] 
- * @returns {string} HTML string
+ * Closed Score Domain Identifiers
  */
-export function renderRankingBadge(score, label = 'Relevance') {
-  if (score === null || score === undefined || isNaN(score)) {
+export const SCORE_DOMAINS = {
+  SEARCH_RANK: 'search_rank',
+  RELEVANCE: 'relevance',
+  CLUSTER_SCORE: 'cluster_score',
+  INBOX_PRIORITY: 'inbox_priority',
+  INBOX_RANK: 'inbox_rank',
+  PROJECT_RELEVANCE: 'project_relevance',
+  PROJECT_IMPACT: 'project_impact',
+};
+
+/**
+ * Render Search Score Badge (Neutral decimal representation, never probability percentage).
+ * @param {number|null} score 
+ * @returns {string}
+ */
+export function renderSearchScoreBadge(score) {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
     return '';
   }
-  const scoreText = (score >= 0 && score <= 1) ? `${Math.round(score * 100)}%` : String(score);
-  return `<span class="semantic-badge badge-rank" title="Search / Ingestion ranking score" aria-label="${escapeHtml(label)} score: ${scoreText}">
-    <span>${escapeHtml(label)}: ${scoreText}</span>
+  const formatted = score.toFixed(2);
+  return `<span class="semantic-badge badge-rank" title="Search retrieval and ranking score" aria-label="Search rank score: ${formatted}">
+    <span>Score: ${formatted}</span>
   </span>`;
+}
+
+/**
+ * Render Relevance Score Badge (Normalized fraction 0.0 - 1.0).
+ * @param {number|null} score 
+ * @returns {string}
+ */
+export function renderRelevanceBadge(score) {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+    return '';
+  }
+  const formatted = formatScorePercentage(score);
+  return `<span class="semantic-badge badge-rank" title="Corpus query relevance score" aria-label="Relevance: ${formatted}">
+    <span>Relevance: ${formatted}</span>
+  </span>`;
+}
+
+/**
+ * Render Cluster Discovery Score Badge (Non-normalized aggregate score, never percentage).
+ * @param {number|null} score 
+ * @returns {string}
+ */
+export function renderClusterScoreBadge(score) {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+    return '';
+  }
+  const formatted = score.toFixed(2);
+  return `<span class="semantic-badge badge-rank" title="Aggregated cluster discovery score" aria-label="Cluster score: ${formatted}">
+    <span>Cluster score: ${formatted}</span>
+  </span>`;
+}
+
+/**
+ * Render Daily Inbox Priority Score Badge (Normalized fraction 0.0 - 1.0).
+ * @param {number|null} score 
+ * @returns {string}
+ */
+export function renderInboxPriorityBadge(score) {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+    return '';
+  }
+  const formatted = formatScorePercentage(score);
+  return `<span class="semantic-badge badge-rank" title="Daily inbox priority score" aria-label="Priority: ${formatted}">
+    <span>Priority: ${formatted}</span>
+  </span>`;
+}
+
+/**
+ * Render Daily Inbox Rank Score Badge (Normalized fraction 0.0 - 1.0).
+ * @param {number|null} score 
+ * @returns {string}
+ */
+export function renderInboxRankBadge(score) {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+    return '';
+  }
+  const formatted = formatScorePercentage(score);
+  return `<span class="semantic-badge badge-rank" title="Daily inbox rank score" aria-label="Rank: ${formatted}">
+    <span>Rank: ${formatted}</span>
+  </span>`;
+}
+
+/**
+ * Render Project Relevance Badge (Normalized fraction 0.0 - 1.0).
+ * @param {number|null} score 
+ * @returns {string}
+ */
+export function renderProjectRelevanceBadge(score) {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+    return '';
+  }
+  const formatted = formatScorePercentage(score);
+  return `<span class="semantic-badge badge-rank" title="Local project relevance score" aria-label="Project relevance: ${formatted}">
+    <span>Project relevance: ${formatted}</span>
+  </span>`;
+}
+
+/**
+ * Render Project Impact Badge (Normalized fraction 0.0 - 1.0).
+ * @param {number|null} score 
+ * @returns {string}
+ */
+export function renderProjectImpactBadge(score) {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+    return '';
+  }
+  const formatted = formatScorePercentage(score);
+  return `<span class="semantic-badge badge-rank" title="Local project impact score" aria-label="Project impact: ${formatted}">
+    <span>Project impact: ${formatted}</span>
+  </span>`;
+}
+
+/**
+ * Closed domain-aware ranking badge renderer.
+ * Strictly uses closed score domains without guessing from numeric magnitude.
+ * @param {number|null} score 
+ * @param {string} [domain='relevance']
+ * @returns {string} HTML string
+ */
+export function renderRankingBadge(score, domain = 'relevance') {
+  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+    return '';
+  }
+  const d = String(domain).toLowerCase().trim();
+  switch (d) {
+    case 'search_rank':
+    case 'search':
+      return renderSearchScoreBadge(score);
+    case 'cluster_score':
+    case 'cluster':
+    case 'discovery':
+    case 'discovery score':
+      return renderClusterScoreBadge(score);
+    case 'inbox_priority':
+    case 'priority':
+      return renderInboxPriorityBadge(score);
+    case 'inbox_rank':
+    case 'rank':
+      return renderInboxRankBadge(score);
+    case 'project_relevance':
+      return renderProjectRelevanceBadge(score);
+    case 'project_impact':
+      return renderProjectImpactBadge(score);
+    case 'relevance':
+      return renderRelevanceBadge(score);
+    default:
+      // Neutral decimal rendering for unrecognized domain without assuming percentage
+      return `<span class="semantic-badge badge-rank" title="Score" aria-label="Score: ${score.toFixed(2)}">
+        <span>Score: ${score.toFixed(2)}</span>
+      </span>`;
+  }
 }
 
 export const CANONICAL_SOURCES = {
@@ -120,15 +262,14 @@ export function renderSourcePill(source) {
 }
 
 /**
- * Render a Project Context Match Pill.
+ * Render a Project Context Match Pill (Strictly match type only; does NOT combine impact score).
  * @param {string|null} matchType 
- * @param {number|null} [impactScore=null]
  * @returns {string} HTML string
  */
-export function renderProjectMatchPill(matchType, impactScore = null) {
-  const label = matchType ? matchType.replace(/[_-]/g, ' ') : 'Project Match';
-  const impact = impactScore !== null && impactScore !== undefined ? ` (${Math.round(impactScore * 100)}%)` : '';
-  return `<span class="project-match-pill" title="Matched to local engineering project profile" aria-label="Project relevance: ${escapeHtml(label)}${impact}">
-    <span>${escapeHtml(label)}${impact}</span>
+export function renderProjectMatchPill(matchType) {
+  if (!matchType) return '';
+  const label = matchType.replace(/[_-]/g, ' ');
+  return `<span class="project-match-pill" title="Matched to local engineering project profile" aria-label="Project match: ${escapeHtml(label)}">
+    <span>${escapeHtml(label)}</span>
   </span>`;
 }

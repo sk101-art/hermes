@@ -14,7 +14,11 @@ import {
   renderRiskBadge,
   renderSourcePill,
   renderProjectMatchPill,
-  renderRankingBadge,
+  renderRelevanceBadge,
+  renderSearchScoreBadge,
+  renderClusterScoreBadge,
+  renderProjectRelevanceBadge,
+  renderProjectImpactBadge,
 } from './badges.js';
 
 /**
@@ -46,11 +50,6 @@ export function renderStoryCard(story) {
     ? story.risk_score
     : (story.risk && typeof story.risk.score === 'number' ? story.risk.score : null);
 
-  // Relevance / Ranking (Cluster or Search Score)
-  const rankingScore = typeof story.cluster_score === 'number'
-    ? story.cluster_score
-    : (typeof story.score === 'number' ? story.score : (typeof story.relevance_score === 'number' ? story.relevance_score : null));
-
   // Project Match / Context
   const isProjectMatched = Boolean(story.project_match || (typeof story.project_impact_score === 'number' && story.project_impact_score > 0) || (story.matched_project_ids && story.matched_project_ids.length));
   const matchType = story.match_type || (isProjectMatched ? 'Project context' : null);
@@ -71,8 +70,10 @@ export function renderStoryCard(story) {
       ${verifStatus ? renderVerificationBadge(verifStatus, verifScore) : ''}
       ${maturityStage ? renderMaturityBadge(maturityStage) : ''}
       ${riskStatus && riskStatus !== 'not_assessed' ? renderRiskBadge(riskStatus, riskLevel, riskScore) : ''}
-      ${matchType ? renderProjectMatchPill(matchType, story.project_impact_score) : ''}
-      ${rankingScore !== null ? renderRankingBadge(rankingScore, 'Relevance') : ''}
+      ${matchType ? renderProjectMatchPill(matchType) : ''}
+      ${typeof story.project_relevance === 'number' ? renderProjectRelevanceBadge(story.project_relevance) : ''}
+      ${typeof story.project_impact_score === 'number' ? renderProjectImpactBadge(story.project_impact_score) : ''}
+      ${typeof story.score === 'number' ? renderSearchScoreBadge(story.score) : (typeof story.relevance_score === 'number' ? renderRelevanceBadge(story.relevance_score) : (typeof story.cluster_score === 'number' ? renderClusterScoreBadge(story.cluster_score) : ''))}
     </div>
   </article>`;
 }

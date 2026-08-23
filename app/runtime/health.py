@@ -148,6 +148,7 @@ def check_system_health(
         import sentence_transformers
     except ImportError:
         emb_status = "missing_dependency"
+        issues.append("sentence_transformers package not importable")
 
     # 6. Runtime Lock & Daemon Heartbeat
     lock_info = SingleInstanceLock().get_lock_info()

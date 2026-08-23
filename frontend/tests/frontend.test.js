@@ -320,7 +320,7 @@ test('Canonical evidence stances render correctly and unknown stance renders neu
 
   // Unknown stance degrades neutrally to .badge-stance-unknown (not .badge-stance-context)
   const unknown = getEvidenceStanceMeta('tangential_citation');
-  assert.strictEqual(unknown.label, 'Tangential Citation');
+  assert.strictEqual(unknown.label, 'Unspecified');
   assert.strictEqual(unknown.cssClass, 'badge-stance-unknown');
   assert.ok(!unknown.cssClass.includes('badge-stance-context'));
 
@@ -424,7 +424,7 @@ test('Phase 4 canonical payload rendering integration tests', () => {
   assert.ok(cardHtml1.includes('badge-maturity-production_candidate'));
   assert.ok(cardHtml1.includes('Critical risk (88%)'));
   assert.ok(cardHtml1.includes('badge-risk-critical'));
-  assert.ok(cardHtml1.includes('Relevance: 92%'));
+  assert.ok(cardHtml1.includes('Cluster score: 0.92'));
 
   // Test 2: Established technology with Mixed verification and Low Risk
   const storyEst = {
@@ -1023,15 +1023,15 @@ test('Search Result Card strictly labels ranking score as Relevance Score / Sear
 
   const html = renderSearchResultCard(item);
 
-  // 1. Must label score as Relevance Score
-  assert.ok(html.includes('Relevance Score: 94%'));
+  // 1. Must label score neutrally as Score: 0.94 without converting to percentage
+  assert.ok(html.includes('Score: 0.94'));
   assert.ok(html.includes('pill-relevance'));
 
   // 2. Must NEVER label score as Confidence, Verification, or Trust
-  assert.ok(!html.includes('Confidence: 94%'));
-  assert.ok(!html.includes('Verification Score: 94%'));
-  assert.ok(!html.includes('Trust Score: 94%'));
-  assert.ok(!html.includes('Accuracy: 94%'));
+  assert.ok(!html.includes('Confidence'));
+  assert.ok(!html.includes('Verification Score'));
+  assert.ok(!html.includes('Trust Score'));
+  assert.ok(!html.includes('Accuracy'));
 
   // 3. Null verification renders Not assessed
   assert.ok(html.includes('Verification: Not assessed') || html.includes('badge-verification-unassessed'));
@@ -3157,7 +3157,7 @@ test('Phase 10: project_impact_score is labeled as Project Relevance, never reco
 
   const html = renderInboxCard(item);
 
-  assert.ok(html.includes('Project Relevance:'));
+  assert.ok(html.includes('Project Impact:'));
   assert.ok(html.includes('78%'));
   assert.ok(html.includes('Project Context:'));
   assert.ok(!html.includes('Recommended'));
@@ -3597,7 +3597,7 @@ test('Phase 10 remediation: Null project_impact_score remains absent and does no
   };
 
   const htmlPos = renderInboxCard(posScoreItem);
-  assert.ok(htmlPos.includes('Project Relevance: <strong>75%</strong>'));
+  assert.ok(htmlPos.includes('Project Impact: <strong>75%</strong>'));
 });
 
 test('Phase 10 remediation: verified_claim:* reason codes render as Claim Priority Signal without truth claims', async () => {
@@ -6094,14 +6094,285 @@ test('Phase 14: Generic Changes values are not guessed into canonical taxonomies
   assert.ok(!versionTransition.includes('Unrecognized claim status'));
 });
 
-test('Phase 14: Retained stance aliases normalize predictably and idempotently', () => {
-  assert.strictEqual(getEvidenceStanceMeta('refutes').label, 'Contradicts');
-  assert.strictEqual(getEvidenceStanceMeta('opposes').label, 'Contradicts');
-  assert.strictEqual(getEvidenceStanceMeta('neutral').label, 'Context');
-  assert.strictEqual(getEvidenceStanceMeta('background').label, 'Context');
-
-  // Idempotency
+test('Phase 14: Single normalization boundary - frontend presenter accepts canonical only and degrades noncanonical neutrally', () => {
+  // Canonical stances render with full semantic metadata
+  assert.strictEqual(getEvidenceStanceMeta('supports').label, 'Supports');
   assert.strictEqual(getEvidenceStanceMeta('contradicts').label, 'Contradicts');
   assert.strictEqual(getEvidenceStanceMeta('context').label, 'Context');
-  assert.strictEqual(getEvidenceStanceMeta('supports').label, 'Supports');
+
+  // Direct noncanonical strings degrade neutrally to Unspecified
+  assert.strictEqual(getEvidenceStanceMeta('refutes').label, 'Unspecified');
+  assert.strictEqual(getEvidenceStanceMeta('opposes').label, 'Unspecified');
+  assert.strictEqual(getEvidenceStanceMeta('neutral').label, 'Unspecified');
+  assert.strictEqual(getEvidenceStanceMeta('background').label, 'Unspecified');
+  assert.strictEqual(getEvidenceStanceMeta('unknown_stance').label, 'Unspecified');
+});
+
+test('Phase 14: Score domain renderers adhere to strict closed domain contracts', async () => {
+  const {
+    renderSearchScoreBadge,
+    renderRelevanceBadge,
+    renderClusterScoreBadge,
+    renderInboxPriorityBadge,
+    renderInboxRankBadge,
+    renderProjectRelevanceBadge,
+    renderProjectImpactBadge,
+    renderRankingBadge,
+    renderProjectMatchPill,
+  } = await import('../src/components/badges.js');
+
+  const testVal = 0.85;
+
+  // 1. Search score: Decimal, never percentage
+  const searchHtml = renderSearchScoreBadge(testVal);
+  assert.ok(searchHtml.includes('Score: 0.85'));
+  assert.ok(!searchHtml.includes('85%'));
+
+  // 2. Cluster score: Decimal, never percentage
+  const clusterHtml = renderClusterScoreBadge(1.45);
+  assert.ok(clusterHtml.includes('Cluster score: 1.45'));
+  assert.ok(!clusterHtml.includes('145%'));
+
+  // 3. Relevance: Percentage
+  const relHtml = renderRelevanceBadge(testVal);
+  assert.ok(relHtml.includes('Relevance: 85%'));
+
+  // 4. Priority: Percentage
+  const priHtml = renderInboxPriorityBadge(testVal);
+  assert.ok(priHtml.includes('Priority: 85%'));
+
+  // 5. Rank: Percentage
+  const rankHtml = renderInboxRankBadge(testVal);
+  assert.ok(rankHtml.includes('Rank: 85%'));
+
+  // 6. Project Relevance vs Project Impact separation
+  const projRelHtml = renderProjectRelevanceBadge(0.90);
+  const projImpHtml = renderProjectImpactBadge(0.20);
+  assert.ok(projRelHtml.includes('Project relevance: 90%'));
+  assert.ok(projImpHtml.includes('Project impact: 20%'));
+  assert.notStrictEqual(projRelHtml, projImpHtml);
+
+  // 7. Project Match Pill renders match type only
+  const pillHtml = renderProjectMatchPill('technology_overlap');
+  assert.ok(pillHtml.includes('technology overlap'));
+  assert.ok(!pillHtml.includes('Project relevance:'));
+  assert.ok(!pillHtml.includes('%'));
+
+  // 8. Closed domain mapper
+  assert.ok(renderRankingBadge(testVal, 'search_rank').includes('Score: 0.85'));
+  assert.ok(renderRankingBadge(testVal, 'cluster_score').includes('Cluster score: 0.85'));
+  assert.ok(renderRankingBadge(testVal, 'relevance').includes('Relevance: 85%'));
+  assert.ok(renderRankingBadge(testVal, 'inbox_priority').includes('Priority: 85%'));
+  assert.ok(renderRankingBadge(testVal, 'inbox_rank').includes('Rank: 85%'));
+  assert.ok(renderRankingBadge(testVal, 'project_relevance').includes('Project relevance: 85%'));
+  assert.ok(renderRankingBadge(testVal, 'project_impact').includes('Project impact: 85%'));
+});
+
+test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming surfaces', async () => {
+  const store = (await import('../src/state/store.js')).store;
+  const createMockContainer = () => {
+    const childMap = new Map();
+    const c = {
+      innerHTML: '',
+      querySelector: (sel) => {
+        if (!childMap.has(sel)) {
+          childMap.set(sel, {
+            innerHTML: '',
+            textContent: '',
+            className: '',
+            style: {},
+            value: '',
+            checked: false,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            querySelector: () => null,
+            querySelectorAll: () => [],
+          });
+        }
+        return childMap.get(sel);
+      },
+      querySelectorAll: () => [],
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    return c;
+  };
+
+  // 1. Surface 1: Today View
+  const { renderTodayView } = await import('../src/views/today.js');
+  const todayContainer = createMockContainer();
+  fetchMock = async (url) => {
+    if (url.includes('/inbox')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [{
+            id: 'inbox-1',
+            story_cluster_id: 'sc-1',
+            title: 'Today Story',
+            summary: 'Summary text',
+            inbox_score: 0.82,
+            rank_score: 0.90,
+            project_impact_score: 0.75,
+            matched_project_ids: ['proj-1'],
+            item_type: 'new_story',
+            section: 'must_know',
+            state: 'unseen',
+            story_available: true,
+          }],
+          counts: { all: 1 }
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  await renderTodayView(todayContainer, store);
+  const feedHtml = todayContainer.querySelector('#inbox-feed-container').innerHTML;
+  assert.ok(feedHtml.includes('Today Story'));
+  assert.ok(feedHtml.includes('Priority:'));
+  assert.ok(feedHtml.includes('Project Impact:'));
+
+  // 2. Surface 2: Search View
+  const { renderSearchView } = await import('../src/views/search.js');
+  const searchContainer = createMockContainer();
+  fetchMock = async (url) => {
+    if (url.includes('/search')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [{
+            entity_id: 'sc-1',
+            title: 'Search Result Title',
+            score: 0.85,
+            claim_status: 'supported',
+            maturity: 'prototype',
+            sources: ['hackernews']
+          }]
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  await renderSearchView(searchContainer, store, { q: 'cuda' });
+  assert.ok(searchContainer.innerHTML.includes('Search with Epistemic Context'));
+
+  // 3. Surface 3: Story Dossier
+  const { renderStoryDetailView } = await import('../src/views/story-detail.js');
+  const dossierContainer = createMockContainer();
+  fetchMock = async (url) => {
+    if (url.includes('/stories/')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          story_cluster_id: 'sc-1',
+          title: 'Dossier Title',
+          cluster_score: 1.45,
+          sources: ['arxiv'],
+          events: [],
+          claims: [{
+            id: 'c-1',
+            claim_text: 'Claim text',
+            status: 'supported',
+            verification_score: 0.70
+          }]
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  await renderStoryDetailView(dossierContainer, store, { storyId: 'sc-1' });
+  assert.ok(dossierContainer.innerHTML.includes('Dossier Title'));
+  assert.ok(dossierContainer.innerHTML.includes('Cluster score: 1.45'));
+  assert.ok(!dossierContainer.innerHTML.includes('HERMES cluster'));
+
+  // 4. Surface 4: Saved Library
+  const { renderSavedView } = await import('../src/views/saved.js');
+  const savedContainer = createMockContainer();
+  fetchMock = async (url) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      items: [{
+        id: 'save-1',
+        title_snapshot: 'Saved Item Title',
+        maturity_snapshot: 'established',
+        claim_status_snapshot: 'supported',
+        sources: ['github']
+      }]
+    })
+  });
+  await renderSavedView(savedContainer, store);
+  assert.ok(savedContainer.innerHTML.includes('Saved Intelligence'));
+
+  // 5. Surface 5: Changes View
+  const { renderChangesView } = await import('../src/views/changes.js');
+  const changesContainer = createMockContainer();
+  fetchMock = async (url) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      changes: [{
+        id: 'chg-1',
+        change_type: 'maturity_transition',
+        old_value: 'prototype',
+        new_value: 'early_adoption',
+        importance: 0.85,
+        created_at: new Date().toISOString()
+      }],
+      total_count: 1
+    })
+  });
+  await renderChangesView(changesContainer, store);
+  assert.ok(changesContainer.innerHTML.includes('What Moved'));
+
+  // 6. Surface 6: Projects View
+  const { renderProjectsView } = await import('../src/views/projects.js');
+  const projectsContainer = createMockContainer();
+  fetchMock = async (url) => ({
+    ok: true,
+    status: 200,
+    json: async () => ([{
+      id: 'proj-1',
+      name: 'Test Project',
+      description: 'Project description',
+      matches_count: 2,
+      concerns_count: 0
+    }])
+  });
+  await renderProjectsView(projectsContainer, store);
+  assert.ok(projectsContainer.innerHTML.includes('Test Project'));
+
+  // 7. Surface 7: Morning Briefing
+  const { renderBriefingView } = await import('../src/views/briefing.js');
+  const briefingContainer = createMockContainer();
+  fetchMock = async (url) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      id: 'brief-1',
+      briefing_date: '2026-08-22',
+      items: [{
+        id: 'item-1',
+        title: 'Briefing Item Title',
+        rank_score: 0.88,
+        priority_rationale: 'Key project relevance'
+      }]
+    })
+  });
+  await renderBriefingView(briefingContainer, store);
+  assert.ok(briefingContainer.innerHTML.includes('Morning Briefing'));
+
+  // 8. Surface 8: Runtime View
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+  const runtimeContainer = createMockContainer();
+  fetchMock = async (url) => ({
+    ok: true,
+    status: 200,
+    json: async () => getMockRuntimeOverview()
+  });
+  await renderRuntimeView(runtimeContainer, store);
+  assert.ok(runtimeContainer.innerHTML.includes('Source Adapter Checkpoints'));
 });

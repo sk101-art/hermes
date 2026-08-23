@@ -19,7 +19,7 @@ import {
   renderMaturityBadge,
   renderRiskBadge,
   renderEvidenceStanceBadge,
-  renderRankingBadge,
+  renderClusterScoreBadge,
   renderSourcePill,
 } from '../components/badges.js';
 import {
@@ -330,8 +330,7 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
             <div style="flex:1;min-width:280px;">
               <div style="display:flex;gap:6px;align-items:center;margin-bottom:var(--space-2);flex-wrap:wrap;">
                 ${sources.map(renderSourcePill).join('')}
-                ${!sources.length ? '<span class="source-pill">HERMES cluster</span>' : ''}
-                ${clusterScore !== null ? renderRankingBadge(clusterScore, 'Discovery Score') : ''}
+                ${clusterScore !== null ? renderClusterScoreBadge(clusterScore) : ''}
               </div>
               <h1 style="margin:0 0 var(--space-2) 0;">${escapeHtml(title)}</h1>
               <div class="mono text-xs text-muted">

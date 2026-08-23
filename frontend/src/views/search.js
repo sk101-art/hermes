@@ -406,7 +406,7 @@ export function resetSearchFilterCatalogsCache() {
 export function renderSearchResultCard(item) {
   const entityId = item.entity_id || item.id || '';
   const title = item.title || item.canonical_title || 'Untitled Discovery';
-  const scorePct = typeof item.score === 'number' ? Math.round(item.score * 100) : null;
+  const scoreVal = typeof item.score === 'number' ? item.score.toFixed(2) : null;
   const verifScore = typeof item.verification_score === 'number' ? item.verification_score : null;
   const claimStatus = item.claim_status ?? null;
   const maturity = item.maturity || null;
@@ -436,7 +436,7 @@ export function renderSearchResultCard(item) {
 
         <div class="search-score-pill-group">
           <span class="pill-relevance" title="Search retrieval and ranking score based on lexical, semantic, and context signals">
-            Relevance Score: ${scorePct !== null ? `${scorePct}%` : 'N/A'}
+            Score: ${scoreVal !== null ? scoreVal : 'N/A'}
           </span>
         </div>
       </div>

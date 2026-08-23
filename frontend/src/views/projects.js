@@ -424,7 +424,7 @@ async function renderProjectDetailView(container, store, projectId) {
                       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
                         <span class="chip match-type-chip" style="font-weight:500;">${escapeHtml(formatMatchType(m.match_type))}</span>
                         <div style="display:flex;gap:var(--space-2);align-items:center;">
-                          ${typeof m.relevance_score === 'number' ? `<span class="score-pill score-relevance mono text-xs">Relevance: ${(m.relevance_score * 100).toFixed(0)}%</span>` : ''}
+                          ${typeof m.relevance_score === 'number' ? `<span class="score-pill score-relevance mono text-xs">Project Relevance: ${(m.relevance_score * 100).toFixed(0)}%</span>` : ''}
                           ${typeof m.impact_score === 'number' ? `<span class="score-pill score-impact mono text-xs">Project Impact: ${(m.impact_score * 100).toFixed(0)}%</span>` : ''}
                         </div>
                       </div>
