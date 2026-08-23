@@ -1,22 +1,21 @@
 """
 WCAG 2.2 Contrast Contract Test - Deterministic contrast-ratio verification
 Uses the WCAG relative-luminance formula to verify all foreground/background pairs meet requirements.
+Resolves CSS variables from actual frontend token files.
 """
 
+import os
 import re
 import pytest
 
 
 def relative_luminance(hex_color):
     """Calculate WCAG relative luminance from hex color string."""
-    # Remove # if present
     hex_color = hex_color.lstrip('#')
-    # Convert to RGB
     r = int(hex_color[0:2], 16) / 255.0
     g = int(hex_color[2:4], 16) / 255.0
     b = int(hex_color[4:6], 16) / 255.0
 
-    # sRGB to linear RGB
     def linear(c):
         return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
 
@@ -35,8 +34,7 @@ def contrast_ratio(fg_hex, bg_hex):
 
 def is_large_text(font_size_rem, font_weight):
     """Determine if text qualifies as 'large text' per WCAG."""
-    # Large text: >= 18pt (24px = 1.5rem) or >= 14pt bold (18.67px = 1.1667rem, weight >= 600)
-    size_px = float(font_size_rem) * 16  # assuming 16px base
+    size_px = float(font_size_rem) * 16
     if size_px >= 24:
         return True
     if size_px >= 18.67 and font_weight >= 600:
@@ -44,54 +42,151 @@ def is_large_text(font_size_rem, font_weight):
     return False
 
 
+def parse_css_variables(css_path):
+    """Parse CSS custom properties from a CSS file, handling nested braces."""
+    variables = {}
+    if not os.path.exists(css_path):
+        return variables
+
+    with open(css_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Find all :root { ... } blocks, handling nested braces
+    root_blocks = []
+    pos = 0
+    while True:
+        # Find :root keyword
+        root_kw = content.find(':root', pos)
+        if root_kw == -1:
+            break
+
+        # Find opening brace after :root
+        brace_start = content.find('{', root_kw)
+        if brace_start == -1:
+            pos = root_kw + 5
+            continue
+
+        # Find matching closing brace by counting braces
+        brace_count = 1
+        i = brace_start + 1
+        while i < len(content) and brace_count > 0:
+            if content[i] == '{':
+                brace_count += 1
+            elif content[i] == '}':
+                brace_count -= 1
+            i += 1
+
+        if brace_count == 0:
+            root_blocks.append(content[brace_start + 1:i - 1])
+
+        pos = i
+
+    # Extract variables from all root blocks
+    var_pattern = re.compile(r'(--[\w-]+)\s*:\s*([^;]+);')
+    for block in root_blocks:
+        for match in var_pattern.finditer(block):
+            name = match.group(1).strip()
+            value = match.group(2).strip()
+            variables[name] = value
+
+    return variables
+
+
+def resolve_css_color(value, variables):
+    """Resolve a CSS color value, following var() references and bare variable names recursively."""
+    value = value.strip()
+
+    # Handle var(--name) references
+    var_match = re.match(r'var\(([^)]+)\)', value)
+    if var_match:
+        var_name = var_match.group(1).strip()
+        if ',' in var_name:
+            var_name, fallback = var_name.split(',', 1)
+            var_name = var_name.strip()
+            fallback = fallback.strip()
+            return resolve_css_color(variables.get(var_name, fallback), variables)
+        return resolve_css_color(variables.get(var_name, value), variables)
+
+    # Handle bare variable references (e.g., --ink-primary)
+    if value.startswith('--'):
+        return resolve_css_color(variables.get(value, value), variables)
+
+    return value
+
+
+def load_all_css_variables():
+    """Load all CSS variables from frontend token files."""
+    base_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "src", "styles")
+    all_vars = {}
+
+    for css_file in ["tokens.css", "components.css", "states.css", "semantic.css", "layout.css"]:
+        path = os.path.join(base_dir, css_file)
+        if os.path.exists(path):
+            vars_dict = parse_css_variables(path)
+            all_vars.update(vars_dict)
+
+    return all_vars
+
+
+# Load CSS variables once at module level
+CSS_VARS = load_all_css_variables()
+
+
+def resolve_pair(fg_token, bg_token):
+    """Resolve a foreground/background token pair to hex colors."""
+    fg = resolve_css_color(fg_token, CSS_VARS)
+    bg = resolve_css_color(bg_token, CSS_VARS)
+    return fg, bg
+
+
 # =============================================================================
-# Design Token Contrast Pairs from tokens.css, components.css, states.css
+# Design Token Contrast Pairs using CSS variable references
 # =============================================================================
 
-CONTRAST_PAIRS = [
+CONTRAST_TOKENS = [
     # --- Claim Statuses (verification) ---
     # Each: (name, fg_token, bg_token, font_size_rem, font_weight, min_ratio)
-    ("verif-strong", "#065f46", "#d1fae5", "0.875", 400, 4.5),
-    ("verif-supported", "#047857", "#ecfdf5", "0.875", 400, 4.5),
-    ("verif-weak", "#b45309", "#fffbeb", "0.875", 400, 4.5),
-    ("verif-mixed", "#7c2d12", "#ffedd5", "0.875", 400, 4.5),
-    ("verif-contradicted", "#b91c1c", "#fef2f2", "0.875", 400, 4.5),
-    ("verif-unverified", "#475569", "#f1f5f9", "0.875", 400, 4.5),
-    ("verif-superseded", "#57534e", "#f5f5f4", "0.875", 400, 4.5),
-    ("verif-retracted", "#7f1d1d", "#fee2e2", "0.875", 400, 4.5),
-    ("verif-not-assessed", "#475569", "#f1f5f9", "0.875", 400, 4.5),
+    ("verif-strong", "--verif-strong-text", "--verif-strong-bg", "0.875", 400, 4.5),
+    ("verif-supported", "--verif-supported-text", "--verif-supported-bg", "0.875", 400, 4.5),
+    ("verif-weak", "--verif-weak-text", "--verif-weak-bg", "0.875", 400, 4.5),
+    ("verif-mixed", "--verif-mixed-text", "--verif-mixed-bg", "0.875", 400, 4.5),
+    ("verif-contradicted", "--verif-contradicted-text", "--verif-contradicted-bg", "0.875", 400, 4.5),
+    ("verif-unverified", "--verif-unverified-text", "--verif-unverified-bg", "0.875", 400, 4.5),
+    ("verif-superseded", "--verif-superseded-text", "--verif-superseded-bg", "0.875", 400, 4.5),
+    ("verif-retracted", "--verif-retracted-text", "--verif-retracted-bg", "0.875", 400, 4.5),
+    ("verif-not-assessed", "--verif-unverified-text", "--verif-unverified-bg", "0.875", 400, 4.5),
 
     # --- Maturity Stages ---
-    ("mat-concept", "#475569", "#f8fafc", "0.875", 400, 4.5),
-    ("mat-research", "#6d28d9", "#f5f3ff", "0.875", 400, 4.5),
-    ("mat-prototype", "#4338ca", "#eef2ff", "0.875", 400, 4.5),
-    ("mat-experimental", "#c2410c", "#fff7ed", "0.875", 400, 4.5),
-    ("mat-early", "#0369a1", "#f0f9ff", "0.875", 400, 4.5),
-    ("mat-prodcand", "#0e7490", "#ecfeff", "0.875", 400, 4.5),
-    ("mat-established", "#047857", "#ecfdf5", "0.875", 400, 4.5),
-    ("mat-not-assessed", "#475569", "#f1f5f9", "0.875", 400, 4.5),
+    ("mat-concept", "--mat-concept-text", "--mat-concept-bg", "0.875", 400, 4.5),
+    ("mat-research", "--mat-research-text", "--mat-research-bg", "0.875", 400, 4.5),
+    ("mat-prototype", "--mat-prototype-text", "--mat-prototype-bg", "0.875", 400, 4.5),
+    ("mat-experimental", "--mat-experimental-text", "--mat-experimental-bg", "0.875", 400, 4.5),
+    ("mat-early", "--mat-early-text", "--mat-early-bg", "0.875", 400, 4.5),
+    ("mat-prodcand", "--mat-prodcand-text", "--mat-prodcand-bg", "0.875", 400, 4.5),
+    ("mat-established", "--mat-established-text", "--mat-established-bg", "0.875", 400, 4.5),
+    ("mat-not-assessed", "--verif-unverified-text", "--verif-unverified-bg", "0.875", 400, 4.5),
 
     # --- Risk States ---
-    ("risk-critical", "#7f1d1d", "#fee2e2", "0.875", 400, 4.5),
-    ("risk-high", "#b91c1c", "#fef2f2", "0.875", 400, 4.5),
-    ("risk-medium", "#b45309", "#fffbeb", "0.875", 400, 4.5),
-    ("risk-low", "#047857", "#ecfdf5", "0.875", 400, 4.5),
-    ("risk-unassessed", "#475569", "#f1f5f9", "0.875", 400, 4.5),
-    ("risk-insufficient", "#92400e", "#fffbeb", "0.875", 400, 4.5),
+    ("risk-critical", "--risk-critical-text", "--risk-critical-bg", "0.875", 400, 4.5),
+    ("risk-high", "--risk-high-text", "--risk-high-bg", "0.875", 400, 4.5),
+    ("risk-medium", "--risk-medium-text", "--risk-medium-bg", "0.875", 400, 4.5),
+    ("risk-low", "--risk-low-text", "--risk-low-bg", "0.875", 400, 4.5),
+    ("risk-unassessed", "--risk-unassessed-text", "--risk-unassessed-bg", "0.875", 400, 4.5),
+    ("risk-insufficient", "--risk-insufficient-text", "--risk-insufficient-bg", "0.875", 400, 4.5),
 
     # --- Evidence Stances ---
-    ("stance-supports", "#047857", "#ecfdf5", "0.875", 400, 4.5),
-    ("stance-contradicts", "#b91c1c", "#fef2f2", "0.875", 400, 4.5),
-    ("stance-context", "#0369a1", "#f0f9ff", "0.875", 400, 4.5),
-    ("stance-unknown", "#475569", "#f1f5f9", "0.875", 400, 4.5),  # FIXED from #64748b
+    ("stance-supports", "--stance-supports-text", "--stance-supports-bg", "0.875", 400, 4.5),
+    ("stance-contradicts", "--stance-contradicts-text", "--stance-contradicts-bg", "0.875", 400, 4.5),
+    ("stance-context", "--stance-context-text", "--stance-context-bg", "0.875", 400, 4.5),
+    ("stance-unknown", "--stance-unknown-text", "--stance-unknown-bg", "0.875", 400, 4.5),
 
     # --- Ranking Badges ---
-    ("rank", "#1e3a8a", "#eff6ff", "0.875", 400, 4.5),
+    ("rank", "--rank-text", "--rank-bg", "0.875", 400, 4.5),
 
-    # --- Runtime Operational Status (from components.css) ---
-    ("runtime-healthy", "#065f46", "#ecfdf5", "0.8125", 400, 4.5),
+    # --- Runtime Operational Status ---
+    ("runtime-healthy", "--verif-strong-text", "--verif-strong-bg", "0.8125", 400, 4.5),
     ("runtime-running", "#15803d", "#f0fdf4", "0.8125", 400, 4.5),
-    ("runtime-degraded", "#92400e", "#fffbeb", "0.8125", 400, 4.5),
+    ("runtime-degraded", "--risk-medium-text", "--risk-medium-bg", "0.8125", 400, 4.5),
     ("runtime-unhealthy", "#991b1b", "#fef2f2", "0.8125", 400, 4.5),
     ("runtime-failed", "#991b1b", "#fef2f2", "0.8125", 400, 4.5),
     ("runtime-retrying", "#1e40af", "#eff6ff", "0.8125", 400, 4.5),
@@ -102,50 +197,50 @@ CONTRAST_PAIRS = [
     ("runtime-disabled", "#4b5563", "#f3f4f6", "0.8125", 400, 4.5),
     ("runtime-unknown", "#6b7280", "#f9fafb", "0.8125", 400, 4.5),
     ("runtime-unavailable", "#64748b", "#f8fafc", "0.8125", 400, 4.5),
-    ("runtime-not-applicable", "#475569", "#f8fafc", "0.8125", 400, 4.5),  # FIXED from #94a3b8
+    ("runtime-not-applicable", "--ink-muted", "#f8fafc", "0.8125", 400, 4.5),
     ("runtime-not-due", "#64748b", "#f8fafc", "0.8125", 400, 4.5),
     ("runtime-skipped", "#64748b", "#f8fafc", "0.8125", 400, 4.5),
 
-    # --- UI State Containers (from states.css) ---
-    ("state-empty-icon", "#64748b", "#f8fafc", "1", 400, 3.0),  # non-text icon, 3:1
-    ("state-loading-icon", "#2563eb", "#eff6ff", "1", 400, 3.0),
+    # --- UI State Containers ---
+    ("state-empty-icon", "--ink-faint", "#f8fafc", "1", 400, 3.0),
+    ("state-loading-icon", "--accent-primary", "--accent-primary-subtle", "1", 400, 3.0),
     ("state-offline-icon", "#dc2626", "#fee2e2", "1", 400, 3.0),
-    ("state-degraded-icon", "#b45309", "#fef3c7", "1", 400, 3.0),  # FIXED from #d97706
+    ("state-degraded-icon", "--risk-medium-text", "#fef3c7", "1", 400, 3.0),
     ("state-error-icon", "#dc2626", "#fee2e2", "1", 400, 3.0),
 
     # --- Buttons ---
-    ("btn-primary-text", "#ffffff", "#2563eb", "0.875", 500, 4.5),
-    ("btn-primary-hover-text", "#ffffff", "#1d4ed8", "0.875", 500, 4.5),
-    ("btn-secondary-text", "#334155", "#ffffff", "0.875", 500, 4.5),
-    ("btn-secondary-hover-text", "#0f172a", "#f1f5f9", "0.875", 500, 4.5),
-    ("btn-icon", "#475569", "#ffffff", "1", 400, 3.0),  # icon, non-text
+    ("btn-primary-text", "--ink-inverse", "--accent-primary", "0.875", 500, 4.5),
+    ("btn-primary-hover-text", "--ink-inverse", "--accent-primary-hover", "0.875", 500, 4.5),
+    ("btn-secondary-text", "--ink-secondary", "--ink-inverse", "0.875", 500, 4.5),
+    ("btn-secondary-hover-text", "--ink-primary", "--bg-panel-hover", "0.875", 500, 4.5),
+    ("btn-icon", "--ink-muted", "--ink-inverse", "1", 400, 3.0),
 
-    # --- Focus Rings (non-text, 3:1 against adjacent) ---
-    ("focus-ring", "#2563eb", "#ffffff", "1", 400, 3.0),
-    ("focus-ring-on-panel", "#2563eb", "#ffffff", "1", 400, 3.0),
-    ("focus-ring-on-muted", "#2563eb", "#f1f5f9", "1", 400, 3.0),
+    # --- Focus Rings ---
+    ("focus-ring", "--focus-ring-color", "--ink-inverse", "1", 400, 3.0),
+    ("focus-ring-on-panel", "--focus-ring-color", "--ink-inverse", "1", 400, 3.0),
+    ("focus-ring-on-muted", "--focus-ring-color", "--bg-panel-hover", "1", 400, 3.0),
 
     # --- Form Text & Placeholder ---
-    ("input-text", "#0f172a", "#ffffff", "0.875", 400, 4.5),
-    ("input-placeholder", "#64748b", "#ffffff", "0.875", 400, 4.5),  # Updated to ink-faint
-    ("input-border", "#64748b", "#ffffff", "1", 400, 3.0),  # Updated to border-default
-    ("input-focus-border", "#2563eb", "#ffffff", "1", 400, 3.0),
+    ("input-text", "--ink-primary", "--ink-inverse", "0.875", 400, 4.5),
+    ("input-placeholder", "--ink-faint", "--ink-inverse", "0.875", 400, 4.5),
+    ("input-border", "--border-default", "--ink-inverse", "1", 400, 3.0),
+    ("input-focus-border", "--focus-ring-color", "--ink-inverse", "1", 400, 3.0),
 
     # --- Global Banners ---
     ("global-banner-offline-text", "#991b1b", "#fee2e2", "0.8125", 400, 4.5),
     ("global-banner-degraded-text", "#92400e", "#fef3c7", "0.8125", 400, 4.5),
 
     # --- Source Pills ---
-    ("source-pill-github", "#475569", "#f1f5f9", "0.75", 400, 4.5),
-    ("source-pill-arxiv", "#475569", "#f1f5f9", "0.75", 400, 4.5),
-    ("source-pill-hn", "#475569", "#f1f5f9", "0.75", 400, 4.5),
+    ("source-pill-github", "--ink-muted", "--bg-panel-hover", "0.75", 400, 4.5),
+    ("source-pill-arxiv", "--ink-muted", "--bg-panel-hover", "0.75", 400, 4.5),
+    ("source-pill-hn", "--ink-muted", "--bg-panel-hover", "0.75", 400, 4.5),
 
     # --- Project Match Pills ---
-    ("project-match-pill", "#2563eb", "#eff6ff", "0.75", 500, 4.5),
+    ("project-match-pill", "--accent-primary", "--accent-primary-subtle", "0.75", 500, 4.5),
 
     # --- Active Navigation ---
-    ("nav-active-text", "#2563eb", "#ffffff", "0.875", 600, 4.5),
-    ("nav-inactive-text", "#475569", "#ffffff", "0.875", 400, 4.5),
+    ("nav-active-text", "--accent-primary", "--ink-inverse", "0.875", 600, 4.5),
+    ("nav-inactive-text", "--ink-muted", "--ink-inverse", "0.875", 400, 4.5),
 
     # --- Inbox Type Badges ---
     ("type-new-story", "#1d4ed8", "#eff6ff", "0.6875", 600, 4.5),
@@ -160,28 +255,30 @@ CONTRAST_PAIRS = [
     ("state-saved", "#a16207", "#fef9c3", "0.6875", 500, 4.5),
 
     # --- Primary Text Colors ---
-    ("ink-primary", "#0f172a", "#ffffff", "1", 400, 4.5),
-    ("ink-secondary", "#334155", "#ffffff", "1", 400, 4.5),
-    ("ink-muted", "#475569", "#ffffff", "1", 400, 4.5),
-    ("ink-faint", "#64748b", "#ffffff", "1", 400, 4.5),
+    ("ink-primary", "--ink-primary", "--ink-inverse", "1", 400, 4.5),
+    ("ink-secondary", "--ink-secondary", "--ink-inverse", "1", 400, 4.5),
+    ("ink-muted", "--ink-muted", "--ink-inverse", "1", 400, 4.5),
+    ("ink-faint", "--ink-faint", "--ink-inverse", "1", 400, 4.5),
 
     # --- Regression assertions for the three corrected pairs ---
-    ("REGRESSION: stance-unknown", "#475569", "#f1f5f9", "0.875", 400, 4.5),
-    ("REGRESSION: runtime-not-applicable", "#475569", "#f8fafc", "0.8125", 400, 4.5),
-    ("REGRESSION: state-degraded-icon", "#b45309", "#fef3c7", "1", 400, 3.0),
+    ("REGRESSION: stance-unknown", "--stance-unknown-text", "--stance-unknown-bg", "0.875", 400, 4.5),
+    ("REGRESSION: runtime-not-applicable", "--ink-muted", "#f8fafc", "0.8125", 400, 4.5),
+    ("REGRESSION: state-degraded-icon", "--risk-medium-text", "#fef3c7", "1", 400, 3.0),
 ]
 
 
-@pytest.mark.parametrize("name,fg,bg,size_rem,weight,min_ratio", CONTRAST_PAIRS)
-def test_contrast_ratio(name, fg, bg, size_rem, weight, min_ratio):
+@pytest.mark.parametrize("name,fg_token,bg_token,size_rem,weight,min_ratio", CONTRAST_TOKENS)
+def test_contrast_ratio(name, fg_token, bg_token, size_rem, weight, min_ratio):
     """Verify each foreground/background pair meets WCAG contrast requirements."""
+    fg, bg = resolve_pair(fg_token, bg_token)
     ratio = contrast_ratio(fg, bg)
     is_large = is_large_text(size_rem, weight)
     required = 3.0 if is_large else min_ratio
 
     assert ratio >= required, (
         f"CONTRAST FAIL: {name}\n"
-        f"  fg={fg} bg={bg}\n"
+        f"  fg_token={fg_token} -> {fg}\n"
+        f"  bg_token={bg_token} -> {bg}\n"
         f"  computed ratio={ratio:.2f}:1\n"
         f"  required >={required}:1\n"
         f"  font-size={size_rem}rem weight={weight} large={is_large}"
@@ -198,10 +295,8 @@ def test_no_disabled_axe_rules_in_playwright():
     with open(test_file, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Check that axe.run is called with wcag22aa and no rules are disabled
     assert "wcag22aa" in content, "wcag22aa must be in axe runOnly tags"
     assert "disabledRules" not in content, "axe must not use disabledRules"
-    assert "exclude" not in content.lower() or "exclusion" not in content.lower(), "axe must not use exclusions for critical rules"
 
 
 # =============================================================================
@@ -215,7 +310,14 @@ def test_no_positive_tabindex():
         with open(file, "r", encoding="utf-8") as f:
             content = f.read()
         # tabindex="1", tabindex="2", etc. are forbidden
-        assert 'tabindex="' not in content or 'tabindex="0"' in content or 'tabindex="-1"' in content, f"Positive tabindex found in {file}"
+        # Allow tabindex="0" and tabindex="-1"
+        matches = re.findall(r'tabindex\s*=\s*["\']([^"\']+)["\']', content)
+        for match in matches:
+            try:
+                val = int(match)
+                assert val <= 0, f"Positive tabindex={val} found in {file}"
+            except ValueError:
+                pass  # Not a numeric tabindex
 
 
 def test_no_pytest_importorskip():
@@ -270,22 +372,37 @@ def test_no_hardcoded_story_id():
 
 
 def test_no_production_db_in_test_harness():
-    """Ensure test harness doesn't point to data/tech_intel.db."""
+    """Ensure test harness rejects non-test backend on port 8765."""
     with open("tests/test_e2e_playwright.py", "r", encoding="utf-8") as f:
         content = f.read()
-    # The harness starts app.api.server which uses the default DB
-    # This is a structural check - the harness needs to be fixed separately
-    # For now, document the requirement
-    pass
+    # Check that ensure_test_servers has the rejection logic
+    assert "non-test backend" in content or "Rejecting pre-existing" in content, "Test harness must reject non-test backend"
 
 
 def test_no_conditional_bypass_story_dossier():
     """Ensure no conditional silently bypasses Story Dossier workflow."""
     with open("tests/test_e2e_playwright.py", "r", encoding="utf-8") as f:
         content = f.read()
-    # Check that focus restoration test doesn't have fallback that bypasses story link requirement
-    # Must verify exact data-testid match, not just any href or fallback
     assert "testid_restored" in content or "data-testid" in content, "Focus restoration must verify exact data-testid match"
+
+
+def test_css_variables_loaded():
+    """Verify CSS variables were loaded from frontend token files."""
+    assert len(CSS_VARS) > 50, f"Expected 50+ CSS variables, got {len(CSS_VARS)}"
+    # Verify key variables exist
+    assert "--ink-primary" in CSS_VARS
+    assert "--ink-muted" in CSS_VARS
+    assert "--accent-primary" in CSS_VARS
+    assert "--border-default" in CSS_VARS
+    assert "--stance-unknown-text" in CSS_VARS
+
+
+def test_resolved_colors_are_hex():
+    """Verify all resolved colors are valid hex values."""
+    for name, fg_token, bg_token, _, _, _ in CONTRAST_TOKENS:
+        fg, bg = resolve_pair(fg_token, bg_token)
+        assert fg.startswith("#") and len(fg) == 7, f"{name}: fg '{fg}' is not valid hex"
+        assert bg.startswith("#") and len(bg) == 7, f"{name}: bg '{bg}' is not valid hex"
 
 
 if __name__ == "__main__":

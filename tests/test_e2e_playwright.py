@@ -6,6 +6,8 @@ import urllib.request
 import tempfile
 import shutil
 import sqlite3
+import socket
+import signal
 import pytest
 from playwright.sync_api import sync_playwright
 
@@ -16,8 +18,35 @@ if sys.platform == "win32":
         pass
 
 AXE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "node_modules", "axe-core", "axe.min.js"))
-BASE_URL = "http://127.0.0.1:5173"
-API_URL = "http://127.0.0.1:8765"
+
+# Dynamic port allocation
+def find_free_port(start=10000, end=20000):
+    """Find a free port in the given range."""
+    for port in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('127.0.0.1', port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError("No free ports available")
+
+# Session-scoped port assignment
+API_PORT = None
+FRONTEND_PORT = None
+BASE_URL = None
+API_URL = None
+
+
+def assign_test_ports():
+    """Assign unique ports for this test session."""
+    global API_PORT, FRONTEND_PORT, BASE_URL, API_URL
+    if API_PORT is None:
+        API_PORT = find_free_port(18000, 19000)
+        FRONTEND_PORT = find_free_port(19001, 20000)
+        BASE_URL = f"http://127.0.0.1:{FRONTEND_PORT}"
+        API_URL = f"http://127.0.0.1:{API_PORT}"
+
 
 # Test database fixture
 TEST_DB_DIR = None
@@ -28,6 +57,7 @@ TEST_DB_PATH = None
 @pytest.fixture(scope="session")
 def test_servers():
     """Start test servers with isolated database once per session."""
+    assign_test_ports()
     procs = ensure_test_servers()
     yield procs
     cleanup_test_servers(procs)
@@ -262,8 +292,21 @@ def check_url_health(url, timeout=2.0):
         return False
 
 
+def verify_backend_uses_test_db():
+    """Verify the backend is using our test database. Raises AssertionError if not."""
+    req = urllib.request.urlopen(f"{API_URL}/health", timeout=2.0)
+    import json
+    health_data = json.loads(req.read().decode())
+    # Check that the database path in health matches our test database
+    if "database_path" in health_data:
+        assert TEST_DB_PATH in health_data["database_path"], f"Backend not using test database: {health_data['database_path']}"
+    else:
+        raise AssertionError("Health endpoint does not expose database_path")
+
+
 def ensure_test_servers():
-    """Deterministic server harness with isolated test database."""
+    """Deterministic server harness with isolated test database.
+    Rejects pre-existing servers unless they prove they're test instances."""
     global TEST_DB_PATH
     
     # Initialize isolated test database
@@ -275,26 +318,46 @@ def ensure_test_servers():
     
     spawned_processes = []
 
+    # Check if backend is already running
     backend_ok = check_url_health(f"{API_URL}/health")
-    if not backend_ok:
+    if backend_ok:
+        # Verify it's our test instance
+        try:
+            verify_backend_uses_test_db()
+            print(f"Reusing existing test backend on port {API_PORT}")
+        except Exception as e:
+            # Pre-existing server is not our test instance - fail fast
+            raise RuntimeError(f"Port {API_PORT} is occupied by a non-test backend. "
+                             f"Please free the port or use a different port range. Error: {e}")
+    else:
+        # Start our own backend
         backend_env = os.environ.copy()
-        proc = subprocess.Popen([sys.executable, "-m", "app.api.server"], env=backend_env)
+        proc = subprocess.Popen([sys.executable, "-m", "app.api.server", "--port", str(API_PORT)], env=backend_env)
         spawned_processes.append(("backend", proc))
         start = time.time()
         while time.time() - start < 15:
             if check_url_health(f"{API_URL}/health"):
-                backend_ok = True
-                break
+                try:
+                    verify_backend_uses_test_db()
+                    backend_ok = True
+                    break
+                except Exception:
+                    pass
             time.sleep(0.5)
         if not backend_ok:
             for name, p in spawned_processes:
                 p.terminate()
-            raise RuntimeError("Failed to start test backend server on port 8765")
+            raise RuntimeError("Failed to start test backend server or verify test database")
 
+    # Check if frontend is already running
     frontend_ok = check_url_health(BASE_URL)
-    if not frontend_ok:
+    if frontend_ok:
+        print(f"Reusing existing test frontend on port {FRONTEND_PORT}")
+    else:
+        # Start our own frontend
         frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
-        proc = subprocess.Popen("npm run dev", cwd=frontend_dir, shell=True)
+        proc = subprocess.Popen(["npm", "run", "dev", "--", "--port", str(FRONTEND_PORT)], 
+                                cwd=frontend_dir, shell=False)
         spawned_processes.append(("frontend", proc))
         start = time.time()
         while time.time() - start < 15:
@@ -305,18 +368,7 @@ def ensure_test_servers():
         if not frontend_ok:
             for name, p in spawned_processes:
                 p.terminate()
-            raise RuntimeError("Failed to start test frontend dev server on port 5173")
-
-    # Verify backend is using test database
-    try:
-        req = urllib.request.urlopen(f"{API_URL}/health", timeout=2.0)
-        import json
-        health_data = json.loads(req.read().decode())
-        # Check that the database path in health matches our test database
-        if "database" in health_data:
-            assert TEST_DB_PATH in health_data["database"], f"Backend not using test database: {health_data['database']}"
-    except Exception:
-        pass  # Health endpoint might not expose DB path yet
+            raise RuntimeError("Failed to start test frontend dev server")
 
     return spawned_processes
 
@@ -324,13 +376,24 @@ def ensure_test_servers():
 def cleanup_test_servers(spawned_processes):
     global TEST_DB_DIR, TEST_DB_PATH
     
-    for name, p in spawned_processes:
+    # Terminate processes in reverse order (frontend first, then backend)
+    for name, p in reversed(spawned_processes):
         try:
-            p.terminate()
-            p.wait(timeout=5)
+            if sys.platform == "win32":
+                # On Windows, use taskkill to kill the process tree
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], 
+                             capture_output=True, timeout=5)
+            else:
+                # On Unix, send SIGTERM to process group
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                p.wait(timeout=5)
         except Exception:
             try:
-                p.kill()
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/PID", str(p.pid)], 
+                                 capture_output=True, timeout=2)
+                else:
+                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
             except Exception:
                 pass
     
@@ -895,7 +958,7 @@ def test_playwright_zoom_and_text_spacing(test_servers):
 
 def test_playwright_runtime_table_keyboard_scrolling(test_servers):
     """Non-vacuous Runtime Table Keyboard Scrolling test:
-    Focus overflowing table wrapper -> record scrollLeft -> press ArrowRight -> assert scrollLeft STRICTLY increases -> press ArrowLeft -> assert scrollLeft decreases -> return to 0 -> assert focus ring visible."""
+    Focus overflowing table wrapper -> record scrollLeft -> press ArrowRight -> assert scrollLeft STRICTLY increases -> press ArrowLeft repeatedly -> assert scrollLeft decreases to 0 -> assert focus ring visible."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 480, "height": 800})
@@ -935,16 +998,19 @@ def test_playwright_runtime_table_keyboard_scrolling(test_servers):
                 scrolled_right = w.evaluate("(el) => el.scrollLeft")
                 assert scrolled_right > initial_scroll, f"Table wrapper {i} scrollLeft must STRICTLY increase (was {initial_scroll}, now {scrolled_right})"
 
-                # Press ArrowLeft through keyboard (not JS) to reverse
-                page.keyboard.press("ArrowLeft")
-                page.wait_for_timeout(100)
+                # Press ArrowLeft repeatedly through keyboard (not JS) until scrollLeft returns to 0
+                max_left_presses = 50
+                for _ in range(max_left_presses):
+                    current_scroll = w.evaluate("(el) => el.scrollLeft")
+                    if current_scroll == 0:
+                        break
+                    page.keyboard.press("ArrowLeft")
+                    page.wait_for_timeout(50)
+                else:
+                    raise AssertionError(f"Table wrapper {i} did not return to scrollLeft=0 after {max_left_presses} ArrowLeft presses")
 
-                scrolled_left = w.evaluate("(el) => el.scrollLeft")
-                assert scrolled_left < scrolled_right, f"Table wrapper {i} scrollLeft must decrease on ArrowLeft (was {scrolled_right}, now {scrolled_left})"
-
-                # Continue pressing ArrowLeft until minimum
-                min_scroll = w.evaluate("(el) => { while (el.scrollLeft > 0) { el.scrollLeft = Math.max(0, el.scrollLeft - 100); } return el.scrollLeft; }")
-                assert min_scroll == 0, f"Table wrapper {i} must return to scrollLeft=0 via keyboard, got {min_scroll}"
+                final_scroll = w.evaluate("(el) => el.scrollLeft")
+                assert final_scroll == 0, f"Table wrapper {i} must return to scrollLeft=0 via keyboard, got {final_scroll}"
 
                 # Assert focus remains on wrapper
                 active_is_wrapper = page.evaluate("""(wrapper) => document.activeElement === wrapper""", w.element_handle())
@@ -967,7 +1033,7 @@ def test_playwright_runtime_table_keyboard_scrolling(test_servers):
 
 def test_playwright_live_region_reliability(test_servers):
     """Non-vacuous Live Region Reliability test using MutationObserver proof:
-    Attach MutationObserver to #hermes-a11y-live -> call announceToScreenReader twice with identical message -> assert 2 distinct DOM mutation records occur with ordered states: message1 -> cleared -> message2."""
+    Attach MutationObserver to #hermes-a11y-live -> call announceToScreenReader twice with identical message -> assert exact mutation sequence: empty -> message1 -> empty -> message2."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 1280, "height": 800})
@@ -986,7 +1052,7 @@ def test_playwright_live_region_reliability(test_servers):
                 for (const m of mutations) {
                     window.observedMutations.push({
                         type: m.type,
-                        text: live.textContent
+                        text: live.textContent || ""
                     });
                 }
             });
@@ -1012,15 +1078,23 @@ def test_playwright_live_region_reliability(test_servers):
 
         recorded_mutations = page.evaluate("() => window.observedMutations")
         
-        # Verify at least 2 mutations for two announcements
-        assert len(recorded_mutations) >= 2, f"Expected at least 2 observable mutation cycles for consecutive identical announcements, got: {len(recorded_mutations)}"
+        # Verify exact sequence: message1 -> cleared -> message2
+        assert len(recorded_mutations) >= 3, f"Expected at least 3 mutations (message1, cleared, message2), got {len(recorded_mutations)}: {recorded_mutations}"
         
-        # Verify ordered states: message -> cleared -> message
+        # Extract text content from each mutation
         texts = [m.get("text", "") for m in recorded_mutations]
-        assert any("Search results updated: 14 matches" in t for t in texts), "First message not found in mutations"
+        
+        # Verify sequence: first mutation contains the message
+        assert "Search results updated: 14 matches" in texts[0], f"First mutation should contain message: {texts[0]}"
+        
+        # Second mutation should be cleared (empty or different)
+        assert texts[1] == "" or "Search results updated: 14 matches" not in texts[1], f"Second mutation should be cleared state: {texts[1]}"
+        
+        # Third (or later) mutation should contain the message again
+        assert any("Search results updated: 14 matches" in t for t in texts[2:]), f"Subsequent mutation should contain message again: {texts[2:]}"
         
         # Verify final text equals expected message
-        final_text = recorded_mutations[-1].get("text", "") if recorded_mutations else ""
+        final_text = texts[-1]
         assert "Search results updated: 14 matches" in final_text, f"Final live region text mismatch: {final_text}"
 
         browser.close()

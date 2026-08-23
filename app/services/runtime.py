@@ -516,6 +516,7 @@ def get_health(db: Optional[Database] = None) -> Dict[str, Any]:
     return {
         "status": h["status"].lower(),
         "database": h["database"],
+        "database_path": str(db.db_path),  # Expose for test isolation verification
         "network": h["network"],
         "disk_free_mb": h["disk_free_mb"],
         "daemon_running": h["daemon_running"],
