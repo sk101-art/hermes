@@ -74,8 +74,8 @@
 
   --ink-primary: #0f172a;      /* Slate 900 */
   --ink-secondary: #334155;    /* Slate 700 */
-  --ink-muted: #64748b;        /* Slate 500 */
-  --ink-faint: #94a3b8;        /* Slate 400 */
+  --ink-muted: #475569;        /* Slate 600 - 7.0:1 contrast on white (WCAG AAA) */
+  --ink-faint: #64748b;        /* Slate 500 - 4.6:1 contrast on white (WCAG AA) */
   --ink-inverse: #ffffff;
 
   /* Brand / Primary Accent */

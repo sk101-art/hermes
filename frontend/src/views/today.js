@@ -253,8 +253,8 @@ export function renderInboxCard(item) {
     : `<span class="inbox-unavailable-note text-muted text-sm" role="status">Story dossier currently unavailable</span>`;
 
   const saveBtnHtml = isStarred
-    ? `<button type="button" class="btn btn-sm btn-secondary btn-save-inbox is-saved" data-inbox-id="${escapeHtml(id)}" data-cluster-id="${escapeHtml(cid)}" data-saved-id="${escapeHtml(savedId)}" aria-pressed="true" aria-label="Saved in Library for ${escapeHtml(title)}">&#9733; Saved in Library</button>`
-    : `<button type="button" class="btn btn-sm btn-secondary btn-save-inbox" data-inbox-id="${escapeHtml(id)}" data-cluster-id="${escapeHtml(cid)}" aria-pressed="false" aria-label="Save to Library: ${escapeHtml(title)}">&#9734; Save to Library</button>`;
+    ? `<button type="button" class="btn btn-sm btn-secondary btn-save-inbox is-saved" data-inbox-id="${escapeHtml(id)}" data-cluster-id="${escapeHtml(cid)}" data-saved-id="${escapeHtml(savedId)}" aria-pressed="true" aria-label="Saved in Library for ${escapeHtml(title)}">Saved in Library</button>`
+    : `<button type="button" class="btn btn-sm btn-secondary btn-save-inbox" data-inbox-id="${escapeHtml(id)}" data-cluster-id="${escapeHtml(cid)}" aria-pressed="false" aria-label="Save to Library: ${escapeHtml(title)}">Save to Library</button>`;
 
   return `
     <article class="inbox-card" data-inbox-id="${escapeHtml(id)}" data-cluster-id="${escapeHtml(cid)}" data-section="${escapeHtml(section)}" data-item-type="${escapeHtml(itemType)}" aria-labelledby="inbox-title-${escapeHtml(id)}">
@@ -586,7 +586,7 @@ export async function renderTodayView(container, store) {
 
       saveBtn.classList.add('is-saved');
       saveBtn.setAttribute('aria-pressed', 'true');
-      saveBtn.innerHTML = '&#9733; Saved in Library';
+      saveBtn.innerHTML = 'Saved in Library';
       if (res && res.saved_item && res.saved_item.id) {
         saveBtn.dataset.savedId = res.saved_item.id;
       }
@@ -597,7 +597,7 @@ export async function renderTodayView(container, store) {
       if (card) {
         const badgeGroup = card.querySelector('.inbox-badge-group');
         if (badgeGroup && !badgeGroup.querySelector('.state-saved')) {
-          badgeGroup.insertAdjacentHTML('beforeend', '<span class="inbox-state-badge state-saved" data-state="starred" aria-label="Saved in personal library">&#9733; Saved</span>');
+          badgeGroup.insertAdjacentHTML('beforeend', '<span class="inbox-state-badge state-saved" data-state="starred" aria-label="Saved in personal library">Saved</span>');
         }
       }
 

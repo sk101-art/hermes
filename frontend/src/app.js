@@ -9,7 +9,8 @@ import { getApiBaseUrl } from './api/client.js';
 import { router } from './state/router.js';
 import { store } from './state/store.js';
 import { renderShell } from './components/shell.js';
-import { trapFocus, announceToScreenReader } from './utils/a11y.js';
+import { trapFocus, announceToScreenReader, VIEW_TITLES } from './utils/a11y.js';
+export { VIEW_TITLES };
 
 // Views
 import { renderTodayView } from './views/today.js';
@@ -69,32 +70,78 @@ function setupRoutes() {
     .on('*', () => router.navigate('today'));
 }
 
+let lastActiveElementBeforeStory = null;
+let lastInitiatingStoryId = null;
+
 /**
  * Loads and renders an active view into the main content viewport.
  */
 async function loadView(viewKey, renderFn, routeParams = {}) {
+  const isEnteringStory = viewKey === 'story';
+  const isLeavingStory = store.getState().view === 'story' && viewKey !== 'story';
+
+  if (isEnteringStory && typeof document !== 'undefined') {
+    lastActiveElementBeforeStory = document.activeElement;
+    if (routeParams.id) {
+      lastInitiatingStoryId = routeParams.id;
+    }
+  }
+
   store.setState({ view: viewKey, routeParams });
   
   // Close mobile drawer if open
-  closeMobileDrawer();
+  closeMobileDrawer(false);
 
   const contentContainer = document.getElementById('main-content');
   if (!contentContainer) return;
 
+  // Update document title
+  const pageTitle = VIEW_TITLES[viewKey] || 'Intelligence Engine';
+  if (typeof document !== 'undefined') {
+    document.title = `HERMES | ${pageTitle}`;
+  }
+
   // Render view
   await renderFn(contentContainer, store, routeParams);
 
-  // Bind story card interactions within rendered view
-  bindViewCardInteractions(contentContainer);
+  // Bind view-level interactive elements (retry, cards)
+  bindViewInteractions(contentContainer);
+
+  // Focus management: restore to initiating card/link if returning from story, else focus h1/container
+  if (isLeavingStory && lastInitiatingStoryId && typeof document !== 'undefined') {
+    const targetLink = contentContainer.querySelector(`[data-story-id="${CSS.escape ? CSS.escape(lastInitiatingStoryId) : lastInitiatingStoryId}"] .story-title-link, [data-result-id="${CSS.escape ? CSS.escape(lastInitiatingStoryId) : lastInitiatingStoryId}"] .search-result-title-link, [data-saved-id] a[href*="${encodeURIComponent(lastInitiatingStoryId)}"]`);
+    if (targetLink && typeof targetLink.focus === 'function') {
+      targetLink.focus();
+      lastInitiatingStoryId = null;
+      lastActiveElementBeforeStory = null;
+    } else {
+      focusPageHeading(contentContainer);
+    }
+  } else {
+    focusPageHeading(contentContainer);
+  }
 
   // Announce view transition to screen readers
-  announceToScreenReader(`Navigated to ${viewKey}`);
+  announceToScreenReader(`Navigated to ${pageTitle}`);
+}
+
+function focusPageHeading(container) {
+  if (!container || typeof container.querySelector !== 'function') return;
+  const heading = container.querySelector('h1');
+  if (heading && typeof heading.focus === 'function') {
+    heading.setAttribute('tabindex', '-1');
+    heading.focus();
+  } else if (typeof container.focus === 'function') {
+    container.focus();
+  }
 }
 
 /**
  * Updates dynamic shell elements without re-rendering the whole shell.
  */
 function updateShellState(state) {
+  if (typeof document === 'undefined') return;
+
   // Update active nav link
   const navLinks = document.querySelectorAll('.nav-link');
   navLinks.forEach((link) => {
@@ -128,7 +175,6 @@ function updateShellState(state) {
 function bindShellEvents() {
   const refreshBtn = document.getElementById('btn-refresh');
   refreshBtn?.addEventListener('click', () => {
-    const currentView = store.getState().view;
     router._handleHashChange();
     checkBackendHealth();
   });
@@ -143,8 +189,12 @@ function bindShellEvents() {
   const sidebar = document.getElementById('app-sidebar');
   
   mobileToggle?.addEventListener('click', () => {
-    const isOpen = sidebar?.classList.toggle('open');
-    mobileToggle.setAttribute('aria-expanded', String(Boolean(isOpen)));
+    const isOpen = sidebar?.classList.contains('open');
+    if (isOpen) {
+      closeMobileDrawer(true);
+    } else {
+      openMobileDrawer();
+    }
   });
 
   // Close sidebar on click outside in mobile view
@@ -152,42 +202,37 @@ function bindShellEvents() {
     if (sidebar?.classList.contains('open')) {
       const isClickInside = sidebar.contains(e.target) || mobileToggle?.contains(e.target);
       if (!isClickInside) {
-        closeMobileDrawer();
+        closeMobileDrawer(false);
       }
     }
   });
 }
 
-function closeMobileDrawer() {
+function openMobileDrawer() {
+  const sidebar = document.getElementById('app-sidebar');
+  const mobileToggle = document.getElementById('mobile-menu-toggle');
+  sidebar?.classList.add('open');
+  mobileToggle?.setAttribute('aria-expanded', 'true');
+  const firstNav = sidebar?.querySelector('.nav-link');
+  firstNav?.focus();
+}
+
+function closeMobileDrawer(returnFocus = true) {
   const sidebar = document.getElementById('app-sidebar');
   const mobileToggle = document.getElementById('mobile-menu-toggle');
   if (sidebar?.classList.contains('open')) {
     sidebar.classList.remove('open');
     mobileToggle?.setAttribute('aria-expanded', 'false');
+    if (returnFocus && mobileToggle && typeof mobileToggle.focus === 'function') {
+      mobileToggle.focus();
+    }
   }
 }
 
 /**
- * Bind click and keyboard events on story cards.
+ * Bind view-level controls.
  */
-function bindViewCardInteractions(container) {
-  const cards = container.querySelectorAll('[data-story-id]');
-  cards.forEach((card) => {
-    const storyId = card.getAttribute('data-story-id');
-    if (!storyId) return;
-
-    card.addEventListener('click', () => {
-      router.navigate(`story/${encodeURIComponent(storyId)}`);
-    });
-
-    card.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        router.navigate(`story/${encodeURIComponent(storyId)}`);
-      }
-    });
-  });
-
+function bindViewInteractions(container) {
   // Retry buttons in error/offline states
   const retryBtn = container.querySelector('#retry-btn');
   retryBtn?.addEventListener('click', () => {
@@ -200,6 +245,8 @@ function bindViewCardInteractions(container) {
  * Setup keyboard shortcuts (Cmd+K / Ctrl+K for search, Escape to close drawer).
  */
 function setupKeyboardShortcuts() {
+  if (typeof window === 'undefined') return;
+
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
@@ -207,7 +254,7 @@ function setupKeyboardShortcuts() {
     }
 
     if (e.key === 'Escape') {
-      closeMobileDrawer();
+      closeMobileDrawer(true);
     }
   });
 }

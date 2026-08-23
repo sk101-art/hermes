@@ -68,13 +68,56 @@ table {
   width: 100%;
 }
 
+/* Screen Reader Only Utility */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+/* Skip Navigation Link (WCAG 2.2 AA) */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: var(--space-4);
+  z-index: 1000;
+  padding: var(--space-2) var(--space-4);
+  background-color: var(--accent-primary);
+  color: var(--ink-inverse) !important;
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  transition: top 0.15s ease-in-out;
+  text-decoration: none;
+}
+
+.skip-link:focus, .skip-link:focus-visible {
+  top: var(--space-4);
+  outline: 3px solid var(--ink-inverse);
+  outline-offset: 2px;
+  text-decoration: none;
+}
+
 /* Accessibility Focus Styles (WCAG 2.2 AA) */
 :focus-visible {
-  outline: 2px solid var(--focus-ring-color);
+  outline: 3px solid var(--focus-ring-color);
   outline-offset: 2px;
 }
 
-/* Reduced Motion Preference */
+/* Interactive Target Size (WCAG 2.2 AA - SC 2.5.8 min 24px) */
+button, a, input, select, textarea {
+  min-height: 24px;
+  min-width: 24px;
+}
+
+/* Reduced Motion Preference (WCAG 2.2 AA - SC 2.3.3) */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

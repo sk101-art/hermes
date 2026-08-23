@@ -29,8 +29,11 @@ export function renderShell(state) {
     : (state.connectionStatus === 'degraded' ? 'Local API · Degraded' : (state.connectionStatus === 'offline' ? 'Local API · Offline' : 'Connecting…'));
 
   return `<div class="app-shell">
+    <!-- Skip to main content link for keyboard users (WCAG 2.2 AA SC 2.4.1) -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
     <!-- Sidebar Navigation Landmark -->
-    <aside class="sidebar" id="app-sidebar" aria-label="Main Navigation">
+    <aside class="sidebar" id="app-sidebar" aria-label="Sidebar">
       <div class="brand-section">
         <div class="brand-mark" aria-hidden="true">H</div>
         <div class="brand-info">
@@ -39,7 +42,7 @@ export function renderShell(state) {
         </div>
       </div>
 
-      <nav class="nav-section">
+      <nav class="nav-section" aria-label="Primary Navigation">
         <div class="nav-label">Workspace</div>
         <ul class="nav-list" role="list">
           ${NAV_ITEMS.map((item) => {
@@ -78,7 +81,7 @@ export function renderShell(state) {
           </button>
           <span class="breadcrumb-root">HERMES</span>
           <span class="breadcrumb-separator" aria-hidden="true">/</span>
-          <h2 class="breadcrumb-current" style="font-size:var(--text-sm);margin:0;">${escapeHtml(currentNav.label)}</h2>
+          <span class="breadcrumb-current text-sm text-semibold">${escapeHtml(currentNav.label)}</span>
         </div>
 
         <div class="topbar-actions">
@@ -88,7 +91,7 @@ export function renderShell(state) {
           <a href="#/search" class="btn-icon" id="btn-top-search" title="Search corpus" aria-label="Search corpus">
             ${getIcon('search')}
           </a>
-          <button class="btn btn-secondary btn-sm" id="btn-api-status" title="View backend OpenAPI docs">
+          <button class="btn btn-secondary btn-sm" id="btn-api-status" title="View backend OpenAPI docs" aria-label="View API Documentation">
             <span class="status-dot ${connectionClass}" aria-hidden="true"></span>
             <span>API Docs</span>
           </button>

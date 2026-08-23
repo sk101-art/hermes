@@ -4,6 +4,17 @@
  * and ARIA attributes utility.
  */
 
+export const VIEW_TITLES = Object.freeze({
+  today: "Today's Intelligence",
+  briefing: "Morning Intelligence Briefing",
+  search: "Corpus Search & Discovery",
+  projects: "Project Intelligence Alignment",
+  saved: "Saved Intelligence Library",
+  changes: "Intelligence Changes & Transitions",
+  runtime: "Engine Runtime & Telemetry",
+  story: "Story Dossier",
+});
+
 /**
  * Announces a message to assistive technology via an aria-live region.
  * @param {string} message 
@@ -23,10 +34,7 @@ export function announceToScreenReader(message, politeness = 'polite') {
 
   liveRegion.setAttribute('aria-live', politeness);
   liveRegion.setAttribute('aria-atomic', 'true');
-  liveRegion.textContent = '';
-  setTimeout(() => {
-    liveRegion.textContent = message;
-  }, 50);
+  liveRegion.textContent = message;
 }
 
 /**

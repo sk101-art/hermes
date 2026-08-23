@@ -245,7 +245,7 @@ export function renderClaimCard(claim, isExpanded = false, claimDetail = null, i
       </button>
     </div>
 
-    <div class="claim-text-content">${escapeHtml(text)}</div>
+    <h3 class="claim-text-content" style="font-size:var(--text-base);font-weight:600;margin:var(--space-2) 0;">${escapeHtml(text)}</h3>
     <div class="mono text-xs text-muted">ID: ${escapeHtml(claimId)}</div>
 
     <div id="claim-evidence-${escapeHtml(claimId)}" class="claim-evidence-panel" style="display:${isExpanded ? 'block' : 'none'};">

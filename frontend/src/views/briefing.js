@@ -290,7 +290,7 @@ export function renderBriefingItemCard(item) {
         ${typeBadgeHtml}
         ${cautionTagHtml}
         ${snapshotStatusBadge}
-        ${titleHtml}
+        <h3 class="briefing-item-title" style="display:inline;margin:0;font-size:inherit;font-weight:inherit;">${titleHtml}</h3>
       </div>
 
       ${summaryHtml}

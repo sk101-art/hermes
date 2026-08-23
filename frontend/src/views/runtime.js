@@ -230,8 +230,9 @@ export async function renderRuntimeView(container, store) {
         </div>
       </div>
 
-      <div class="table-wrapper">
+      <div class="table-wrapper" tabindex="0" role="region" aria-label="Source Adapter Checkpoints Table">
         <table class="runtime-table" aria-label="Source Adapter Checkpoints">
+          <caption class="sr-only">Source Adapter Checkpoints and Provider Telemetry</caption>
           <thead>
             <tr>
               <th scope="col">Source</th>
@@ -287,8 +288,9 @@ export async function renderRuntimeView(container, store) {
         </div>
       </div>
 
-      <div class="table-wrapper">
+      <div class="table-wrapper" tabindex="0" role="region" aria-label="Scheduled Runtime Jobs Table">
         <table class="runtime-table" aria-label="Scheduled Runtime Jobs">
+          <caption class="sr-only">Scheduled Runtime Jobs and Background Execution Telemetry</caption>
           <thead>
             <tr>
               <th scope="col">Job Name</th>
@@ -336,8 +338,9 @@ export async function renderRuntimeView(container, store) {
           </div>
         </div>
 
-        <div class="table-wrapper">
+        <div class="table-wrapper" tabindex="0" role="region" aria-label="Recent Operational Issues Table">
           <table class="runtime-table" aria-label="Recent Operational Issues">
+            <caption class="sr-only">Recent Operational Issues and Execution Failures</caption>
             <thead>
               <tr>
                 <th scope="col">Target</th>

@@ -145,7 +145,7 @@ def check_system_health(
     # 5. Embedding Model Check
     emb_status = "cached"
     try:
-        import sentence_transformers
+        __import__("sentence_transformers")
     except ImportError:
         emb_status = "missing_dependency"
         issues.append("sentence_transformers package not importable")

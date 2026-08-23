@@ -378,7 +378,7 @@ async function renderProjectDetailView(container, store, projectId) {
                         </div>
                       </div>
 
-                      <div style="margin-bottom:var(--space-2);">${titleHtml}</div>
+                      <h3 class="concern-title" style="margin:0 0 var(--space-2) 0;font-size:inherit;font-weight:inherit;">${titleHtml}</h3>
 
                       ${r.risk_status ? `
                         <div class="mono text-xs text-muted" style="margin-bottom:var(--space-2);">
@@ -433,7 +433,7 @@ async function renderProjectDetailView(container, store, projectId) {
                         </div>
                       </div>
 
-                      <div style="margin-bottom:var(--space-2);font-size:var(--text-md);">${titleHtml}</div>
+                      <h3 class="match-title" style="margin:0 0 var(--space-2) 0;font-size:var(--text-md);font-weight:inherit;">${titleHtml}</h3>
 
                       ${reasons.length > 0 ? `
                         <div class="chip-group" style="margin-top:var(--space-2);margin-bottom:var(--space-2);">

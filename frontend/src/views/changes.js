@@ -249,10 +249,10 @@ export function renderChangeCard(change) {
     <article class="change-card ${isSystemRecord ? 'change-card-system' : ''}" id="change-card-${escapeHtml(changeId)}" data-change-id="${escapeHtml(changeId)}" data-entity-type="${escapeHtml(entityType)}" data-origin="${escapeHtml(originKey)}">
       <div class="change-card-header">
         <div>
-          <h2 class="change-type-title">
+          <h3 class="change-type-title">
             ${escapeHtml(changeTitle)}
             <span class="importance-pill ${imp.badgeClass}" title="Priority level">${escapeHtml(imp.label)}</span>
-          </h2>
+          </h3>
           <div class="change-meta-row">
             <span class="mono text-xs text-muted">${escapeHtml(entityLabel)}</span>
             <span>&bull;</span>
@@ -411,10 +411,10 @@ export async function renderChangesView(container, store) {
         if (items && items.length > 0) {
           listHtml += `
             <section class="changes-group" aria-labelledby="heading-group-${escapeHtml(grpName.replace(/\s+/g, '-'))}">
-              <h3 class="changes-group-heading" id="heading-group-${escapeHtml(grpName.replace(/\s+/g, '-'))}">
+              <h2 class="changes-group-heading" id="heading-group-${escapeHtml(grpName.replace(/\s+/g, '-'))}">
                 ${escapeHtml(grpName)}
                 <span class="changes-group-count">${items.length}</span>
-              </h3>
+              </h2>
               <div class="grid-1" style="gap:var(--space-4);">
                 ${items.map(renderChangeCard).join('')}
               </div>

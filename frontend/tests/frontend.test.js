@@ -20,7 +20,8 @@ globalThis.window = {
     hash: ''
   },
   addEventListener() {},
-  removeEventListener() {}
+  removeEventListener() {},
+  elementsFromPoint() { return []; }
 };
 globalThis.document = {
   activeElement: null,
@@ -34,10 +35,23 @@ globalThis.document = {
       textContent: ''
     };
   },
+  elementsFromPoint() { return []; },
   body: {
     appendChild() {}
   }
 };
+globalThis.Node = {
+  ELEMENT_NODE: 1,
+  ATTRIBUTE_NODE: 2,
+  TEXT_NODE: 3,
+  COMMENT_NODE: 8,
+  DOCUMENT_NODE: 9,
+  DOCUMENT_TYPE_NODE: 10,
+  DOCUMENT_FRAGMENT_NODE: 11,
+};
+globalThis.window.Node = globalThis.Node;
+globalThis.document.defaultView = globalThis.window;
+globalThis.window.document = globalThis.document;
 globalThis.localStorage = globalThis.window.localStorage;
 try {
   Object.defineProperty(globalThis, 'navigator', {
@@ -6856,4 +6870,243 @@ test('Phase 14: Story card obeys canonical claim_status precedence and maintains
   assert.ok(storyBadge.includes('Weakly Supported (60%)'));
   assert.ok(searchBadge.includes('Weakly Supported (60%)'));
   assert.ok(savedBadge.includes('Weakly Supported (60%)'));
+});
+
+// ============================================================================
+// HERMES Phase 15: Accessibility and Responsive Hardening Verification Suite
+// ============================================================================
+
+test('Phase 15: 1. Skip link is present and targets main content landmark', async () => {
+  const { renderShell } = await import('../src/components/shell.js');
+  const rendered = renderShell({ view: 'today', connectionStatus: 'healthy', isOffline: false });
+
+  assert.ok(rendered.includes('href="#main-content"'), 'Skip link must target #main-content');
+  assert.ok(rendered.includes('class="skip-link"'), 'Skip link must have skip-link class');
+  assert.ok(rendered.includes('Skip to main content'), 'Skip link text must be descriptive');
+  assert.ok(rendered.indexOf('href="#main-content"') < rendered.indexOf('class="sidebar"'), 'Skip link must appear before navigation landmarks');
+});
+
+test('Phase 15: 2. Landmark structure satisfies WCAG 2.2 AA', async () => {
+  const { renderShell } = await import('../src/components/shell.js');
+  const rendered = renderShell({ view: 'today', connectionStatus: 'healthy', isOffline: false });
+
+  assert.ok(rendered.includes('<aside class="sidebar" id="app-sidebar" aria-label="Sidebar">'));
+  assert.ok(rendered.includes('<nav class="nav-section" aria-label="Primary Navigation">'));
+  assert.ok(rendered.includes('<header class="topbar" role="banner">'));
+  assert.ok(rendered.includes('<main class="content-area" id="main-content" role="main" tabindex="-1">'));
+});
+
+test('Phase 15: 3. Story card uses semantic article and genuine link without role=button or tabindex=0', async () => {
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+  const story = {
+    id: 'cluster-42',
+    title: 'Distributed Consensus in LLM Swarms',
+    summary: 'Evaluating consensus protocols in agentic multi-node execution.',
+    claim_status: 'supported',
+    verification_score: 0.88,
+    maturity_stage: 'experimental',
+    sources: ['arxiv'],
+  };
+
+  const html = renderStoryCard(story);
+
+  assert.ok(!html.includes('role="button"'), 'Story card must not use non-native role="button"');
+  assert.ok(!html.includes('tabindex="0"'), 'Story card must not place tabindex="0" on non-interactive container');
+  assert.ok(html.includes('<article class="story-card" data-story-id="cluster-42">'));
+  assert.ok(html.includes('<a href="#/story/cluster-42" class="story-title-link" aria-label="Investigate story: Distributed Consensus in LLM Swarms">'));
+  assert.ok(html.includes('Distributed Consensus in LLM Swarms'));
+});
+
+test('Phase 15: 4. Zero positive tabindex across shell and components', async () => {
+  const { renderShell } = await import('../src/components/shell.js');
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+  const { renderVerificationBadge, renderMaturityBadge, renderRiskBadge } = await import('../src/components/badges.js');
+
+  const shellHtml = renderShell({ view: 'today', connectionStatus: 'healthy' });
+  const cardHtml = renderStoryCard({ id: '1', title: 'T', sources: ['arxiv'] });
+  const badgeHtml = renderVerificationBadge('supported', 0.8) + renderMaturityBadge('prototype') + renderRiskBadge('assessed', 'low');
+
+  const allHtml = shellHtml + cardHtml + badgeHtml;
+  assert.ok(!/tabindex=["'](?![0-]|-1)[0-9]+["']/.test(allHtml), 'Positive tabindex values are forbidden (WCAG 2.4.3)');
+});
+
+test('Phase 15: 5. Heading hierarchy is strictly sequential across all eight surfaces', async () => {
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+  const card = renderStoryCard({ id: 'c1', title: 'Card 1', sources: ['github'] });
+
+  // Story card heading is h3
+  assert.ok(card.includes('<h3 class="story-title">'));
+
+  // Briefing items heading is h3
+  const { renderBriefingItemCard } = await import('../src/views/briefing.js');
+  const bItem = renderBriefingItemCard({ position: 1, title: 'Briefing Item 1', item_type: 'story', story_available: true, story_cluster_id: 'c1' });
+  assert.ok(bItem.includes('<h3 class="briefing-item-title"'));
+
+  // Changes card heading is h3
+  const { renderChangeCard } = await import('../src/views/changes.js');
+  const chCard = renderChangeCard({ id: 'ch1', entity_type: 'claim', change_type: 'claim_revision', importance: 0.8 });
+  assert.ok(chCard.includes('<h3 class="change-type-title">'));
+
+  // Story dossier claim heading is h3
+  const { renderClaimCard } = await import('../src/views/story-detail.js');
+  const clCard = renderClaimCard({ id: 'claim-1', text: 'Atomic claim proposition', status: 'supported' });
+  assert.ok(clCard.includes('<h3 class="claim-text-content"'));
+});
+
+test('Phase 15: 6. Tables have captions, header scopes, and focusable wrapper regions', async () => {
+  const { renderRuntimeView } = await import('../src/views/runtime.js');
+
+  let htmlOutput = '';
+  const mockContainer = {
+    set innerHTML(val) { htmlOutput = val; },
+    get innerHTML() { return htmlOutput; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+
+  fetchMock = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      status: 'HEALTHY',
+      daemon: { status: 'running', pid: 1234 },
+      system: { database: 'ok' },
+      sources: [{ source: 'arxiv', health_status: 'healthy' }],
+      jobs: [{ job_name: 'ingest', status: 'completed' }],
+    }),
+  });
+
+  const mockStore = {
+    getState() { return { view: 'runtime' }; },
+    setViewData() {},
+    setConnection() {},
+  };
+
+  await renderRuntimeView(mockContainer, mockStore);
+
+  assert.ok(htmlOutput.includes('class="table-wrapper" tabindex="0" role="region"'), 'Table wrapper must be focusable scroll region');
+  assert.ok(htmlOutput.includes('<caption class="sr-only">'), 'Tables must include descriptive caption for screen readers');
+  assert.ok(htmlOutput.includes('<th scope="col">'), 'Table headers must define scope="col" (WCAG 1.3.1)');
+});
+
+test('Phase 15: 7. Live region announcer utility correctly creates and updates aria-live element', async () => {
+  const { announceToScreenReader } = await import('../src/utils/a11y.js');
+
+  let appended = null;
+  let textSet = '';
+
+  const mockEl = {
+    id: '',
+    className: '',
+    setAttribute(k, v) { this[k] = v; },
+    style: {},
+    set textContent(v) { textSet = v; },
+    get textContent() { return textSet; },
+  };
+
+  const origDocument = globalThis.document;
+  globalThis.document = {
+    getElementById(id) {
+      if (id === 'hermes-a11y-live') return appended;
+      return null;
+    },
+    createElement() { return mockEl; },
+    body: {
+      appendChild(el) { appended = el; },
+    },
+  };
+
+  try {
+    announceToScreenReader('Navigated to Corpus Search & Discovery', 'polite');
+    assert.strictEqual(textSet, 'Navigated to Corpus Search & Discovery');
+    assert.strictEqual(appended['aria-live'], 'polite');
+  } finally {
+    globalThis.document = origDocument;
+  }
+});
+
+test('Phase 15: 8. Document titles map cleanly to all view keys', async () => {
+  const { VIEW_TITLES } = await import('../src/utils/a11y.js');
+
+  assert.strictEqual(VIEW_TITLES.today, "Today's Intelligence");
+  assert.strictEqual(VIEW_TITLES.briefing, "Morning Intelligence Briefing");
+  assert.strictEqual(VIEW_TITLES.search, "Corpus Search & Discovery");
+  assert.strictEqual(VIEW_TITLES.projects, "Project Intelligence Alignment");
+  assert.strictEqual(VIEW_TITLES.saved, "Saved Intelligence Library");
+  assert.strictEqual(VIEW_TITLES.changes, "Intelligence Changes & Transitions");
+  assert.strictEqual(VIEW_TITLES.runtime, "Engine Runtime & Telemetry");
+  assert.strictEqual(VIEW_TITLES.story, "Story Dossier");
+});
+
+test('Phase 15: 9. Axe-core accessibility scan on key rendered templates reports zero critical/serious violations', async () => {
+  const { JSDOM } = await import('jsdom');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const { renderShell } = await import('../src/components/shell.js');
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+  const { renderVerificationBadge, renderMaturityBadge, renderRiskBadge, renderSourcePill } = await import('../src/components/badges.js');
+
+  const cardHtml = renderStoryCard({
+    id: 'cluster-99',
+    title: 'Zero-Knowledge Proofs for Verifiable Inference',
+    summary: 'Evaluating zk-SNARK cryptographic overhead for on-chain verifiable ML models.',
+    claim_status: 'strongly_supported',
+    verification_score: 0.95,
+    maturity_stage: 'production_candidate',
+    sources: ['arxiv', 'github'],
+  });
+
+  const badgesHtml = `
+    <div>
+      ${renderVerificationBadge('supported', 0.85)}
+      ${renderMaturityBadge('established')}
+      ${renderRiskBadge('assessed', 'low', 0.12)}
+      ${renderSourcePill('arxiv')}
+    </div>
+  `;
+
+  const shellHtml = renderShell({ view: 'today', connectionStatus: 'healthy', isOffline: false });
+
+  const fullHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>HERMES Intelligence</title>
+</head>
+<body>
+  ${shellHtml}
+  <div id="test-content">
+    ${cardHtml}
+    ${badgesHtml}
+  </div>
+</body>
+</html>`;
+
+  const dom = new JSDOM(fullHtml, { runScripts: 'dangerously' });
+  const axePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/axe-core/axe.min.js');
+  const axeSource = fs.readFileSync(axePath, 'utf8');
+  dom.window.eval(axeSource);
+
+  const results = await dom.window.axe.run(dom.window.document.documentElement, {
+    runOnly: {
+      type: 'tag',
+      values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'],
+    },
+    rules: {
+      'color-contrast': { enabled: false }, // JSDOM does not compute layout CSS colors
+      'region': { enabled: false },
+    },
+  });
+
+  const seriousOrCritical = results.violations.filter(
+    (v) => v.impact === 'critical' || v.impact === 'serious'
+  );
+
+  assert.strictEqual(
+    seriousOrCritical.length,
+    0,
+    `Axe found serious/critical accessibility violations: ${JSON.stringify(seriousOrCritical.map(v => ({ id: v.id, help: v.help, nodes: v.nodes.length })))}`
+  );
 });

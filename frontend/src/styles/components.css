@@ -52,6 +52,7 @@
 
 /* Story Card */
 .story-card {
+  position: relative;
   padding: var(--space-5);
   display: flex;
   flex-direction: column;
@@ -60,9 +61,11 @@
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xs);
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
-  cursor: pointer;
   text-decoration: none;
   color: inherit;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .story-card:hover {
@@ -88,6 +91,27 @@
   line-height: var(--leading-tight);
   color: var(--ink-primary);
   margin-bottom: var(--space-2);
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.story-title-link {
+  color: var(--ink-primary);
+  text-decoration: none;
+  min-height: 24px;
+  display: inline-block;
+}
+
+.story-title-link:hover {
+  color: var(--accent-primary);
+  text-decoration: underline;
+}
+
+.story-title-link:focus-visible {
+  outline: 3px solid var(--focus-ring-color);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .story-why {
@@ -99,6 +123,8 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .story-card-bottom {

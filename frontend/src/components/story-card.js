@@ -64,7 +64,7 @@ export function renderStoryCard(story) {
   const isProjectMatched = Boolean(story.project_match || (typeof story.project_impact_score === 'number' && story.project_impact_score > 0) || (story.matched_project_ids && story.matched_project_ids.length));
   const matchType = story.match_type || (isProjectMatched ? 'Project context' : null);
 
-  return `<article class="story-card" data-story-id="${escapeHtml(id)}" role="button" tabindex="0" aria-label="Story: ${escapeHtml(title)}">
+  return `<article class="story-card" data-story-id="${escapeHtml(id)}">
     <div class="story-card-top">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
         ${sources.slice(0, 3).map(renderSourcePill).join('')}
@@ -72,7 +72,11 @@ export function renderStoryCard(story) {
       <time datetime="${escapeHtml(dateStr || '')}">${formatDate(dateStr)}</time>
     </div>
 
-    <h3 class="story-title">${escapeHtml(title)}</h3>
+    <h3 class="story-title">
+      <a href="#/story/${encodeURIComponent(id)}" class="story-title-link" aria-label="Investigate story: ${escapeHtml(title)}">
+        ${escapeHtml(title)}
+      </a>
+    </h3>
     
     ${summary ? `<p class="story-why">${escapeHtml(truncateText(summary, 160))}</p>` : ''}
 
