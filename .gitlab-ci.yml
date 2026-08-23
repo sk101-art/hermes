@@ -30,14 +30,14 @@ repository_integrity:
   image: python:3.11-slim
   allow_failure: false
   script:
-    - echo "Verifying repository integrity at commit $CI_COMMIT_SHA on branch $CI_COMMIT_REF_NAME"
-    - test -f data/tech_intel.db || (echo "FATAL: data/tech_intel.db missing!" && exit 1)
-    - test -f frontend/package.json || (echo "FATAL: frontend/package.json missing!" && exit 1)
-    - test -f app/api/server.py || (echo "FATAL: app/api/server.py missing!" && exit 1)
-    - test -f tests/test_e2e_playwright.py || (echo "FATAL: tests/test_e2e_playwright.py missing!" && exit 1)
-    - sha256sum data/tech_intel.db > db-before.sha256
-    - echo "Base DB SHA256:"
-    - cat db-before.sha256
+    - 'echo "Verifying repository integrity at commit $CI_COMMIT_SHA on branch $CI_COMMIT_REF_NAME"'
+    - 'test -f data/tech_intel.db || exit 1'
+    - 'test -f frontend/package.json || exit 1'
+    - 'test -f app/api/server.py || exit 1'
+    - 'test -f tests/test_e2e_playwright.py || exit 1'
+    - 'sha256sum data/tech_intel.db > db-before.sha256'
+    - 'echo "Base DB SHA256:"'
+    - 'cat db-before.sha256'
   artifacts:
     when: always
     expire_in: 30 days
@@ -52,49 +52,8 @@ db_immutability:
   image: python:3.11-slim
   allow_failure: false
   script:
-    - |
-      python -c "
-      import sqlite3, sys
-
-      expected_counts = {
-          'events': 368,
-          'story_clusters': 345,
-          'claims': 360,
-          'evidence': 416,
-          'technology_assessments': 345,
-          'projects': 2,
-          'inbox_items': 322,
-          'saved_items': 2,
-          'daily_briefings': 1,
-          'source_checkpoints': 9,
-          'runtime_jobs': 10,
-          'intelligence_changes': 0
-      }
-
-      conn = sqlite3.connect('data/tech_intel.db')
-      cursor = conn.cursor()
-
-      report = []
-      report.append('# Authoritative Database Row Counts\n')
-      report.append('| Table | Expected | Actual | Status |')
-      report.append('|---|---|---|---|')
-
-      errors = []
-      for table, expected in expected_counts.items():
-          actual = cursor.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-          status = 'MATCH' if actual == expected else 'MISMATCH'
-          report.append(f'| {table} | {expected} | {actual} | {status} |')
-          if actual != expected:
-              errors.append(f'Table {table} count mismatch: expected {expected}, got {actual}')
-
-      with open('db_row_counts.md', 'w') as f:
-          f.write('\n'.join(report))
-
-      print('\n'.join(report))
-      if errors:
-          print('FATAL ERRORS:\n' + '\n'.join(errors))
-          sys.exit(1)
-      "
+    - >-
+      python -c "import sqlite3, sys; expected = {'events': 368, 'story_clusters': 345, 'claims': 360, 'evidence': 416, 'technology_assessments': 345, 'projects': 2, 'inbox_items': 322, 'saved_items': 2, 'daily_briefings': 1, 'source_checkpoints': 9, 'runtime_jobs': 10, 'intelligence_changes': 0}; conn = sqlite3.connect('data/tech_intel.db'); c = conn.cursor(); [sys.exit(1) for t, exp in expected.items() if c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] != exp]; print('All counts verified') if (open('db_row_counts.md','w').write('Counts verified\n')) is not None else None"
   artifacts:
     when: always
     expire_in: 30 days
@@ -204,24 +163,11 @@ evidence_summary:
     - playwright_e2e
   script:
     - sha256sum data/tech_intel.db > db-after.sha256
-    - diff -u db-before.sha256 db-after.sha256 || (echo "FATAL: Production database was modified during pipeline!" && exit 1)
+    - diff -u db-before.sha256 db-after.sha256 || exit 1
     - echo "Production DB Checksum match verified:"
     - cat db-after.sha256
-    - |
-      python -c "
-      import os
-      with open('pipeline_evidence_summary.md', 'w') as f:
-          f.write('# HERMES Phase 15 CI Closure Report\n\n')
-          f.write('All mandatory automated quality and accessibility gates passed cleanly.\n\n')
-          f.write('### Verified Gates:\n')
-          f.write('- Repository Integrity: PASSED\n')
-          f.write('- Database Immutability (Checksum & 12 Table Counts): PASSED\n')
-          f.write('- Backend Suite (304 tests): PASSED\n')
-          f.write('- Contrast & Static Contracts (96 tests): PASSED\n')
-          f.write('- Frontend Unit Suite (222 tests) & Vite Build: PASSED\n')
-          f.write('- Playwright E2E Suite (11 tests): PASSED\n')
-          f.write('- Production DB Immutability: VERIFIED (Zero Byte Drift)\n')
-      "
+    - >-
+      python -c "open('pipeline_evidence_summary.md', 'w').write('# HERMES Phase 15 CI Closure Report\n\nAll mandatory automated quality and accessibility gates passed cleanly.\n\n### Verified Gates:\n- Repository Integrity: PASSED\n- Database Immutability (Checksum & 12 Table Counts): PASSED\n- Backend Suite (304 tests): PASSED\n- Contrast & Static Contracts (96 tests): PASSED\n- Frontend Unit Suite (222 tests) & Vite Build: PASSED\n- Playwright E2E Suite (11 tests): PASSED\n- Production DB Immutability: VERIFIED (Zero Byte Drift)\n')"
     - cat pipeline_evidence_summary.md
   artifacts:
     when: always
