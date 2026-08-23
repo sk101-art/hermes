@@ -228,8 +228,19 @@ function bindShellEvents() {
     });
   });
 
-  // Close sidebar on click outside in mobile view
+  // Handle skip link click navigation explicitly for single-page app accessibility
   document.addEventListener('click', (e) => {
+    const skipLink = e.target.closest('.skip-link');
+    if (skipLink) {
+      e.preventDefault();
+      const href = skipLink.getAttribute('href') || '';
+      const targetId = href.startsWith('#') ? href.slice(1) : href;
+      const targetEl = targetId ? document.getElementById(targetId) : null;
+      if (targetEl) {
+        targetEl.setAttribute('tabindex', '-1');
+        targetEl.focus();
+      }
+    }
     if (sidebar?.classList.contains('open')) {
       const isClickInside = sidebar.contains(e.target) || mobileToggle?.contains(e.target);
       if (!isClickInside) {

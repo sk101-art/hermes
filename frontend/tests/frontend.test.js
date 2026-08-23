@@ -7271,3 +7271,36 @@ test('Phase 15: 13. Mobile drawer lifecycle manages inert, aria-expanded, and fo
     delete globalThis.window;
   }
 });
+
+test('Phase 15: 14. trapFocus handles zero-focusable and one-focusable containers safely', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { trapFocus } = await import('../src/utils/a11y.js');
+
+  const dom = new JSDOM(`<!DOCTYPE html><html><body>
+    <div id="zero-container"><span>No focusable elements</span></div>
+    <div id="one-container"><button id="single-btn">Single Button</button></div>
+  </body></html>`);
+
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+
+  try {
+    const zeroContainer = dom.window.document.getElementById('zero-container');
+    const oneContainer = dom.window.document.getElementById('one-container');
+
+    // Zero focusable elements
+    const releaseZero = trapFocus(zeroContainer);
+    assert.strictEqual(typeof releaseZero, 'function');
+    releaseZero();
+
+    // One focusable element
+    const releaseOne = trapFocus(oneContainer);
+    assert.strictEqual(typeof releaseOne, 'function');
+    const singleBtn = dom.window.document.getElementById('single-btn');
+    assert.strictEqual(dom.window.document.activeElement, singleBtn);
+    releaseOne();
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+  }
+});
