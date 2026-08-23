@@ -2112,7 +2112,7 @@ test('Phase 8: Exact request counts for initial Saved view and zero story reques
 // Phase 9: Changes & Longitudinal Intelligence Experience Tests
 // =========================================================================
 
-test('Phase 9: Initial Changes request uses actual endpoint parameters (hours=168, limit=100)', async () => {
+test('Phase 9: Initial Changes request uses actual endpoint parameters (hours=168, limit=50)', async () => {
   const { renderChangesView } = await import('../src/views/changes.js');
   let requestedUrl = null;
 
@@ -2133,7 +2133,7 @@ test('Phase 9: Initial Changes request uses actual endpoint parameters (hours=16
   assert.ok(requestedUrl !== null);
   assert.ok(requestedUrl.includes('/changes'));
   assert.ok(requestedUrl.includes('hours=168'));
-  assert.ok(requestedUrl.includes('limit=100'));
+  assert.ok(requestedUrl.includes('limit=50'));
 
   fetchMock = null;
 });
@@ -7017,7 +7017,7 @@ test('Phase 15: 7. Live region announcer utility correctly creates and updates a
   };
 
   try {
-    announceToScreenReader('Navigated to Corpus Search & Discovery', 'polite');
+    await announceToScreenReader('Navigated to Corpus Search & Discovery', 'polite');
     assert.strictEqual(textSet, 'Navigated to Corpus Search & Discovery');
     assert.strictEqual(appended['aria-live'], 'polite');
   } finally {
@@ -7213,19 +7213,19 @@ test('Phase 15: 12. announceToScreenReader reliably clears and re-announces iden
   globalThis.document = dom.window.document;
 
   try {
-    announceToScreenReader('Search results updated: 14 matches', 'polite');
+    await announceToScreenReader('Search results updated: 14 matches', 'polite');
     const live = dom.window.document.getElementById('hermes-a11y-live');
     assert.ok(live);
     assert.strictEqual(live.textContent, 'Search results updated: 14 matches');
     assert.strictEqual(live.getAttribute('aria-live'), 'polite');
 
     // Repeated identical announcement
-    announceToScreenReader('Search results updated: 14 matches', 'assertive');
+    await announceToScreenReader('Search results updated: 14 matches', 'assertive');
     assert.strictEqual(live.textContent, 'Search results updated: 14 matches');
     assert.strictEqual(live.getAttribute('aria-live'), 'assertive');
 
     // Unknown politeness degrades to polite
-    announceToScreenReader('Minor update', 'invalid_politeness');
+    await announceToScreenReader('Minor update', 'invalid_politeness');
     assert.strictEqual(live.getAttribute('aria-live'), 'polite');
   } finally {
     delete globalThis.document;

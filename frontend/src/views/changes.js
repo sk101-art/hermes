@@ -340,7 +340,7 @@ export async function renderChangesView(container, store) {
     try {
       const queryParams = {
         hours: currentHours,
-        limit: 100,
+        limit: 50,
       };
       if (currentImportance) {
         queryParams.importance_min = currentImportance;

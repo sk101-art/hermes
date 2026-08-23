@@ -70,6 +70,7 @@ export class Router {
     if (clean) {
       // Check query string
       const [pathPart, queryPart] = clean.split('?');
+      const segments = pathPart.split('/').filter(Boolean);
       if (queryPart) {
         const searchParams = new URLSearchParams(queryPart);
         for (const [k, v] of searchParams.entries()) {
@@ -78,10 +79,11 @@ export class Router {
       }
 
       // Check parametric routes e.g. story/cluster:123, projects/project:cuda-compiler-lab
-      const segments = pathPart.split('/');
       if (segments.length >= 2 && segments[0] === 'story') {
         path = 'story';
-        params.storyId = segments.slice(1).join('/');
+        const decodedStoryId = decodeURIComponent(segments.slice(1).join('/'));
+        params.storyId = decodedStoryId;
+        params.id = decodedStoryId;
       } else if (segments.length >= 2 && (segments[0] === 'projects' || segments[0] === 'project')) {
         path = 'projects';
         params.projectId = decodeURIComponent(segments.slice(1).join('/'));

@@ -37,8 +37,15 @@ const appRoot = document.getElementById('app');
 export function initApp() {
   if (!appRoot) return;
 
+  // Inject skip link as FIRST element in app-root (before shell) for proper tab order
+  const skipLink = document.createElement('a');
+  skipLink.href = '#main-content';
+  skipLink.className = 'skip-link';
+  skipLink.textContent = 'Skip to main content';
+  appRoot.insertBefore(skipLink, appRoot.firstChild);
+
   // Initial shell render
-  appRoot.innerHTML = renderShell(store.getState());
+  appRoot.innerHTML = skipLink.outerHTML + renderShell(store.getState());
 
   // Bind shell-level interactive elements
   bindShellEvents();
@@ -77,8 +84,52 @@ function setupRoutes() {
     .on('*', () => router.navigate('today'));
 }
 
-let lastActiveElementBeforeStory = null;
+let storyFocusReturn = null;
 let lastInitiatingStoryId = null;
+
+function captureStoryFocusReturn(routeKey) {
+  const active = document.activeElement;
+  if (!active) return;
+
+  storyFocusReturn = {
+    routeKey,
+    testId: active.getAttribute('data-testid'),
+    href: active.getAttribute('href'),
+  };
+}
+
+function restoreStoryFocus(container) {
+  let target = null;
+
+  if (storyFocusReturn?.testId) {
+    const selector = typeof CSS !== 'undefined' && CSS.escape
+      ? `[data-testid="${CSS.escape(storyFocusReturn.testId)}"]`
+      : `[data-testid="${storyFocusReturn.testId}"]`;
+    target = container.querySelector(selector);
+  }
+
+  if (!target && storyFocusReturn?.href) {
+    const selector = typeof CSS !== 'undefined' && CSS.escape
+      ? `a[href="${CSS.escape(storyFocusReturn.href)}"]`
+      : `a[href="${storyFocusReturn.href}"]`;
+    target = container.querySelector(selector);
+  }
+
+  if (!target && lastInitiatingStoryId) {
+    const encodedId = encodeURIComponent(lastInitiatingStoryId);
+    target = container.querySelector(`a[href="#/story/${encodedId}"]`);
+  }
+
+  if (target && typeof target.focus === 'function') {
+    target.focus({ preventScroll: true });
+    if (typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'nearest' });
+    }
+    return true;
+  }
+
+  return false;
+}
 
 /**
  * Loads and renders an active view into the main content viewport.
@@ -88,10 +139,8 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
   const isLeavingStory = store.getState().view === 'story' && viewKey !== 'story';
 
   if (isEnteringStory && typeof document !== 'undefined') {
-    lastActiveElementBeforeStory = document.activeElement;
-    if (routeParams.id) {
-      lastInitiatingStoryId = routeParams.id;
-    }
+    captureStoryFocusReturn(store.getState().view);
+    lastInitiatingStoryId = routeParams.id || null;
   }
 
   store.setState({ view: viewKey, routeParams });
@@ -116,26 +165,9 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
 
   // Focus management: restore to initiating card/link if returning from story, else focus h1/container
   if (isLeavingStory && typeof document !== 'undefined') {
-    let restored = false;
-    if (lastActiveElementBeforeStory && document.body.contains(lastActiveElementBeforeStory) && typeof lastActiveElementBeforeStory.focus === 'function') {
-      lastActiveElementBeforeStory.focus();
-      restored = true;
-    } else if (lastInitiatingStoryId) {
-      const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(lastInitiatingStoryId) : lastInitiatingStoryId;
-      const targetLink = contentContainer.querySelector(
-        `[data-story-id="${escapedId}"] .story-title-link, ` +
-        `[data-result-id="${escapedId}"] .search-result-title-link, ` +
-        `[data-saved-id] a[href*="${encodeURIComponent(lastInitiatingStoryId)}"], ` +
-        `[data-cluster-id="${escapedId}"] a, ` +
-        `a[href*="#/story/${encodeURIComponent(lastInitiatingStoryId)}"]`
-      );
-      if (targetLink && typeof targetLink.focus === 'function') {
-        targetLink.focus();
-        restored = true;
-      }
-    }
+    const restored = restoreStoryFocus(contentContainer);
+    storyFocusReturn = null;
     lastInitiatingStoryId = null;
-    lastActiveElementBeforeStory = null;
     if (!restored) {
       focusPageHeading(contentContainer);
     }

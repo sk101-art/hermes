@@ -1768,6 +1768,35 @@
   font-style: italic;
 }
 
+.inbox-card,
+.inbox-card-top,
+.inbox-badge-group,
+.inbox-meta-right,
+.inbox-rationale-box,
+.inbox-chips-wrap,
+.inbox-project-context,
+.inbox-card-bottom,
+.inbox-action-group {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.inbox-title,
+.inbox-title-link,
+.inbox-rationale-label,
+.inbox-secondary-type-chip,
+.project-context-label,
+.project-id-list,
+.semantic-badge,
+.btn {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.project-id-list {
+  white-space: normal;
+}
+
 @media (max-width: 640px) {
   .inbox-toolbar-row {
     flex-direction: column;
@@ -1791,6 +1820,25 @@
   .inbox-action-group .btn {
     width: 100%;
     text-align: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .inbox-card-top,
+  .inbox-meta-right,
+  .inbox-project-context,
+  .inbox-action-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .inbox-action-group > * {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .inbox-card {
+    overflow: visible;
   }
 }
 

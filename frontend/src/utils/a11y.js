@@ -15,34 +15,51 @@ export const VIEW_TITLES = Object.freeze({
   story: "Story Dossier",
 });
 
+let announcementQueue = Promise.resolve();
+
+function waitForAnnouncementTick() {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 30);
+  });
+}
+
 /**
  * Announces a message to assistive technology via an aria-live region.
- * Automatically clears and updates the live region to ensure repeated identical
- * announcements are reliably dispatched by screen readers.
+ * Automatically clears and updates the live region asynchronously to ensure
+ * repeated identical announcements are reliably dispatched by screen readers.
  * @param {string} message 
  * @param {'polite'|'assertive'} [politeness='polite']
+ * @returns {Promise<void>}
  */
 export function announceToScreenReader(message, politeness = 'polite') {
-  if (typeof document === 'undefined' || !message) return;
-
-  const validPoliteness = politeness === 'assertive' ? 'assertive' : 'polite';
-  let liveRegion = document.getElementById('hermes-a11y-live');
-  if (!liveRegion) {
-    liveRegion = document.createElement('div');
-    liveRegion.id = 'hermes-a11y-live';
-    liveRegion.className = 'sr-only';
-    liveRegion.setAttribute('aria-live', validPoliteness);
-    liveRegion.setAttribute('aria-atomic', 'true');
-    liveRegion.style.cssText = 'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;';
-    document.body.appendChild(liveRegion);
+  if (typeof document === 'undefined' || !message) {
+    return Promise.resolve();
   }
 
-  liveRegion.setAttribute('aria-live', validPoliteness);
-  liveRegion.setAttribute('aria-atomic', 'true');
+  const normalizedPoliteness =
+    politeness === 'assertive' ? 'assertive' : 'polite';
 
-  // Clear first so consecutive identical messages trigger a DOM mutation event
-  liveRegion.textContent = '';
-  liveRegion.textContent = message;
+  announcementQueue = announcementQueue.then(async () => {
+    let liveRegion = document.getElementById('hermes-a11y-live');
+
+    if (!liveRegion) {
+      liveRegion = document.createElement('div');
+      liveRegion.id = 'hermes-a11y-live';
+      liveRegion.className = 'sr-only';
+      liveRegion.setAttribute('aria-atomic', 'true');
+      liveRegion.style.cssText = 'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;';
+      document.body.appendChild(liveRegion);
+    }
+
+    liveRegion.setAttribute('aria-live', normalizedPoliteness);
+    liveRegion.textContent = '';
+
+    await waitForAnnouncementTick();
+
+    liveRegion.textContent = message;
+  });
+
+  return announcementQueue;
 }
 
 /**

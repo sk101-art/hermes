@@ -284,7 +284,7 @@ export function renderClaimCard(claim, isExpanded = false, claimDetail = null, i
  * Main Story Dossier View Renderer
  */
 export async function renderStoryDetailView(container, store, routeParams = {}) {
-  const storyId = routeParams.storyId || store.getState().selectedStoryId;
+  const storyId = routeParams.storyId || routeParams.id || store.getState().selectedStoryId;
 
   if (!storyId) {
     container.innerHTML = renderEmptyState(
