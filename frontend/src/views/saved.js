@@ -21,6 +21,7 @@ import {
   escapeHtml,
   formatDate,
   ensureArray,
+  formatScorePercentage,
 } from '../utils/adapters.js';
 
 export const CANONICAL_MATURITY_LABELS = {
@@ -143,7 +144,7 @@ export function renderSavedCard(item) {
   } else if (typeof item.verification_score === 'number') {
     thenVerifHtml = `
       <div class="saved-badge-row">
-        <span class="semantic-badge badge-verification-unassessed">Saved verification: ${Math.round(item.verification_score * 100)}%</span>
+        <span class="semantic-badge badge-verification-unassessed">Saved verification: ${formatScorePercentage(item.verification_score)}</span>
         <span class="text-xs text-faint">Claim status: Not recorded historically</span>
       </div>
     `;
@@ -164,7 +165,7 @@ export function renderSavedCard(item) {
   } else if (typeof item.risk_score === 'number') {
     thenRiskHtml = `
       <div class="saved-badge-row">
-        <span class="semantic-badge badge-risk-not_assessed">Saved risk: ${Math.round(item.risk_score * 100)}%</span>
+        <span class="semantic-badge badge-risk-not_assessed">Saved risk: ${formatScorePercentage(item.risk_score)}</span>
         <span class="text-xs text-faint">Risk status: Not recorded historically</span>
       </div>
     `;

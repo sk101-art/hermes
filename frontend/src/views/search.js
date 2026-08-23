@@ -10,7 +10,14 @@
 
 import { api } from '../api/endpoints.js';
 import { getIcon } from '../icons/index.js';
-import { renderVerificationBadge, renderMaturityBadge, renderRiskBadge, renderSourcePill } from '../components/badges.js';
+import {
+  renderVerificationBadge,
+  renderMaturityBadge,
+  renderRiskBadge,
+  renderSourcePill,
+  renderSearchScoreBadge,
+  renderProjectRelevanceBadge,
+} from '../components/badges.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, ensureArray, formatDate } from '../utils/adapters.js';
 
@@ -435,9 +442,7 @@ export function renderSearchResultCard(item) {
         </div>
 
         <div class="search-score-pill-group">
-          <span class="pill-relevance" title="Search retrieval and ranking score based on lexical, semantic, and context signals">
-            Score: ${scoreVal !== null ? scoreVal : 'N/A'}
-          </span>
+          ${renderSearchScoreBadge(item.score)}
         </div>
       </div>
 
@@ -445,7 +450,7 @@ export function renderSearchResultCard(item) {
         ${renderVerificationBadge(claimStatus, verifScore)}
         ${renderMaturityBadge(maturity)}
         ${renderRiskBadge(riskStatus, riskLevel)}
-        ${projectRel !== null ? `<span class="chip mono" title="Relevance to active project context">Project Rel: ${projectRel}%</span>` : ''}
+        ${renderProjectRelevanceBadge(item.project_relevance)}
       </div>
 
       ${summary ? `

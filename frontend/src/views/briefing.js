@@ -8,6 +8,11 @@ import { api } from '../api/endpoints.js';
 import { router } from '../state/router.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatTime, ensureArray, toTitleCase } from '../utils/adapters.js';
+import {
+  renderInboxPriorityBadge,
+  renderInboxRankBadge,
+  renderProjectImpactBadge,
+} from '../components/badges.js';
 
 let activeBriefingRequestToken = 0;
 
@@ -273,10 +278,10 @@ export function renderBriefingItemCard(item) {
     ? `<div class="briefing-unrecognized-notice">Snapshot format (${escapeHtml(item.snapshot_version || 'unknown')}) is not recognized. Schema-dependent score fields are omitted.</div>`
     : '';
 
-  // Strict finite numeric score checks (omit completely if unrecognized version or null/undefined/string/NaN)
-  const hasInboxScore = !isUnrecognized && isValidFiniteNumber(item.inbox_score);
-  const hasRankScore = !isUnrecognized && isValidFiniteNumber(item.rank_score);
-  const hasImpactScore = !isUnrecognized && isValidFiniteNumber(item.project_impact_score);
+  // Score badges via shared domain formatters (omitted if unrecognized version or invalid)
+  const priorityBadge = !isUnrecognized ? renderInboxPriorityBadge(item.inbox_score) : '';
+  const rankBadge = !isUnrecognized ? renderInboxRankBadge(item.rank_score) : '';
+  const impactBadge = !isUnrecognized ? renderProjectImpactBadge(item.project_impact_score) : '';
 
   return `
     <article class="${cardClasses}" data-inbox-id="${escapeHtml(item.inbox_item_id || '')}">
@@ -292,9 +297,9 @@ export function renderBriefingItemCard(item) {
       ${unrecognizedNoticeHtml}
 
       <div class="briefing-item-meta-row">
-        ${hasInboxScore ? `<span class="briefing-score-badge" title="Daily briefing surfacing priority">Priority: ${item.inbox_score.toFixed(2)}</span>` : ''}
-        ${hasRankScore ? `<span class="briefing-score-badge text-muted" title="Feed ranking score">Rank: ${item.rank_score.toFixed(2)}</span>` : ''}
-        ${hasImpactScore ? `<span class="briefing-impact-badge" title="Project relevance score">Project Impact: ${item.project_impact_score.toFixed(2)}</span>` : ''}
+        ${priorityBadge}
+        ${rankBadge}
+        ${impactBadge}
 
         ${reasonCodes.map(rc => `<span class="briefing-reason-pill" data-reason-code="${escapeHtml(String(rc))}">${escapeHtml(formatBriefingReasonCode(String(rc)))}</span>`).join('')}
 

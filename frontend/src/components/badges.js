@@ -19,7 +19,12 @@ import {
   getRiskMeta,
   getEvidenceStanceMeta,
 } from '../utils/semantic.js';
-import { escapeHtml, formatScorePercentage } from '../utils/adapters.js';
+import {
+  escapeHtml,
+  formatScorePercentage,
+  isValidNormalizedScore,
+  isValidFiniteScore,
+} from '../utils/adapters.js';
 
 /**
  * Render a Verification Status Badge.
@@ -84,7 +89,7 @@ export function renderEvidenceStanceBadge(stance) {
 /**
  * Closed Score Domain Identifiers
  */
-export const SCORE_DOMAINS = {
+export const SCORE_DOMAINS = Object.freeze({
   SEARCH_RANK: 'search_rank',
   RELEVANCE: 'relevance',
   CLUSTER_SCORE: 'cluster_score',
@@ -92,7 +97,7 @@ export const SCORE_DOMAINS = {
   INBOX_RANK: 'inbox_rank',
   PROJECT_RELEVANCE: 'project_relevance',
   PROJECT_IMPACT: 'project_impact',
-};
+});
 
 /**
  * Render Search Score Badge (Neutral decimal representation, never probability percentage).
@@ -100,7 +105,7 @@ export const SCORE_DOMAINS = {
  * @returns {string}
  */
 export function renderSearchScoreBadge(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidFiniteScore(score)) {
     return '';
   }
   const formatted = score.toFixed(2);
@@ -115,7 +120,7 @@ export function renderSearchScoreBadge(score) {
  * @returns {string}
  */
 export function renderRelevanceBadge(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidNormalizedScore(score)) {
     return '';
   }
   const formatted = formatScorePercentage(score);
@@ -130,7 +135,7 @@ export function renderRelevanceBadge(score) {
  * @returns {string}
  */
 export function renderClusterScoreBadge(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidFiniteScore(score)) {
     return '';
   }
   const formatted = score.toFixed(2);
@@ -145,7 +150,7 @@ export function renderClusterScoreBadge(score) {
  * @returns {string}
  */
 export function renderInboxPriorityBadge(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidNormalizedScore(score)) {
     return '';
   }
   const formatted = formatScorePercentage(score);
@@ -160,7 +165,7 @@ export function renderInboxPriorityBadge(score) {
  * @returns {string}
  */
 export function renderInboxRankBadge(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidNormalizedScore(score)) {
     return '';
   }
   const formatted = formatScorePercentage(score);
@@ -175,7 +180,7 @@ export function renderInboxRankBadge(score) {
  * @returns {string}
  */
 export function renderProjectRelevanceBadge(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidNormalizedScore(score)) {
     return '';
   }
   const formatted = formatScorePercentage(score);
@@ -190,7 +195,7 @@ export function renderProjectRelevanceBadge(score) {
  * @returns {string}
  */
 export function renderProjectImpactBadge(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidNormalizedScore(score)) {
     return '';
   }
   const formatted = formatScorePercentage(score);
@@ -202,42 +207,42 @@ export function renderProjectImpactBadge(score) {
 /**
  * Closed domain-aware ranking badge renderer.
  * Strictly uses closed score domains without guessing from numeric magnitude.
+ * Does NOT default to relevance or any other domain.
  * @param {number|null} score 
- * @param {string} [domain='relevance']
+ * @param {string} domain - Must be an explicit member of SCORE_DOMAINS
  * @returns {string} HTML string
  */
-export function renderRankingBadge(score, domain = 'relevance') {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+export function renderScoreBadge(score, domain) {
+  if (score === null || score === undefined || typeof score !== 'number' || !Number.isFinite(score)) {
     return '';
   }
-  const d = String(domain).toLowerCase().trim();
-  switch (d) {
-    case 'search_rank':
-    case 'search':
+  switch (domain) {
+    case SCORE_DOMAINS.SEARCH_RANK:
       return renderSearchScoreBadge(score);
-    case 'cluster_score':
-    case 'cluster':
-    case 'discovery':
-    case 'discovery score':
+    case SCORE_DOMAINS.CLUSTER_SCORE:
       return renderClusterScoreBadge(score);
-    case 'inbox_priority':
-    case 'priority':
+    case SCORE_DOMAINS.INBOX_PRIORITY:
       return renderInboxPriorityBadge(score);
-    case 'inbox_rank':
-    case 'rank':
+    case SCORE_DOMAINS.INBOX_RANK:
       return renderInboxRankBadge(score);
-    case 'project_relevance':
+    case SCORE_DOMAINS.PROJECT_RELEVANCE:
       return renderProjectRelevanceBadge(score);
-    case 'project_impact':
+    case SCORE_DOMAINS.PROJECT_IMPACT:
       return renderProjectImpactBadge(score);
-    case 'relevance':
+    case SCORE_DOMAINS.RELEVANCE:
       return renderRelevanceBadge(score);
     default:
-      // Neutral decimal rendering for unrecognized domain without assuming percentage
-      return `<span class="semantic-badge badge-rank" title="Score" aria-label="Score: ${score.toFixed(2)}">
-        <span>Score: ${score.toFixed(2)}</span>
-      </span>`;
+      // Unknown or missing domain: omit the badge, never guess relevance or convert to percentage
+      return '';
   }
+}
+
+/**
+ * Direct alias for renderScoreBadge.
+ * Requires an explicit domain argument.
+ */
+export function renderRankingBadge(score, domain) {
+  return renderScoreBadge(score, domain);
 }
 
 export const CANONICAL_SOURCES = {

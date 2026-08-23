@@ -87,7 +87,9 @@ import {
   renderRiskBadge,
   renderEvidenceStanceBadge,
   renderRankingBadge,
-  renderSourcePill
+  renderScoreBadge,
+  renderSourcePill,
+  SCORE_DOMAINS,
 } from '../src/components/badges.js';
 import {
   renderLoadingState,
@@ -381,7 +383,7 @@ test('Risk levels include critical, high, medium, low with accurate status handl
 });
 
 test('ranking score is not labeled Verification or Confidence', () => {
-  const rendered = renderRankingBadge(0.85);
+  const rendered = renderRankingBadge(0.85, SCORE_DOMAINS.RELEVANCE);
   assert.ok(rendered.includes('Relevance: 85%'));
   assert.ok(!rendered.includes('Verification'));
   assert.ok(!rendered.includes('Confidence'));
@@ -1025,7 +1027,7 @@ test('Search Result Card strictly labels ranking score as Relevance Score / Sear
 
   // 1. Must label score neutrally as Score: 0.94 without converting to percentage
   assert.ok(html.includes('Score: 0.94'));
-  assert.ok(html.includes('pill-relevance'));
+  assert.ok(html.includes('badge-rank'));
 
   // 2. Must NEVER label score as Confidence, Verification, or Trust
   assert.ok(!html.includes('Confidence'));
@@ -1171,7 +1173,7 @@ test('Search Result Card preserves Project Relevance without converting to upgra
   };
 
   const html = renderSearchResultCard(item);
-  assert.ok(html.includes('Project Rel: 75%'));
+  assert.ok(html.includes('Project relevance: 75%'));
   assert.ok(!html.includes('Upgrade Recommendation'));
   assert.ok(!html.includes('Should adopt'));
 });
@@ -3157,8 +3159,7 @@ test('Phase 10: project_impact_score is labeled as Project Relevance, never reco
 
   const html = renderInboxCard(item);
 
-  assert.ok(html.includes('Project Impact:'));
-  assert.ok(html.includes('78%'));
+  assert.ok(html.includes('Project impact: 78%'));
   assert.ok(html.includes('Project Context:'));
   assert.ok(!html.includes('Recommended'));
   assert.ok(!html.includes('Safe to deploy'));
@@ -3579,8 +3580,8 @@ test('Phase 10 remediation: Null project_impact_score remains absent and does no
   };
 
   const htmlZero = renderInboxCard(zeroScoreItem);
-  assert.ok(!htmlZero.includes('Project Relevance:'));
-  assert.ok(!htmlZero.includes('0%'));
+  assert.ok(!htmlZero.includes('Project relevance:'));
+  assert.ok(htmlZero.includes('Project impact: 0%'));
 
   // Case 3: Genuine positive score
   const posScoreItem = {
@@ -3597,7 +3598,7 @@ test('Phase 10 remediation: Null project_impact_score remains absent and does no
   };
 
   const htmlPos = renderInboxCard(posScoreItem);
-  assert.ok(htmlPos.includes('Project Impact: <strong>75%</strong>'));
+  assert.ok(htmlPos.includes('Project impact: 75%'));
 });
 
 test('Phase 10 remediation: verified_claim:* reason codes render as Claim Priority Signal without truth claims', async () => {
@@ -3989,8 +3990,8 @@ test('Phase 11: Project Detail View renders aggregated intelligence in single re
     assert.ok(html.includes('Keywords (2)'));
 
     // Score labeling and rounding
-    assert.ok(html.includes('Relevance: 84%'));
-    assert.ok(html.includes('Project Impact: 79%'));
+    assert.ok(html.includes('Project relevance: 84%'));
+    assert.ok(html.includes('Project impact: 79%'));
     assert.ok(html.includes('data-reason-code="framework_match"'));
 
     // Advisory context provenance
@@ -3998,12 +3999,12 @@ test('Phase 11: Project Detail View renders aggregated intelligence in single re
     assert.ok(html.includes('Upgrade Candidate — New release or major improvements available.'));
 
     // Missing score omission (null)
-    assert.ok(!html.includes('Relevance: null%'));
-    assert.ok(!html.includes('Project Impact: null%'));
+    assert.ok(!html.includes('Project relevance: null%'));
+    assert.ok(!html.includes('Project impact: null%'));
 
     // Genuine 0.0 preservation
-    assert.ok(html.includes('Relevance: 0%'));
-    assert.ok(html.includes('Project Impact: 0%'));
+    assert.ok(html.includes('Project relevance: 0%'));
+    assert.ok(html.includes('Project impact: 0%'));
 
     // Story availability
     assert.ok(html.includes('href="#/story/cl_cuda_1"'));
@@ -4267,9 +4268,9 @@ test('Phase 12: Briefing view renders date picker and toolbar controls', async (
     // Check section header & item
     assert.ok(html.includes('Must Know'));
     assert.ok(html.includes('Must Know Title'));
-    assert.ok(html.includes('Priority: 0.95'));
-    assert.ok(html.includes('Rank: 0.90'));
-    assert.ok(html.includes('Project Impact: 0.85'));
+    assert.ok(html.includes('Priority: 95%'));
+    assert.ok(html.includes('Rank: 90%'));
+    assert.ok(html.includes('Project impact: 85%'));
     assert.ok(html.includes('critical_system'));
     assert.ok(html.includes('href="#/projects/cuda-compiler-lab"'));
 
@@ -4607,9 +4608,9 @@ test('Phase 12: Strict numeric score rendering and non-numeric omission', async 
     rank_score: 0.88,
     project_impact_score: 0.75,
   });
-  assert.ok(cardWithScores.includes('Priority: 0.95'));
-  assert.ok(cardWithScores.includes('Rank: 0.88'));
-  assert.ok(cardWithScores.includes('Project Impact: 0.75'));
+  assert.ok(cardWithScores.includes('Priority: 95%'));
+  assert.ok(cardWithScores.includes('Rank: 88%'));
+  assert.ok(cardWithScores.includes('Project impact: 75%'));
 
   // 2. Genuine numeric 0.0
   const cardWithZero = renderBriefingItemCard({
@@ -4620,9 +4621,9 @@ test('Phase 12: Strict numeric score rendering and non-numeric omission', async 
     rank_score: 0.0,
     project_impact_score: 0.0,
   });
-  assert.ok(cardWithZero.includes('Priority: 0.00'));
-  assert.ok(cardWithZero.includes('Rank: 0.00'));
-  assert.ok(cardWithZero.includes('Project Impact: 0.00'));
+  assert.ok(cardWithZero.includes('Priority: 0%'));
+  assert.ok(cardWithZero.includes('Rank: 0%'));
+  assert.ok(cardWithZero.includes('Project impact: 0%'));
 
   // 3. Null and undefined
   const cardWithNulls = renderBriefingItemCard({
@@ -4635,7 +4636,7 @@ test('Phase 12: Strict numeric score rendering and non-numeric omission', async 
   });
   assert.ok(!cardWithNulls.includes('Priority:'));
   assert.ok(!cardWithNulls.includes('Rank:'));
-  assert.ok(!cardWithNulls.includes('Project Impact:'));
+  assert.ok(!cardWithNulls.includes('Project impact:'));
   assert.ok(!cardWithNulls.includes('Priority: unrated'));
 
   // 4. Non-numeric strings and NaN
@@ -4970,7 +4971,7 @@ test('Phase 12 remediation: Complete, legacy_incomplete, and unrecognized_versio
   });
   assert.ok(!completeCard.includes('Legacy Snapshot'));
   assert.ok(!completeCard.includes('Unrecognized Snapshot'));
-  assert.ok(completeCard.includes('Priority: 0.88'));
+  assert.ok(completeCard.includes('Priority: 88%'));
 
   // 2. Legacy Incomplete
   const legacyCard = renderBriefingItemCard({
@@ -6010,12 +6011,12 @@ test('Phase 14: Unsupported claim aliases degrade neutrally to Unrecognized clai
 });
 
 test('Phase 14: Independent score domain badges preserve labels and formatting', () => {
-  const relBadge = renderRankingBadge(0.85, 'Relevance');
+  const relBadge = renderRankingBadge(0.85, SCORE_DOMAINS.RELEVANCE);
   assert.ok(relBadge.includes('Relevance: 85%'));
   assert.ok(!relBadge.includes('Confidence'));
   assert.ok(!relBadge.includes('Verification'));
 
-  const rankBadge = renderRankingBadge(0.85, 'Rank');
+  const rankBadge = renderRankingBadge(0.85, SCORE_DOMAINS.INBOX_RANK);
   assert.ok(rankBadge.includes('Rank: 85%'));
   assert.ok(!rankBadge.includes('Confidence'));
 });
@@ -6024,7 +6025,7 @@ test('Phase 14: Genuine zero scores are preserved and rendered as 0% or 0', () =
   const zeroPct = formatScorePercentage(0.0);
   assert.strictEqual(zeroPct, '0%');
 
-  const zeroRankBadge = renderRankingBadge(0.0, 'Relevance');
+  const zeroRankBadge = renderRankingBadge(0.0, SCORE_DOMAINS.RELEVANCE);
   assert.ok(zeroRankBadge.includes('Relevance: 0%'));
 });
 
@@ -6035,7 +6036,7 @@ test('Phase 14: Missing scores render as — or are omitted, never 0%', () => {
   const undefinedPct = formatScorePercentage(undefined);
   assert.strictEqual(undefinedPct, '—');
 
-  const nullRankBadge = renderRankingBadge(null, 'Relevance');
+  const nullRankBadge = renderRankingBadge(null, SCORE_DOMAINS.RELEVANCE);
   assert.strictEqual(nullRankBadge, '');
 });
 
@@ -6117,8 +6118,10 @@ test('Phase 14: Score domain renderers adhere to strict closed domain contracts'
     renderInboxRankBadge,
     renderProjectRelevanceBadge,
     renderProjectImpactBadge,
+    renderScoreBadge,
     renderRankingBadge,
     renderProjectMatchPill,
+    SCORE_DOMAINS,
   } = await import('../src/components/badges.js');
 
   const testVal = 0.85;
@@ -6159,13 +6162,137 @@ test('Phase 14: Score domain renderers adhere to strict closed domain contracts'
   assert.ok(!pillHtml.includes('%'));
 
   // 8. Closed domain mapper
-  assert.ok(renderRankingBadge(testVal, 'search_rank').includes('Score: 0.85'));
-  assert.ok(renderRankingBadge(testVal, 'cluster_score').includes('Cluster score: 0.85'));
-  assert.ok(renderRankingBadge(testVal, 'relevance').includes('Relevance: 85%'));
-  assert.ok(renderRankingBadge(testVal, 'inbox_priority').includes('Priority: 85%'));
-  assert.ok(renderRankingBadge(testVal, 'inbox_rank').includes('Rank: 85%'));
-  assert.ok(renderRankingBadge(testVal, 'project_relevance').includes('Project relevance: 85%'));
-  assert.ok(renderRankingBadge(testVal, 'project_impact').includes('Project impact: 85%'));
+  assert.ok(renderScoreBadge(testVal, SCORE_DOMAINS.SEARCH_RANK).includes('Score: 0.85'));
+  assert.ok(renderScoreBadge(testVal, SCORE_DOMAINS.CLUSTER_SCORE).includes('Cluster score: 0.85'));
+  assert.ok(renderScoreBadge(testVal, SCORE_DOMAINS.RELEVANCE).includes('Relevance: 85%'));
+  assert.ok(renderScoreBadge(testVal, SCORE_DOMAINS.INBOX_PRIORITY).includes('Priority: 85%'));
+  assert.ok(renderScoreBadge(testVal, SCORE_DOMAINS.INBOX_RANK).includes('Rank: 85%'));
+  assert.ok(renderScoreBadge(testVal, SCORE_DOMAINS.PROJECT_RELEVANCE).includes('Project relevance: 85%'));
+  assert.ok(renderScoreBadge(testVal, SCORE_DOMAINS.PROJECT_IMPACT).includes('Project impact: 85%'));
+});
+
+test('Phase 14: Score range and type validation for normalized and non-normalized domains', async () => {
+  const {
+    formatScorePercentage,
+    formatScoreDecimal,
+    isValidNormalizedScore,
+    isValidFiniteScore,
+  } = await import('../src/utils/adapters.js');
+  const {
+    renderSearchScoreBadge,
+    renderClusterScoreBadge,
+    renderRelevanceBadge,
+    renderInboxPriorityBadge,
+    renderInboxRankBadge,
+    renderProjectRelevanceBadge,
+    renderProjectImpactBadge,
+  } = await import('../src/components/badges.js');
+
+  const invalidNormalizedInputs = [
+    null,
+    undefined,
+    NaN,
+    Infinity,
+    -Infinity,
+    -0.01,
+    -1.0,
+    1.01,
+    1.5,
+    '0.5',
+    '85%',
+    {},
+    [],
+    true,
+    false,
+  ];
+
+  // All invalid normalized inputs must fail validation and return empty string from renderers
+  for (const input of invalidNormalizedInputs) {
+    assert.strictEqual(isValidNormalizedScore(input), false, `Expected false for ${input}`);
+    assert.strictEqual(formatScorePercentage(input), '—', `Expected '—' for ${input}`);
+    assert.strictEqual(renderRelevanceBadge(input), '', `Expected '' for relevance on ${input}`);
+    assert.strictEqual(renderInboxPriorityBadge(input), '', `Expected '' for priority on ${input}`);
+    assert.strictEqual(renderInboxRankBadge(input), '', `Expected '' for rank on ${input}`);
+    assert.strictEqual(renderProjectRelevanceBadge(input), '', `Expected '' for proj relevance on ${input}`);
+    assert.strictEqual(renderProjectImpactBadge(input), '', `Expected '' for proj impact on ${input}`);
+  }
+
+  // Valid normalized inputs
+  const validNormalizedInputs = [
+    { in: 0.0, pct: '0%' },
+    { in: 0.001, pct: '0%' },
+    { in: 0.456, pct: '46%' },
+    { in: 0.75, pct: '75%' },
+    { in: 1.0, pct: '100%' },
+  ];
+
+  for (const { in: val, pct } of validNormalizedInputs) {
+    assert.strictEqual(isValidNormalizedScore(val), true, `Expected true for ${val}`);
+    assert.strictEqual(formatScorePercentage(val), pct, `Expected ${pct} for ${val}`);
+    assert.ok(renderRelevanceBadge(val).includes(pct));
+    assert.ok(renderInboxPriorityBadge(val).includes(pct));
+    assert.ok(renderInboxRankBadge(val).includes(pct));
+    assert.ok(renderProjectRelevanceBadge(val).includes(pct));
+    assert.ok(renderProjectImpactBadge(val).includes(pct));
+  }
+
+  // Non-normalized inputs (e.g. search rank, cluster score)
+  const invalidFiniteInputs = [null, undefined, NaN, Infinity, -Infinity, '1.45', {}, []];
+  for (const input of invalidFiniteInputs) {
+    assert.strictEqual(isValidFiniteScore(input), false);
+    assert.strictEqual(formatScoreDecimal(input), '—');
+    assert.strictEqual(renderSearchScoreBadge(input), '');
+    assert.strictEqual(renderClusterScoreBadge(input), '');
+  }
+
+  // Valid finite non-normalized inputs (can exceed 1.0, preserved as decimals)
+  assert.ok(renderSearchScoreBadge(0.0).includes('Score: 0.00'));
+  assert.ok(renderSearchScoreBadge(1.85).includes('Score: 1.85'));
+  assert.ok(renderClusterScoreBadge(2.45).includes('Cluster score: 2.45'));
+  assert.ok(!renderSearchScoreBadge(1.85).includes('%'));
+  assert.ok(!renderClusterScoreBadge(2.45).includes('%'));
+});
+
+test('Phase 14: Closed score domain dispatcher rejects missing and unknown domains', async () => {
+  const { renderScoreBadge, renderRankingBadge } = await import('../src/components/badges.js');
+
+  // Missing domain: returns empty string, does not default to relevance or percentage
+  assert.strictEqual(renderScoreBadge(0.85), '');
+  assert.strictEqual(renderScoreBadge(0.85, null), '');
+  assert.strictEqual(renderScoreBadge(0.85, undefined), '');
+  assert.strictEqual(renderRankingBadge(0.85), '');
+  assert.strictEqual(renderRankingBadge(0.85, undefined), '');
+
+  // Unknown/free-form domain: returns empty string, does not default to relevance
+  assert.strictEqual(renderScoreBadge(0.85, 'confidence'), '');
+  assert.strictEqual(renderScoreBadge(0.85, 'arbitrary_score'), '');
+  assert.strictEqual(renderScoreBadge(0.85, 'accuracy'), '');
+  assert.strictEqual(renderRankingBadge(0.85, 'unknown'), '');
+});
+
+test('Phase 14: Project relevance and project impact are strictly independent continuous dimensions', async () => {
+  const { renderStoryCard } = await import('../src/components/story-card.js');
+
+  const storyWithDifferingScores = {
+    story_cluster_id: 'sc-diff',
+    title: 'Differing Scores Story',
+    summary: 'Story with high relevance but low impact',
+    match_type: 'technology_overlap',
+    project_relevance: 0.95,
+    project_impact_score: 0.15,
+  };
+
+  const renderedHtml = renderStoryCard(storyWithDifferingScores);
+
+  // Both badges render with distinct labels and percentages
+  assert.ok(renderedHtml.includes('Project relevance: 95%'));
+  assert.ok(renderedHtml.includes('Project impact: 15%'));
+  assert.ok(renderedHtml.includes('technology overlap'));
+
+  // No conflation or advice language
+  assert.ok(!renderedHtml.includes('Recommended'));
+  assert.ok(!renderedHtml.includes('Safe to deploy'));
+  assert.ok(!renderedHtml.includes('Compatible tool'));
 });
 
 test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming surfaces', async () => {
@@ -6207,21 +6334,37 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
         ok: true,
         status: 200,
         json: async () => ({
-          items: [{
-            id: 'inbox-1',
-            story_cluster_id: 'sc-1',
-            title: 'Today Story',
-            summary: 'Summary text',
-            inbox_score: 0.82,
-            rank_score: 0.90,
-            project_impact_score: 0.75,
-            matched_project_ids: ['proj-1'],
-            item_type: 'new_story',
-            section: 'must_know',
-            state: 'unseen',
-            story_available: true,
-          }],
-          counts: { all: 1 }
+          items: [
+            {
+              id: 'inbox-1',
+              story_cluster_id: 'sc-1',
+              title: 'Today Story Active',
+              summary: 'Summary text',
+              inbox_score: 0.82,
+              rank_score: 0.90,
+              project_impact_score: 0.75,
+              matched_project_ids: ['proj-1'],
+              item_type: 'new_story',
+              section: 'must_know',
+              state: 'unseen',
+              story_available: true,
+            },
+            {
+              id: 'inbox-2',
+              story_cluster_id: 'sc-2',
+              title: 'Today Story Zero Priority',
+              summary: 'Summary text',
+              inbox_score: 0.0,
+              rank_score: 0.0,
+              project_impact_score: null,
+              matched_project_ids: [],
+              item_type: 'new_story',
+              section: 'must_know',
+              state: 'unseen',
+              story_available: true,
+            }
+          ],
+          counts: { all: 2 }
         })
       };
     }
@@ -6229,9 +6372,12 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
   };
   await renderTodayView(todayContainer, store);
   const feedHtml = todayContainer.querySelector('#inbox-feed-container').innerHTML;
-  assert.ok(feedHtml.includes('Today Story'));
-  assert.ok(feedHtml.includes('Priority:'));
-  assert.ok(feedHtml.includes('Project Impact:'));
+  assert.ok(feedHtml.includes('Today Story Active'));
+  assert.ok(feedHtml.includes('Priority: 82%'));
+  assert.ok(feedHtml.includes('Rank: 90%'));
+  assert.ok(feedHtml.includes('Project impact: 75%'));
+  assert.ok(feedHtml.includes('Priority: 0%')); // Genuine zero preserved
+  assert.ok(!feedHtml.includes('Project relevance:')); // No relevance substitution for impact
 
   // 2. Surface 2: Search View
   const { renderSearchView } = await import('../src/views/search.js');
@@ -6247,8 +6393,10 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
             title: 'Search Result Title',
             score: 0.85,
             claim_status: 'supported',
+            verification_score: 0.72,
             maturity: 'prototype',
-            sources: ['hackernews']
+            sources: ['hackernews'],
+            project_relevance: 0.65,
           }]
         })
       };
@@ -6256,7 +6404,12 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
     return { ok: true, status: 200, json: async () => ({}) };
   };
   await renderSearchView(searchContainer, store, { q: 'cuda' });
-  assert.ok(searchContainer.innerHTML.includes('Search with Epistemic Context'));
+  const searchResultsHtml = searchContainer.querySelector('#search-results-area').innerHTML;
+  assert.ok(searchResultsHtml.includes('Score: 0.85'));
+  assert.ok(!searchResultsHtml.includes('Score: 85%')); // Decimal, not percentage
+  assert.ok(searchResultsHtml.includes('badge-verification-supported'));
+  assert.ok(searchResultsHtml.includes('badge-maturity-prototype'));
+  assert.ok(searchResultsHtml.includes('Project relevance: 65%'));
 
   // 3. Surface 3: Story Dossier
   const { renderStoryDetailView } = await import('../src/views/story-detail.js');
@@ -6270,6 +6423,9 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
           story_cluster_id: 'sc-1',
           title: 'Dossier Title',
           cluster_score: 1.45,
+          maturity_stage: 'established',
+          verification: { claim_status: 'supported', verification_score: 0.88 },
+          risk: { status: 'assessed', level: 'low', score: 0.15 },
           sources: ['arxiv'],
           events: [],
           claims: [{
@@ -6286,7 +6442,11 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
   await renderStoryDetailView(dossierContainer, store, { storyId: 'sc-1' });
   assert.ok(dossierContainer.innerHTML.includes('Dossier Title'));
   assert.ok(dossierContainer.innerHTML.includes('Cluster score: 1.45'));
+  assert.ok(!dossierContainer.innerHTML.includes('145%'));
   assert.ok(!dossierContainer.innerHTML.includes('HERMES cluster'));
+  assert.ok(dossierContainer.innerHTML.includes('badge-maturity-established'));
+  assert.ok(dossierContainer.innerHTML.includes('badge-verification-supported'));
+  assert.ok(dossierContainer.innerHTML.includes('badge-risk-low'));
 
   // 4. Surface 4: Saved Library
   const { renderSavedView } = await import('../src/views/saved.js');
@@ -6298,14 +6458,23 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
       items: [{
         id: 'save-1',
         title_snapshot: 'Saved Item Title',
-        maturity_snapshot: 'established',
-        claim_status_snapshot: 'supported',
-        sources: ['github']
+        maturity_stage: null, // Historical null
+        claim_status: null, // Historical null
+        verification_score: null,
+        sources: ['github'],
+        current_state: {
+          maturity_stage: 'established',
+          claim_status: 'supported',
+          verification_score: 0.95
+        }
       }]
     })
   });
   await renderSavedView(savedContainer, store);
-  assert.ok(savedContainer.innerHTML.includes('Saved Intelligence'));
+  assert.ok(savedContainer.innerHTML.includes('Maturity: Not recorded historically'));
+  assert.ok(savedContainer.innerHTML.includes('Claim status: Not recorded historically'));
+  assert.ok(savedContainer.innerHTML.includes('badge-maturity-established')); // Current state
+  assert.ok(savedContainer.innerHTML.includes('badge-verification-supported')); // Current state
 
   // 5. Surface 5: Changes View
   const { renderChangesView } = await import('../src/views/changes.js');
@@ -6314,36 +6483,100 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
     ok: true,
     status: 200,
     json: async () => ({
-      changes: [{
-        id: 'chg-1',
-        change_type: 'maturity_transition',
-        old_value: 'prototype',
-        new_value: 'early_adoption',
-        importance: 0.85,
-        created_at: new Date().toISOString()
-      }],
-      total_count: 1
+      changes: [
+        {
+          id: 'chg-1',
+          change_type: 'maturity_transition',
+          old_value: 'prototype',
+          new_value: 'early_adoption',
+          importance: 'high',
+          detected_at: new Date().toISOString()
+        },
+        {
+          id: 'chg-2',
+          change_type: 'claim_revision',
+          old_value: 'supported',
+          new_value: 'contradicted',
+          importance: 'critical',
+          detected_at: new Date().toISOString()
+        },
+        {
+          id: 'chg-3',
+          change_type: 'version_bump',
+          old_value: null, // Historical null
+          new_value: 'v2.0.0',
+          importance: 'low',
+          detected_at: new Date().toISOString()
+        }
+      ],
+      total_count: 3
     })
   });
   await renderChangesView(changesContainer, store);
-  assert.ok(changesContainer.innerHTML.includes('What Moved'));
+  const changesHtml = changesContainer.querySelector('#changes-content-region').innerHTML;
+  assert.ok(changesHtml.includes('Prototype'));
+  assert.ok(changesHtml.includes('Early Adoption'));
+  assert.ok(changesHtml.includes('Supported'));
+  assert.ok(changesHtml.includes('Contradicted'));
+  assert.ok(changesHtml.includes('v2.0.0'));
+  assert.ok(changesHtml.includes('Previous state not recorded historically'));
 
   // 6. Surface 6: Projects View
   const { renderProjectsView } = await import('../src/views/projects.js');
   const projectsContainer = createMockContainer();
-  fetchMock = async (url) => ({
-    ok: true,
-    status: 200,
-    json: async () => ([{
-      id: 'proj-1',
-      name: 'Test Project',
-      description: 'Project description',
-      matches_count: 2,
-      concerns_count: 0
-    }])
-  });
-  await renderProjectsView(projectsContainer, store);
-  assert.ok(projectsContainer.innerHTML.includes('Test Project'));
+  fetchMock = async (url) => {
+    if (url.includes('/intelligence')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          project_id: 'proj-1',
+          name: 'CUDA Deep Engine',
+          description: 'GPU compute pipeline',
+          is_active: true,
+          technology_profile: { languages: ['C++', 'CUDA'] },
+          top_matches: [{
+            cluster_id: 'sc-triton',
+            title: 'Triton JIT Compilers',
+            match_type: 'direct_dependency',
+            relevance_score: 0.92,
+            impact_score: 0.28,
+            story_available: true,
+            reason_codes: ['direct_dependency']
+          }],
+          risks: [{
+            cluster_id: 'sc-risk-1',
+            title: 'CUDA Memory Leak Advisory',
+            risk_level: 'high',
+            risk_status: 'assessed',
+            risk_score: 0.50,
+            relevance_score: 0.85,
+            impact_score: 0.72,
+            story_available: true
+          }],
+          recent_changes: []
+        })
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ([{
+        id: 'proj-1',
+        name: 'CUDA Deep Engine',
+        description: 'GPU compute pipeline',
+        matches_count: 1,
+        concerns_count: 1
+      }])
+    };
+  };
+  await renderProjectsView(projectsContainer, store, { projectId: 'proj-1' });
+  assert.ok(projectsContainer.innerHTML.includes('Project relevance: 92%'));
+  assert.ok(projectsContainer.innerHTML.includes('Project impact: 28%'));
+  assert.ok(projectsContainer.innerHTML.includes('Project relevance: 85%'));
+  assert.ok(projectsContainer.innerHTML.includes('Project impact: 72%'));
+  assert.ok(!projectsContainer.innerHTML.includes('Recommended upgrade'));
+  assert.ok(!projectsContainer.innerHTML.includes('Safe to deploy'));
 
   // 7. Surface 7: Morning Briefing
   const { renderBriefingView } = await import('../src/views/briefing.js');
@@ -6354,16 +6587,47 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
     json: async () => ({
       id: 'brief-1',
       briefing_date: '2026-08-22',
-      items: [{
-        id: 'item-1',
-        title: 'Briefing Item Title',
-        rank_score: 0.88,
-        priority_rationale: 'Key project relevance'
-      }]
+      total_items: 2,
+      ordered_sections: ['must_know'],
+      sections: {
+        must_know: [
+          {
+            inbox_item_id: 'item-1',
+            position: 1,
+            title: 'Briefing Item Alpha',
+            summary: 'Alpha summary',
+            inbox_score: 0.88,
+            rank_score: 0.94,
+            project_impact_score: 0.76,
+            reason_codes: ['must_know'],
+            matched_projects: ['proj-1'],
+            story_cluster_id: 'sc-1',
+            story_available: true
+          },
+          {
+            inbox_item_id: 'item-2',
+            position: 2,
+            title: 'Briefing Item Beta Zero',
+            summary: 'Beta summary',
+            inbox_score: 0.0,
+            rank_score: 0.0,
+            project_impact_score: null, // Missing impact
+            reason_codes: ['general'],
+            matched_projects: [],
+            story_cluster_id: 'sc-2',
+            story_available: true
+          }
+        ]
+      }
     })
   });
   await renderBriefingView(briefingContainer, store);
-  assert.ok(briefingContainer.innerHTML.includes('Morning Briefing'));
+  assert.ok(briefingContainer.innerHTML.includes('Priority: 88%'));
+  assert.ok(briefingContainer.innerHTML.includes('Rank: 94%'));
+  assert.ok(briefingContainer.innerHTML.includes('Project impact: 76%'));
+  assert.ok(briefingContainer.innerHTML.includes('Priority: 0%'));
+  assert.ok(briefingContainer.innerHTML.includes('Rank: 0%'));
+  assert.ok(!briefingContainer.innerHTML.includes('Confidence'));
 
   // 8. Surface 8: Runtime View
   const { renderRuntimeView } = await import('../src/views/runtime.js');
@@ -6375,4 +6639,10 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
   });
   await renderRuntimeView(runtimeContainer, store);
   assert.ok(runtimeContainer.innerHTML.includes('Source Adapter Checkpoints'));
+  assert.ok(runtimeContainer.innerHTML.includes('System Health'));
+  assert.ok(!runtimeContainer.innerHTML.includes('badge-verification-'));
+  assert.ok(!runtimeContainer.innerHTML.includes('not_assessed'));
+  assert.ok(!runtimeContainer.innerHTML.includes('Unassessed'));
+  assert.ok(!runtimeContainer.innerHTML.includes('Not assessed'));
+  assert.ok(!runtimeContainer.innerHTML.includes('badge-rank'));
 });

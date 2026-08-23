@@ -21,6 +21,8 @@ import {
   renderEvidenceStanceBadge,
   renderClusterScoreBadge,
   renderSourcePill,
+  renderProjectRelevanceBadge,
+  renderProjectImpactBadge,
 } from '../components/badges.js';
 import {
   renderLoadingState,
@@ -450,7 +452,10 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
                       <div class="text-semibold">${escapeHtml(projName)}</div>
                       <div class="mono text-xs text-muted" style="margin-top:2px;">Type: ${escapeHtml(matchType)}</div>
                     </div>
-                    ${relScore !== null ? `<span class="project-match-pill">Relevance: ${Math.round(relScore * 100)}%</span>` : ''}
+                    <div style="display:flex;gap:var(--space-2);align-items:center;">
+                      ${renderProjectRelevanceBadge(relScore)}
+                      ${typeof pm.impact_score === 'number' ? renderProjectImpactBadge(pm.impact_score) : ''}
+                    </div>
                   </div>
                   ${rec ? `<p class="text-xs text-secondary" style="margin:var(--space-2) 0 0 0;">${escapeHtml(rec)}</p>` : ''}
                 </div>`;

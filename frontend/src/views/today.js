@@ -12,6 +12,11 @@
 import { api } from '../api/endpoints.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, ensureArray, toTitleCase } from '../utils/adapters.js';
+import {
+  renderInboxPriorityBadge,
+  renderInboxRankBadge,
+  renderProjectImpactBadge,
+} from '../components/badges.js';
 
 export const CANONICAL_INBOX_SECTIONS = [
   { key: 'must_know', label: 'Must Know' },
@@ -223,28 +228,21 @@ export function renderInboxCard(item) {
   });
 
   let projectContextHtml = '';
-  if (matchedProjects.length > 0 || (projectImpact !== null && projectImpact > 0)) {
-    const scoreText = projectImpact !== null && projectImpact > 0
-      ? `<span class="project-impact-pill">Project Impact: <strong>${Math.round(projectImpact * 100)}%</strong></span>`
-      : '';
+  if (matchedProjects.length > 0 || (projectImpact !== null && projectImpact !== undefined)) {
+    const impactBadge = renderProjectImpactBadge(projectImpact);
     projectContextHtml = `
       <div class="inbox-project-context" data-matched-projects="${escapeHtml(matchedProjects.join(','))}">
         <span class="project-context-label">Project Context:</span>
         <span class="mono text-xs project-id-list">${escapeHtml(matchedProjects.join(', ') || 'Matched')}</span>
-        ${scoreText}
+        ${impactBadge}
       </div>
     `;
   }
 
-  let priorityPill = '';
-  if (priorityScore !== null) {
-    priorityPill = `<span class="inbox-score-pill" title="Surfacing priority score calculated by HERMES ranking pipeline"><span class="score-label">Priority:</span> <strong>${Math.round(priorityScore * 100)}%</strong></span>`;
-  }
-
-  let rankPill = '';
-  if (rankScore !== null && rankScore !== priorityScore) {
-    rankPill = `<span class="inbox-rank-pill text-muted text-xs"><span class="score-label">Order Rank:</span> ${rankScore.toFixed(2)}</span>`;
-  }
+  const priorityPill = renderInboxPriorityBadge(priorityScore);
+  const rankPill = (rankScore !== null && rankScore !== undefined && rankScore !== priorityScore)
+    ? renderInboxRankBadge(rankScore)
+    : '';
 
   const titleHtml = isResolvable
     ? `<a href="#/story/${encodeURIComponent(cid)}" class="inbox-title-link">${escapeHtml(title)}</a>`

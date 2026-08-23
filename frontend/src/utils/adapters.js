@@ -86,14 +86,35 @@ export function formatRelativeTime(value) {
 }
 
 /**
+ * Checks if a value is a valid finite normalized score in [0.0, 1.0].
+ * Rejects null, undefined, NaN, Infinity, strings, objects, numbers < 0, numbers > 1.
+ * @param {any} val
+ * @returns {boolean}
+ */
+export function isValidNormalizedScore(val) {
+  return typeof val === 'number' && Number.isFinite(val) && val >= 0.0 && val <= 1.0;
+}
+
+/**
+ * Checks if a value is a valid finite non-normalized score (e.g. search rank or cluster score).
+ * Rejects null, undefined, NaN, Infinity, strings, objects.
+ * @param {any} val
+ * @returns {boolean}
+ */
+export function isValidFiniteScore(val) {
+  return typeof val === 'number' && Number.isFinite(val);
+}
+
+/**
  * Formats a numeric fraction (0.0 - 1.0) as a percentage string (e.g. "85%").
- * Returns '—' if value is null/undefined/NaN.
- * NEVER treats null as 0%.
+ * Returns '—' if value is null/undefined/NaN or outside [0.0, 1.0].
+ * NEVER converts null, negative, or > 1 values to percentages.
+ * Preserves genuine 0 as '0%'.
  * @param {number|null} score 
  * @returns {string}
  */
 export function formatScorePercentage(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidNormalizedScore(score)) {
     return '—';
   }
   return `${Math.round(score * 100)}%`;
@@ -101,12 +122,12 @@ export function formatScorePercentage(score) {
 
 /**
  * Formats a numeric score to 2 decimal places.
- * Returns '—' if value is null/undefined/NaN.
+ * Returns '—' if value is null/undefined/NaN or non-finite.
  * @param {number|null} score 
  * @returns {string}
  */
 export function formatScoreDecimal(score) {
-  if (score === null || score === undefined || typeof score !== 'number' || isNaN(score)) {
+  if (!isValidFiniteScore(score)) {
     return '—';
   }
   return score.toFixed(2);
