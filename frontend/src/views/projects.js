@@ -5,14 +5,13 @@
  */
 
 import { api } from '../api/endpoints.js';
+import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, ensureArray } from '../utils/adapters.js';
 import {
   renderProjectRelevanceBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
-
-let currentProjectRequestToken = 0;
 
 /**
  * Format match type into human-readable label.
@@ -98,12 +97,12 @@ export async function renderProjectsView(container, store, routeParams = {}) {
  * Renders the Projects Index View listing all active project profiles.
  */
 async function renderProjectIndexView(container, store) {
-  const thisToken = ++currentProjectRequestToken;
+  const reqGen = requestManager.nextGeneration('projects');
   container.innerHTML = renderLoadingState('Loading local engineering projects…');
 
   try {
-    const response = await api.getProjects();
-    if (thisToken !== currentProjectRequestToken) return;
+    const response = await api.getProjects({ generation: reqGen });
+    if (!requestManager.isCurrent('projects', reqGen)) return;
 
     const projects = ensureArray(response.projects || response);
     store.setViewData('projects', projects);
@@ -208,7 +207,7 @@ async function renderProjectIndexView(container, store) {
     });
 
   } catch (err) {
-    if (thisToken !== currentProjectRequestToken) return;
+    if (!requestManager.isCurrent('projects', reqGen) || (err && err.isAborted && !err.isTimeout)) return;
 
     if (err.isNetworkError) {
       store.setConnection('offline', err.message);
@@ -229,12 +228,12 @@ async function renderProjectIndexView(container, store) {
  * engineering concerns, recent changes, and cross-surface navigation.
  */
 async function renderProjectDetailView(container, store, projectId) {
-  const thisToken = ++currentProjectRequestToken;
+  const reqGen = requestManager.nextGeneration('projects');
   container.innerHTML = renderLoadingState(`Loading intelligence for ${projectId}…`);
 
   try {
-    const intel = await api.getProjectIntelligence(projectId);
-    if (thisToken !== currentProjectRequestToken) return;
+    const intel = await api.getProjectIntelligence(projectId, {}, { generation: reqGen });
+    if (!requestManager.isCurrent('projects', reqGen)) return;
 
     if (!intel) {
       container.innerHTML = renderErrorState(
@@ -529,7 +528,7 @@ async function renderProjectDetailView(container, store, projectId) {
     container.innerHTML = html;
 
   } catch (err) {
-    if (thisToken !== currentProjectRequestToken) return;
+    if (!requestManager.isCurrent('projects', reqGen) || (err && err.isAborted && !err.isTimeout)) return;
 
     if (err.status === 404) {
       container.innerHTML = `

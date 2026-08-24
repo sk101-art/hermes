@@ -10,6 +10,7 @@
  */
 
 import { api } from '../api/endpoints.js';
+import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, ensureArray, toTitleCase } from '../utils/adapters.js';
 import {
@@ -325,8 +326,6 @@ export function updateInboxHash(params) {
   }
 }
 
-let currentInboxRequestId = 0;
-
 export async function renderTodayView(container, store) {
   const initialParams = parseInboxHashParams();
   let availableProjects = [];
@@ -415,7 +414,7 @@ export async function renderTodayView(container, store) {
   `;
 
   async function executeFetch(filterState) {
-    const reqId = ++currentInboxRequestId;
+    const reqGen = requestManager.nextGeneration('today');
     const feedContainer = container.querySelector('#inbox-feed-container');
     const liveRegion = container.querySelector('#inbox-live-region');
 
@@ -429,8 +428,8 @@ export async function renderTodayView(container, store) {
       if (filterState.section) params.section = filterState.section;
       if (filterState.project) params.project = filterState.project;
 
-      const payload = await api.getInbox(params);
-      if (reqId !== currentInboxRequestId) return; // Stale response protection
+      const payload = await api.getInbox(params, { generation: reqGen });
+      if (!requestManager.isCurrent('today', reqGen)) return; // Stale response protection
 
       store.setViewData('today', payload);
       store.setConnection('healthy');
@@ -515,7 +514,7 @@ export async function renderTodayView(container, store) {
         liveRegion.textContent = `Showing ${consolidatedList.length} prioritized intelligence signals across ${renderedSections.length} sections.`;
       }
     } catch (err) {
-      if (reqId !== currentInboxRequestId) return;
+      if (!requestManager.isCurrent('today', reqGen) || (err && err.isAborted && !err.isTimeout)) return;
       if (err.isNetworkError) {
         store.setConnection('offline', err.message);
         feedContainer.innerHTML = renderOfflineState(undefined, err.message);

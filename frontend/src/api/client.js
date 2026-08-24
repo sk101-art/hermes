@@ -5,12 +5,14 @@
  */
 
 export class ApiError extends Error {
-  constructor(message, status = 0, data = null, isNetworkError = false) {
+  constructor(message, status = 0, data = null, isNetworkError = false, isTimeout = false, isAborted = false) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.data = data;
     this.isNetworkError = isNetworkError;
+    this.isTimeout = isTimeout;
+    this.isAborted = isAborted;
     this.timestamp = new Date().toISOString();
   }
 }
@@ -57,11 +59,13 @@ export async function request(endpoint, options = {}) {
     ...fetchOptions
   } = options;
 
-  // Build URL with query params
+  // Build URL with canonically sorted query params
   let url = `${baseUrl.replace(/\/+$/, '')}/${endpoint.replace(/^\/+/, '')}`;
   if (params && typeof params === 'object') {
+    const sortedKeys = Object.keys(params).sort();
     const searchParams = new URLSearchParams();
-    for (const [key, value] of Object.entries(params)) {
+    for (const key of sortedKeys) {
+      const value = params[key];
       if (value !== undefined && value !== null) {
         searchParams.append(key, String(value));
       }
@@ -74,11 +78,26 @@ export async function request(endpoint, options = {}) {
 
   // Setup timeout & cancellation
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  
-  // Link with optional user signal
+  let timedOut = false;
+  let userAborted = false;
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  const onUserAbort = () => {
+    userAborted = true;
+    controller.abort();
+  };
+
   if (userSignal) {
-    userSignal.addEventListener('abort', () => controller.abort());
+    if (userSignal.aborted) {
+      userAborted = true;
+      controller.abort();
+    } else {
+      userSignal.addEventListener('abort', onUserAbort);
+    }
   }
 
   try {
@@ -110,7 +129,7 @@ export async function request(endpoint, options = {}) {
       } catch {
         // Body was not JSON
       }
-      throw new ApiError(errorMsg, response.status, errorData, false);
+      throw new ApiError(errorMsg, response.status, errorData, false, false, false);
     }
 
     // Parse JSON while strictly preserving null/empty fields
@@ -126,8 +145,12 @@ export async function request(endpoint, options = {}) {
       throw err;
     }
 
-    if (err.name === 'AbortError') {
-      throw new ApiError('Request timed out or was aborted', 0, null, true);
+    if (timedOut) {
+      throw new ApiError('Request timed out', 0, null, true, true, false);
+    }
+
+    if (userAborted || err.name === 'AbortError') {
+      throw new ApiError('Request was aborted', 0, null, false, false, true);
     }
 
     // Network / offline failure
@@ -135,8 +158,15 @@ export async function request(endpoint, options = {}) {
       err.message || 'Unable to connect to local HERMES API',
       0,
       null,
-      true
+      true,
+      false,
+      false
     );
+  } finally {
+    clearTimeout(timeoutId);
+    if (userSignal) {
+      userSignal.removeEventListener('abort', onUserAbort);
+    }
   }
 }
 

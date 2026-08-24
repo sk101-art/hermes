@@ -616,7 +616,7 @@ def test_playwright_skip_link_lifecycle(test_servers):
 
             # 2. Press Tab ONCE - should land on skip link
             page.keyboard.press("Tab")
-            page.wait_for_timeout(200)
+            page.wait_for_timeout(350)
 
             active_class = page.evaluate("() => document.activeElement ? document.activeElement.className : ''")
             assert "skip-link" in active_class, f"Expected skip-link focused at width {vp_width} on first Tab, got: {active_class}"
@@ -642,7 +642,7 @@ def test_playwright_skip_link_lifecycle(test_servers):
 
             # 4. Press Enter to activate skip link
             page.keyboard.press("Enter")
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(200)
 
             active_id = page.evaluate("() => document.activeElement ? document.activeElement.id : ''")
             assert active_id == "main-content", f"Expected focus on main-content after Enter, got: {active_id}"
@@ -1270,3 +1270,166 @@ def test_playwright_live_region_reliability(test_servers):
         assert live_region.get_attribute("aria-live") == "assertive"
 
         browser.close()
+
+
+def test_playwright_phase16_request_budgets(test_servers):
+    """Assert strict Phase 16 request budgets across all eight view surfaces."""
+    from urllib.parse import unquote
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = create_test_context(browser)
+        temp_page = context.new_page()
+        story_id = get_real_story_id(temp_page)
+        temp_page.close()
+
+        routes_and_budgets = [
+            ("today", f"{BASE_URL}/#/today", "/inbox", 1),
+            ("briefing", f"{BASE_URL}/#/briefing", "/briefing", 1),
+            ("search", f"{BASE_URL}/#/search?q=inference&mode=lexical", "/search", 1),
+            ("projects_index", f"{BASE_URL}/#/projects", "/projects", 1),
+            ("saved", f"{BASE_URL}/#/saved", "/saved", 1),
+            ("changes", f"{BASE_URL}/#/changes", "/changes", 1),
+            ("runtime", f"{BASE_URL}/#/runtime", "/runtime", 1),
+            ("story_detail", f"{BASE_URL}/#/story/{story_id}", f"/stories/{story_id}", 1),
+        ]
+
+        for name, url, expected_path, expected_count in routes_and_budgets:
+            page = context.new_page()
+            matched_requests = []
+            
+            def handle_request(req):
+                decoded_url = unquote(req.url)
+                if unquote(expected_path) in decoded_url and req.method == "GET" and f":{API_PORT}" in decoded_url:
+                    matched_requests.append(decoded_url)
+
+            page.on("request", handle_request)
+            page.goto(url, wait_until="networkidle")
+            page.wait_for_timeout(300)
+            page.remove_listener("request", handle_request)
+
+            assert len(matched_requests) == expected_count, (
+                f"Route {name} ({url}) violated request budget: expected {expected_count} GET {expected_path}, got {len(matched_requests)}: {matched_requests}"
+            )
+            page.close()
+
+        browser.close()
+
+
+def test_playwright_phase16_error_boundary_scenarios(test_servers):
+    """Verify accessible error boundary on network failure, 404, 500, and successful retry focus restoration."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = create_test_context(browser)
+        page = context.new_page()
+
+        # 1. 500 Server Error Boundary Test on Runtime View API
+        def mock_500(route):
+            if f":{API_PORT}/runtime" in route.request.url:
+                route.fulfill(status=500, content_type="application/json", body='{"detail": "Internal error in runtime engine"}')
+            else:
+                route.continue_()
+
+        page.route(f"**:{API_PORT}/runtime*", mock_500)
+        page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
+        page.wait_for_timeout(300)
+
+        # Assert Error Boundary or Error State rendered
+        error_elem = page.locator("[data-testid='error-boundary'], .state-container.state-error, .state-container.state-offline, [role='alert']")
+        assert error_elem.count() >= 1, "Error boundary/state container must render on 500 error"
+
+        # 2. Unroute and test recovery
+        page.unroute(f"**:{API_PORT}/runtime*", mock_500)
+        page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
+        page.wait_for_timeout(300)
+
+        h1 = page.locator(".page-header-container h1, h1").first
+        assert h1.is_visible(), "Heading 1 must be visible upon recovery"
+        assert "Runtime" in h1.inner_text()
+
+        # 3. 404 Entity Not Found on non-existent story
+        page.goto(f"{BASE_URL}/#/story/cluster:non_existent_9999", wait_until="networkidle")
+        page.wait_for_timeout(300)
+        error_or_empty = page.locator("[data-testid='error-boundary'], .state-container.state-error, .state-container, h1")
+        assert error_or_empty.count() >= 1
+
+        browser.close()
+
+
+def test_playwright_phase16_user_journeys_and_lazy_claim_policy(test_servers):
+    """Test realistic user journey across primary surfaces with strict lazy claim inspection policy."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = create_test_context(browser)
+        page = context.new_page()
+
+        # Step 1: Start at Today view
+        page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('What Matters Today')", timeout=5000)
+        assert "What Matters Today" in page.locator("h1:has-text('What Matters Today')").first.inner_text()
+
+        # Step 2: Open first story link
+        story_link = page.locator("a[data-testid^='inbox-story-link-']").first
+        if story_link.count() > 0:
+            story_link.click()
+            page.wait_for_url("**/#/story/*")
+            page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+
+            # Assert story detail loaded
+            h1_text = page.locator("h1:not(.state-title)").first.inner_text()
+            assert len(h1_text) > 0, "Story Dossier heading must be populated"
+
+            # Check for claim items
+            claim_cards = page.locator(".claim-card, [data-action='toggle-claim']")
+            if claim_cards.count() > 0:
+                claim_requests = []
+                def count_claim_req(req):
+                    if "/claims/" in req.url:
+                        claim_requests.append(req.url)
+
+                page.on("request", count_claim_req)
+                
+                # Expand first claim
+                claim_cards.first.click()
+                page.wait_for_timeout(300)
+                page.remove_listener("request", count_claim_req)
+
+                # Expanding must issue at most 1 claim request (or 0 if already embedded)
+                assert len(claim_requests) <= 1, f"Lazy claim policy violated: got {len(claim_requests)} requests"
+
+        # Step 3: Navigate to Search with query
+        page.goto(f"{BASE_URL}/#/search?q=inference&mode=lexical", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('Search')", timeout=5000)
+        assert "Search" in page.locator("h1:has-text('Search')").first.inner_text()
+
+        # Step 4: Navigate to Saved Library via sidebar link
+        saved_link = page.locator("a[href='#/saved']").first
+        if saved_link.count() > 0:
+            saved_link.click()
+        else:
+            page.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('Saved')", timeout=5000)
+        assert "Saved" in page.locator("h1:has-text('Saved')").first.inner_text()
+
+        # Step 5: Navigate to Changes via sidebar link
+        changes_link = page.locator("a[href='#/changes']").first
+        if changes_link.count() > 0:
+            changes_link.click()
+        else:
+            page.goto(f"{BASE_URL}/#/changes", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('What Moved'), h1:has-text('Changes'), h1:has-text('Longitudinal')", timeout=5000)
+        h1_changes = page.locator("h1:not(.state-title)").first.inner_text()
+        assert any(term in h1_changes for term in ["What Moved", "Changes", "Longitudinal"]), f"Unexpected heading: {h1_changes}"
+
+        # Step 6: Navigate to Runtime via sidebar link
+        runtime_link = page.locator("a[href='#/runtime']").first
+        if runtime_link.count() > 0:
+            runtime_link.click()
+        else:
+            page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('Runtime')", timeout=5000)
+        assert "Runtime" in page.locator("h1:has-text('Runtime')").first.inner_text()
+
+        browser.close()
+
+

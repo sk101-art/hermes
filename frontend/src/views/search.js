@@ -9,6 +9,7 @@
  */
 
 import { api } from '../api/endpoints.js';
+import { requestManager } from '../state/request-manager.js';
 import { getIcon } from '../icons/index.js';
 import {
   renderVerificationBadge,
@@ -21,19 +22,11 @@ import {
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, ensureArray, formatDate } from '../utils/adapters.js';
 
-// In-flight request controller to cancel stale searches during fast navigation/filter changes
-let currentSearchAbortController = null;
-
 // Cached dynamic sources and projects
 let cachedSourcesList = null;
 let cachedProjectsList = null;
 
 export async function renderSearchView(container, store, routeParams = {}) {
-  // Cancel any prior in-flight search
-  if (currentSearchAbortController) {
-    currentSearchAbortController.abort();
-    currentSearchAbortController = null;
-  }
 
   const query = routeParams.q !== undefined ? routeParams.q : (store.getState().searchQuery || '');
   const searchMode = routeParams.mode || 'hybrid';
@@ -253,10 +246,7 @@ export async function renderSearchView(container, store, routeParams = {}) {
     const resultsArea = container.querySelector('#search-results-area');
     if (!resultsArea) return;
 
-    // Create new abort controller for this specific request
-    const abortController = new AbortController();
-    currentSearchAbortController = abortController;
-
+    const reqGen = requestManager.nextGeneration('search');
     resultsArea.innerHTML = renderLoadingState(`Searching intelligence corpus for “${escapeHtml(query)}”…`);
 
     try {
@@ -273,10 +263,9 @@ export async function renderSearchView(container, store, routeParams = {}) {
       if (days !== 'all') searchParams.days = parseInt(days, 10);
       if (verifiedOnly) searchParams.verified_only = true;
 
-      const response = await api.search(query, searchParams);
+      const response = await api.search(query, searchParams, { generation: reqGen });
 
-      // If this request was aborted, ignore response
-      if (abortController.signal.aborted) return;
+      if (!requestManager.isCurrent('search', reqGen)) return;
 
       store.setConnection('healthy');
       const results = ensureArray(response.results || response);
@@ -306,7 +295,7 @@ export async function renderSearchView(container, store, routeParams = {}) {
         `;
       }
     } catch (err) {
-      if (abortController.signal.aborted) return;
+      if (!requestManager.isCurrent('search', reqGen) || (err && err.isAborted && !err.isTimeout)) return;
 
       if (liveAnnouncer) {
         liveAnnouncer.textContent = `Search failed: ${err.message}`;
@@ -318,10 +307,6 @@ export async function renderSearchView(container, store, routeParams = {}) {
       } else {
         store.setConnection('degraded', err.message);
         resultsArea.innerHTML = renderErrorState('Search Request Failed', err.message);
-      }
-    } finally {
-      if (currentSearchAbortController === abortController) {
-        currentSearchAbortController = null;
       }
     }
   }

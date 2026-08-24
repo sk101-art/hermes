@@ -5,6 +5,7 @@
  */
 
 import { api } from '../api/endpoints.js';
+import { requestManager } from '../state/request-manager.js';
 import { getIcon } from '../icons/index.js';
 import {
   renderLoadingState,
@@ -308,8 +309,6 @@ export function renderChangeCard(change) {
  * Main Changes View Renderer
  */
 export async function renderChangesView(container, store) {
-  let activeRequestId = 0;
-
   // Filter state
   let currentHours = 168; // default 7 days
   let currentImportance = ''; // all
@@ -329,7 +328,7 @@ export async function renderChangesView(container, store) {
   }
 
   async function loadAndRender() {
-    const requestId = ++activeRequestId;
+    const reqGen = requestManager.nextGeneration('changes');
     const contentRegion = container.querySelector('#changes-content-region');
     const liveRegion = container.querySelector('#changes-live-region');
 
@@ -349,10 +348,10 @@ export async function renderChangesView(container, store) {
         queryParams.project = currentProject;
       }
 
-      const response = await api.getChanges(queryParams);
+      const response = await api.getChanges(queryParams, { generation: reqGen });
 
       // Stale request protection
-      if (requestId !== activeRequestId) return;
+      if (!requestManager.isCurrent('changes', reqGen)) return;
 
       const rawChanges = ensureArray(response.changes || response);
       store.setViewData('changes', rawChanges);
@@ -426,7 +425,7 @@ export async function renderChangesView(container, store) {
 
       contentRegion.innerHTML = listHtml;
     } catch (err) {
-      if (requestId !== activeRequestId) return;
+      if (!requestManager.isCurrent('changes', reqGen) || (err && err.isAborted && !err.isTimeout)) return;
 
       if (err.isNetworkError) {
         store.setConnection('offline', err.message);

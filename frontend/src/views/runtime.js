@@ -5,10 +5,9 @@
  */
 
 import { api } from '../api/endpoints.js';
+import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, formatTime, ensureArray, toTitleCase } from '../utils/adapters.js';
-
-let _activeRuntimeRequestId = 0;
 
 function formatFiniteNumber(val, fallback = '—') {
   if (typeof val === 'number' && Number.isFinite(val)) {
@@ -92,14 +91,14 @@ function getJobStatusClass(status) {
 }
 
 export async function renderRuntimeView(container, store) {
-  const requestId = ++_activeRuntimeRequestId;
+  const reqGen = requestManager.nextGeneration('runtime');
   container.innerHTML = renderLoadingState('Loading runtime health & operational overview…');
 
   try {
     // Single aggregated operational overview request
-    const overview = await api.runtime();
+    const overview = await api.runtime({ generation: reqGen });
 
-    if (requestId !== _activeRuntimeRequestId) {
+    if (!requestManager.isCurrent('runtime', reqGen)) {
       return; // Discard stale response on rapid view navigation
     }
 
@@ -444,7 +443,7 @@ export async function renderRuntimeView(container, store) {
       });
     }
   } catch (err) {
-    if (requestId !== _activeRuntimeRequestId) {
+    if (!requestManager.isCurrent('runtime', reqGen) || (err && err.isAborted && !err.isTimeout)) {
       return;
     }
     if (err.isNetworkError) {

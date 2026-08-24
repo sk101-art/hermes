@@ -1,0 +1,147 @@
+{
+  "meta": {
+    "title": "HERMES Phase 16 Performance Evidence",
+    "timestamp": "2026-08-24T10:33:53.100519+00:00",
+    "git_commit": "11f711f40044d9b8db613bbb6828d8034d0c3c2e",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python_version": "3.11.9",
+    "sqlite_version": "3.45.1",
+    "database_baseline_sha256": "f2966347f86f9ecd7343683f595f5d48b7fb940324eb5d936716f8899f5d5a77",
+    "table_record_counts": {
+      "events": 368,
+      "story_clusters": 345,
+      "claims": 360,
+      "evidence_links": 0,
+      "technology_assessments": 345,
+      "technology_current_states": 0,
+      "project_story_matches": 0,
+      "daily_briefings": 1,
+      "runtime_jobs": 10,
+      "source_checkpoints": 9
+    }
+  },
+  "database_batch_queries": {
+    "get_claims_by_cluster_ids (N=50)": {
+      "samples": 50,
+      "cold_ms": 2.539,
+      "min_ms": 1.857,
+      "median_ms": 2.032,
+      "p95_ms": 3.392,
+      "max_ms": 4.121
+    },
+    "get_evidence_by_claim_ids (N=50)": {
+      "samples": 50,
+      "cold_ms": 0.221,
+      "min_ms": 0.029,
+      "median_ms": 0.044,
+      "p95_ms": 0.092,
+      "max_ms": 0.118
+    },
+    "get_assessments_by_cluster_ids (N=50)": {
+      "samples": 50,
+      "cold_ms": 0.903,
+      "min_ms": 0.485,
+      "median_ms": 0.524,
+      "p95_ms": 0.753,
+      "max_ms": 1.099
+    },
+    "get_current_states_by_cluster_ids (N=50)": {
+      "samples": 50,
+      "cold_ms": 0.996,
+      "min_ms": 0.65,
+      "median_ms": 0.69,
+      "p95_ms": 1.049,
+      "max_ms": 1.482
+    },
+    "get_project_matches_by_cluster_ids (N=50)": {
+      "samples": 50,
+      "cold_ms": 1.598,
+      "min_ms": 0.937,
+      "median_ms": 0.996,
+      "p95_ms": 1.792,
+      "max_ms": 2.021
+    },
+    "get_event_clusters_batch (N=50)": {
+      "samples": 50,
+      "cold_ms": 0.253,
+      "min_ms": 0.065,
+      "median_ms": 0.067,
+      "p95_ms": 0.09,
+      "max_ms": 0.103
+    }
+  },
+  "api_endpoints": {
+    "GET /inbox?limit=40": {
+      "samples": 50,
+      "cold_ms": 34.777,
+      "min_ms": 17.09,
+      "median_ms": 18.951,
+      "p95_ms": 23.702,
+      "max_ms": 24.723
+    },
+    "GET /briefing": {
+      "samples": 50,
+      "cold_ms": 41.18,
+      "min_ms": 22.774,
+      "median_ms": 25.176,
+      "p95_ms": 31.876,
+      "max_ms": 67.178
+    },
+    "GET /search?q=inference&mode=lexical": {
+      "samples": 50,
+      "cold_ms": 64.343,
+      "min_ms": 55.304,
+      "median_ms": 61.793,
+      "p95_ms": 73.762,
+      "max_ms": 119.173
+    },
+    "GET /projects": {
+      "samples": 50,
+      "cold_ms": 19.452,
+      "min_ms": 13.372,
+      "median_ms": 15.415,
+      "p95_ms": 17.165,
+      "max_ms": 18.161
+    },
+    "GET /projects/proj_hermes_core/intelligence": {
+      "samples": 50,
+      "cold_ms": 16.111,
+      "min_ms": 13.537,
+      "median_ms": 15.354,
+      "p95_ms": 19.278,
+      "max_ms": 35.008
+    },
+    "GET /saved?include_current=true&limit=50": {
+      "samples": 50,
+      "cold_ms": 19.357,
+      "min_ms": 16.491,
+      "median_ms": 17.608,
+      "p95_ms": 20.614,
+      "max_ms": 27.256
+    },
+    "GET /changes?hours=168&limit=50": {
+      "samples": 50,
+      "cold_ms": 17.648,
+      "min_ms": 14.001,
+      "median_ms": 15.201,
+      "p95_ms": 18.53,
+      "max_ms": 21.318
+    },
+    "GET /runtime": {
+      "samples": 50,
+      "cold_ms": 17604.137,
+      "min_ms": 29.703,
+      "median_ms": 33.062,
+      "p95_ms": 41.158,
+      "max_ms": 152.043
+    },
+    "GET /stories/cluster:0098b4102473": {
+      "samples": 50,
+      "cold_ms": 28.652,
+      "min_ms": 22.393,
+      "median_ms": 24.133,
+      "p95_ms": 28.312,
+      "max_ms": 29.382
+    }
+  }
+}

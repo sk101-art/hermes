@@ -533,12 +533,7 @@ class Database:
                     if r[0] not in matched_ids:
                         matched_ids.append(r[0])
 
-        clusters = []
-        for cid in matched_ids:
-            cl = self.get_cluster(cid)
-            if cl:
-                clusters.append(cl)
-        return clusters
+        return self.get_clusters_by_ids(matched_ids)
 
     # --- Embedding Storage Methods ---
 
@@ -672,30 +667,58 @@ class Database:
     def get_clusters_by_ids(self, cluster_ids: List[str]) -> List[StoryCluster]:
         if not cluster_ids:
             return []
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return []
         cursor = self.conn.cursor()
-        ph = ",".join(["?"] * len(cluster_ids))
-        cursor.execute(f"SELECT * FROM story_clusters WHERE id IN ({ph})", tuple(cluster_ids))
-        rows = cursor.fetchall()
-        return [
-            StoryCluster(
-                id=r["id"],
-                canonical_title=r["canonical_title"],
-                event_ids=[],
-                sources=[],
-                cluster_score=r["cluster_score"] or 0.0,
-                source_diversity_score=r["source_diversity_score"] or 0.0,
-                max_event_score=r["max_event_score"] or 0.0,
-                created_at=datetime.fromisoformat(r["created_at"]),
-                updated_at=datetime.fromisoformat(r["updated_at"]),
+        clusters = []
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            ph = ",".join("?" for _ in chunk)
+            cursor.execute(f"SELECT * FROM story_clusters WHERE id IN ({ph})", tuple(chunk))
+            rows = cursor.fetchall()
+            if not rows:
+                continue
+            cursor.execute(
+                f"""
+                SELECT ce.cluster_id, ce.event_id, e.source
+                FROM cluster_events ce
+                LEFT JOIN events e ON ce.event_id = e.id
+                WHERE ce.cluster_id IN ({ph})
+                """,
+                tuple(chunk),
             )
-            for r in rows
-        ]
+            events_by_cluster = defaultdict(list)
+            sources_by_cluster = defaultdict(set)
+            for r in cursor.fetchall():
+                cid = r["cluster_id"]
+                if r["event_id"]:
+                    events_by_cluster[cid].append(r["event_id"])
+                if r["source"]:
+                    sources_by_cluster[cid].add(r["source"])
+
+            for r in rows:
+                cid = r["id"]
+                clusters.append(
+                    StoryCluster(
+                        id=cid,
+                        canonical_title=r["canonical_title"],
+                        event_ids=events_by_cluster.get(cid, []),
+                        sources=sorted(list(sources_by_cluster.get(cid, set()))),
+                        cluster_score=r["cluster_score"] or 0.0,
+                        source_diversity_score=r["source_diversity_score"] or 0.0,
+                        max_event_score=r["max_event_score"] or 0.0,
+                        created_at=datetime.fromisoformat(r["created_at"]),
+                        updated_at=datetime.fromisoformat(r["updated_at"]),
+                    )
+                )
+        return clusters
 
     def get_all_clusters(self) -> List[StoryCluster]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT id FROM story_clusters ORDER BY cluster_score DESC")
         cluster_ids = [r["id"] for r in cursor.fetchall()]
-        return [self.get_cluster(cid) for cid in cluster_ids if cid]
+        return self.get_clusters_by_ids(cluster_ids)
 
     def get_top_clusters(self, limit: int = 20) -> List[StoryCluster]:
         cursor = self.conn.cursor()
@@ -708,24 +731,37 @@ class Database:
             (limit,),
         )
         cluster_rows = cursor.fetchall()
+        if not cluster_rows:
+            return []
+        cids = [r["id"] for r in cluster_rows]
+        ph = ",".join("?" for _ in cids)
+        cursor.execute(
+            f"""
+            SELECT ce.cluster_id, ce.event_id, e.source
+            FROM cluster_events ce
+            LEFT JOIN events e ON ce.event_id = e.id
+            WHERE ce.cluster_id IN ({ph})
+            """,
+            cids,
+        )
+        events_by_cluster = defaultdict(list)
+        sources_by_cluster = defaultdict(set)
+        for r in cursor.fetchall():
+            cid = r["cluster_id"]
+            if r["event_id"]:
+                events_by_cluster[cid].append(r["event_id"])
+            if r["source"]:
+                sources_by_cluster[cid].add(r["source"])
+
         clusters = []
         for row in cluster_rows:
             cid = row["id"]
-            cursor.execute("SELECT event_id FROM cluster_events WHERE cluster_id = ?", (cid,))
-            event_ids = [r["event_id"] for r in cursor.fetchall()]
-
-            sources = []
-            if event_ids:
-                ph = ",".join(["?"] * len(event_ids))
-                cursor.execute(f"SELECT DISTINCT source FROM events WHERE id IN ({ph})", tuple(event_ids))
-                sources = [r["source"] for r in cursor.fetchall()]
-
             clusters.append(
                 StoryCluster(
                     id=cid,
                     canonical_title=row["canonical_title"],
-                    event_ids=event_ids,
-                    sources=sources,
+                    event_ids=events_by_cluster.get(cid, []),
+                    sources=sorted(list(sources_by_cluster.get(cid, set()))),
                     cluster_score=row["cluster_score"] or 0.0,
                     source_diversity_score=row["source_diversity_score"] or 0.0,
                     max_event_score=row["max_event_score"] or 0.0,
@@ -740,6 +776,23 @@ class Database:
         cursor.execute("SELECT cluster_id FROM cluster_events WHERE event_id = ? LIMIT 1", (event_id,))
         row = cursor.fetchone()
         return row["cluster_id"] if row else None
+
+    def get_event_clusters_batch(self, event_ids: List[str]) -> Dict[str, str]:
+        """Batch lookup cluster_id for multiple event_ids."""
+        if not event_ids:
+            return {}
+        clean_ids = list({eid for eid in event_ids if eid})
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        out = {}
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            ph = ",".join("?" for _ in chunk)
+            cursor.execute(f"SELECT event_id, cluster_id FROM cluster_events WHERE event_id IN ({ph})", chunk)
+            for r in cursor.fetchall():
+                out[r["event_id"]] = r["cluster_id"]
+        return out
 
     def get_cluster_events(self, cluster_id: str) -> List[Event]:
         cursor = self.conn.cursor()
@@ -958,6 +1011,27 @@ class Database:
         cursor.execute("SELECT * FROM claims WHERE status = ? ORDER BY verification_score DESC", (status,))
         return [self._row_to_claim(r) for r in cursor.fetchall()]
 
+    def get_claims_by_cluster_ids(self, cluster_ids: List[str], current_only: bool = False) -> Dict[str, List[Claim]]:
+        """Batch load claims for multiple cluster IDs grouped by cluster_id."""
+        if not cluster_ids:
+            return {}
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        out = defaultdict(list)
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"SELECT * FROM claims WHERE cluster_id IN ({placeholders})"
+            if current_only:
+                sql += " AND is_current = 1"
+            sql += " ORDER BY verification_score DESC, created_at DESC"
+            cursor.execute(sql, chunk)
+            for r in cursor.fetchall():
+                out[r["cluster_id"]].append(self._row_to_claim(r))
+        return dict(out)
+
     # --- Evidence Storage Methods ---
 
     def evidence_exists(self, evidence_id: str) -> bool:
@@ -1039,7 +1113,38 @@ class Database:
         cursor.execute("SELECT * FROM evidence ORDER BY quality_score DESC")
         return [self._row_to_evidence(r) for r in cursor.fetchall()]
 
+    def get_evidence_by_claim_ids(self, claim_ids: List[str]) -> Dict[str, List[Evidence]]:
+        """Batch load evidence records for multiple claim IDs grouped by claim_id."""
+        if not claim_ids:
+            return {}
+        clean_ids = list({cid for cid in claim_ids if cid})
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        out = defaultdict(list)
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"SELECT * FROM evidence WHERE claim_id IN ({placeholders}) ORDER BY quality_score DESC, created_at DESC"
+            cursor.execute(sql, chunk)
+            for r in cursor.fetchall():
+                out[r["claim_id"]].append(self._row_to_evidence(r))
+        return dict(out)
+
     # --- Technology Assessment Storage Methods ---
+
+    def _row_to_assessment(self, row: sqlite3.Row) -> TechnologyAssessment:
+        return TechnologyAssessment(
+            cluster_id=row["cluster_id"],
+            maturity_stage=row["maturity_stage"],
+            research_score=row["research_score"] or 0.0,
+            implementation_score=row["implementation_score"] or 0.0,
+            adoption_score=row["adoption_score"] or 0.0,
+            reproducibility_score=row["reproducibility_score"] or 0.0,
+            community_score=row["community_score"] or 0.0,
+            assessment_score=row["assessment_score"] or 0.0,
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
 
     def save_technology_assessment(self, assessment: TechnologyAssessment) -> bool:
         sql = """
@@ -1070,37 +1175,30 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM technology_assessments WHERE cluster_id = ? LIMIT 1", (cluster_id,))
         row = cursor.fetchone()
-        if not row:
-            return None
-        return TechnologyAssessment(
-            cluster_id=row["cluster_id"],
-            maturity_stage=row["maturity_stage"],
-            research_score=row["research_score"] or 0.0,
-            implementation_score=row["implementation_score"] or 0.0,
-            adoption_score=row["adoption_score"] or 0.0,
-            reproducibility_score=row["reproducibility_score"] or 0.0,
-            community_score=row["community_score"] or 0.0,
-            assessment_score=row["assessment_score"] or 0.0,
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
+        return self._row_to_assessment(row) if row else None
 
     def get_all_technology_assessments(self) -> List[TechnologyAssessment]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM technology_assessments ORDER BY assessment_score DESC")
-        return [
-            TechnologyAssessment(
-                cluster_id=row["cluster_id"],
-                maturity_stage=row["maturity_stage"],
-                research_score=row["research_score"] or 0.0,
-                implementation_score=row["implementation_score"] or 0.0,
-                adoption_score=row["adoption_score"] or 0.0,
-                reproducibility_score=row["reproducibility_score"] or 0.0,
-                community_score=row["community_score"] or 0.0,
-                assessment_score=row["assessment_score"] or 0.0,
-                updated_at=datetime.fromisoformat(row["updated_at"]),
-            )
-            for row in cursor.fetchall()
-        ]
+        return [self._row_to_assessment(row) for row in cursor.fetchall()]
+
+    def get_assessments_by_cluster_ids(self, cluster_ids: List[str]) -> Dict[str, TechnologyAssessment]:
+        """Batch load technology assessments for multiple cluster IDs."""
+        if not cluster_ids:
+            return {}
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        out = {}
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"SELECT * FROM technology_assessments WHERE cluster_id IN ({placeholders})"
+            cursor.execute(sql, chunk)
+            for r in cursor.fetchall():
+                out[r["cluster_id"]] = self._row_to_assessment(r)
+        return out
 
     # --- Session 6: Claim Revisions ---
 
@@ -1303,12 +1401,7 @@ class Database:
         self.conn.commit()
         return True
 
-    def get_technology_state(self, cluster_id: str) -> Optional[TechnologyState]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM technology_states WHERE cluster_id = ? LIMIT 1", (cluster_id,))
-        row = cursor.fetchone()
-        if not row:
-            return None
+    def _row_to_technology_state(self, row: sqlite3.Row) -> TechnologyState:
         return TechnologyState(
             cluster_id=row["cluster_id"],
             current_status=row["current_status"],
@@ -1324,50 +1417,48 @@ class Database:
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
+    def get_technology_state(self, cluster_id: str) -> Optional[TechnologyState]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM technology_states WHERE cluster_id = ? LIMIT 1", (cluster_id,))
+        row = cursor.fetchone()
+        return self._row_to_technology_state(row) if row else None
+
     def get_all_technology_states(self) -> List[TechnologyState]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM technology_states ORDER BY risk_score DESC, updated_at DESC")
-        return [
-            TechnologyState(
-                cluster_id=row["cluster_id"],
-                current_status=row["current_status"],
-                latest_event_at=datetime.fromisoformat(row["latest_event_at"]) if row["latest_event_at"] else None,
-                latest_release=row["latest_release"],
-                latest_claim_revision_at=datetime.fromisoformat(row["latest_claim_revision_at"]) if row["latest_claim_revision_at"] else None,
-                active_claim_count=row["active_claim_count"] or 0,
-                supported_claim_count=row["supported_claim_count"] or 0,
-                contradicted_claim_count=row["contradicted_claim_count"] or 0,
-                superseded_claim_count=row["superseded_claim_count"] or 0,
-                risk_score=row["risk_score"] if row["risk_score"] is not None else None,
-                trend=row["trend"],
-                updated_at=datetime.fromisoformat(row["updated_at"]),
-            )
-            for row in cursor.fetchall()
-        ]
+        return [self._row_to_technology_state(row) for row in cursor.fetchall()]
 
     def get_technology_states_by_cluster_ids(self, cluster_ids: List[str]) -> List[TechnologyState]:
         if not cluster_ids:
             return []
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return []
         cursor = self.conn.cursor()
-        ph = ",".join(["?"] * len(cluster_ids))
-        cursor.execute(f"SELECT * FROM technology_states WHERE cluster_id IN ({ph})", tuple(cluster_ids))
-        return [
-            TechnologyState(
-                cluster_id=row["cluster_id"],
-                current_status=row["current_status"],
-                latest_event_at=datetime.fromisoformat(row["latest_event_at"]) if row["latest_event_at"] else None,
-                latest_release=row["latest_release"],
-                latest_claim_revision_at=datetime.fromisoformat(row["latest_claim_revision_at"]) if row["latest_claim_revision_at"] else None,
-                active_claim_count=row["active_claim_count"] or 0,
-                supported_claim_count=row["supported_claim_count"] or 0,
-                contradicted_claim_count=row["contradicted_claim_count"] or 0,
-                superseded_claim_count=row["superseded_claim_count"] or 0,
-                risk_score=row["risk_score"] if row["risk_score"] is not None else None,
-                trend=row["trend"],
-                updated_at=datetime.fromisoformat(row["updated_at"]),
-            )
-            for row in cursor.fetchall()
-        ]
+        out = []
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            ph = ",".join(["?"] * len(chunk))
+            cursor.execute(f"SELECT * FROM technology_states WHERE cluster_id IN ({ph})", tuple(chunk))
+            out.extend([self._row_to_technology_state(row) for row in cursor.fetchall()])
+        return out
+
+    def get_current_states_by_cluster_ids(self, cluster_ids: List[str]) -> Dict[str, TechnologyState]:
+        """Batch load current technology states for multiple cluster IDs as a mapping."""
+        if not cluster_ids:
+            return {}
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        out = {}
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            ph = ",".join(["?"] * len(chunk))
+            cursor.execute(f"SELECT * FROM technology_states WHERE cluster_id IN ({ph})", tuple(chunk))
+            for row in cursor.fetchall():
+                out[row["cluster_id"]] = self._row_to_technology_state(row)
+        return out
 
     # --- Session 6: Recheck Queue ---
 
@@ -1842,6 +1933,42 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute("SELECT project_id, count(*) as cnt FROM project_matches GROUP BY project_id")
         return {r["project_id"]: r["cnt"] for r in cursor.fetchall()}
+
+    def get_project_matches_by_cluster_ids(self, cluster_ids: List[str]) -> Dict[str, List[ProjectMatch]]:
+        """Batch load project matches for multiple cluster IDs grouped by cluster ID."""
+        if not cluster_ids:
+            return {}
+        clean_ids = list({cid for cid in cluster_ids if cid})
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        out = defaultdict(list)
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            ph = ",".join("?" for _ in chunk)
+            sql = f"""
+            SELECT * FROM project_matches
+            WHERE entity_id IN ({ph}) AND entity_type = 'cluster'
+            ORDER BY impact_score DESC, relevance_score DESC
+            """
+            cursor.execute(sql, chunk)
+            for r in cursor.fetchall():
+                out[r["entity_id"]].append(
+                    ProjectMatch(
+                        id=r["id"],
+                        project_id=r["project_id"],
+                        entity_type=r["entity_type"],
+                        entity_id=r["entity_id"],
+                        match_type=r["match_type"],
+                        relevance_score=r["relevance_score"] if r["relevance_score"] is not None else None,
+                        impact_score=r["impact_score"] if r["impact_score"] is not None else None,
+                        recommendation=r["recommendation"],
+                        reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
+                        created_at=datetime.fromisoformat(r["created_at"]),
+                        updated_at=datetime.fromisoformat(r["updated_at"]),
+                    )
+                )
+        return dict(out)
 
     def get_claim_counts_by_cluster_ids(self, cluster_ids: List[str]) -> Dict[str, int]:
         if not cluster_ids:

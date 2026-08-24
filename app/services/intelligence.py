@@ -155,8 +155,10 @@ def search_intelligence(
 
     if tokens:
         fts_matches = db.search_events_fts(query, limit=100)
+        ev_ids = [m[0] for m in fts_matches]
+        ev_cluster_map = db.get_event_clusters_batch(ev_ids)
         for ev_id, lex_score in fts_matches:
-            c_id = db.get_event_cluster(ev_id)
+            c_id = ev_cluster_map.get(ev_id)
             if c_id:
                 candidate_cluster_ids.add(c_id)
                 event_lexical_scores[c_id] = max(event_lexical_scores.get(c_id, 0.0), lex_score)
@@ -183,13 +185,19 @@ def search_intelligence(
             q_emb = None
 
     results: List[SearchResult] = []
+    cand_list = list(candidate_cluster_ids)
+    clusters_map = {cl.id: cl for cl in db.get_clusters_by_ids(cand_list)}
+    events_map = db.get_cluster_events_batch(cand_list)
+    assessments_map = db.get_assessments_by_cluster_ids(cand_list)
+    states_map = db.get_current_states_by_cluster_ids(cand_list)
+    claims_map = db.get_claims_by_cluster_ids(cand_list, current_only=True)
 
-    for c_id in candidate_cluster_ids:
-        cl = db.get_cluster(c_id)
+    for c_id in cand_list:
+        cl = clusters_map.get(c_id)
         if not cl:
             continue
 
-        events = db.get_cluster_events(c_id)
+        events = events_map.get(c_id, [])
         if not events:
             continue
 
@@ -207,9 +215,9 @@ def search_intelligence(
         if cutoff_time and newest_event_time < cutoff_time:
             continue
 
-        assessment = db.get_technology_assessment(c_id)
-        tech_state = db.get_technology_state(c_id)
-        claims = db.get_claims_by_cluster(c_id, current_only=True)
+        assessment = assessments_map.get(c_id)
+        tech_state = states_map.get(c_id)
+        claims = claims_map.get(c_id, [])
 
         claim_scores = [c.verification_score for c in claims]
         verif_score = float(np.mean(claim_scores)) if claim_scores else None
@@ -404,15 +412,23 @@ def get_top_developments(
             inbox_items = [it for it in inbox_items if target_project.id in it.matched_project_ids]
 
     results = []
-    for it in inbox_items[:limit]:
-        cl = db.get_cluster(it.story_cluster_id)
+    sliced_items = inbox_items[:limit]
+    item_cids = [it.story_cluster_id for it in sliced_items if it.story_cluster_id]
+    clusters_map = {cl.id: cl for cl in db.get_clusters_by_ids(item_cids)}
+    events_map = db.get_cluster_events_batch(item_cids)
+    assessments_map = db.get_assessments_by_cluster_ids(item_cids)
+    states_map = db.get_current_states_by_cluster_ids(item_cids)
+    claims_map = db.get_claims_by_cluster_ids(item_cids, current_only=True)
+
+    for it in sliced_items:
+        cl = clusters_map.get(it.story_cluster_id)
         if not cl:
             continue
-        events = db.get_cluster_events(cl.id)
+        events = events_map.get(cl.id, [])
         urls = [e.url for e in events if e.url][:3]
-        assessment = db.get_technology_assessment(cl.id)
-        tech_state = db.get_technology_state(cl.id)
-        claims = db.get_claims_by_cluster(cl.id, current_only=True)
+        assessment = assessments_map.get(cl.id)
+        tech_state = states_map.get(cl.id)
+        claims = claims_map.get(cl.id, [])
         claim_scores = [c.verification_score for c in claims]
         verif_score = float(np.mean(claim_scores)) if claim_scores else None
         maturity = assessment.maturity_stage if assessment else None
@@ -460,12 +476,18 @@ def get_top_developments(
     if not results:
         # Fallback to top clusters
         top_cl = db.get_top_clusters(limit=limit)
+        top_cids = [cl.id for cl in top_cl]
+        fallback_events_map = db.get_cluster_events_batch(top_cids)
+        fallback_assessments_map = db.get_assessments_by_cluster_ids(top_cids)
+        fallback_states_map = db.get_current_states_by_cluster_ids(top_cids)
+        fallback_claims_map = db.get_claims_by_cluster_ids(top_cids, current_only=True)
+
         for cl in top_cl:
-            events = db.get_cluster_events(cl.id)
+            events = fallback_events_map.get(cl.id, [])
             urls = [e.url for e in events if e.url][:3]
-            assessment = db.get_technology_assessment(cl.id)
-            tech_state = db.get_technology_state(cl.id)
-            claims = db.get_claims_by_cluster(cl.id, current_only=True)
+            assessment = fallback_assessments_map.get(cl.id)
+            tech_state = fallback_states_map.get(cl.id)
+            claims = fallback_claims_map.get(cl.id, [])
             claim_scores = [c.verification_score for c in claims]
             verif_score = float(np.mean(claim_scores)) if claim_scores else None
             maturity = assessment.maturity_stage if assessment else None

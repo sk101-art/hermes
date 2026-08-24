@@ -9,6 +9,8 @@ import { getApiBaseUrl } from './api/client.js';
 import { router } from './state/router.js';
 import { store } from './state/store.js';
 import { renderShell } from './components/shell.js';
+import { mountErrorBoundary } from './components/error-boundary.js';
+import { requestManager } from './state/request-manager.js';
 import {
   trapFocus,
   announceToScreenReader,
@@ -166,6 +168,11 @@ function restoreRouteFocus(container, targetId) {
 async function loadView(viewKey, renderFn, routeParams = {}) {
   const isEnteringStory = viewKey === 'story';
   const isLeavingStory = store.getState().view === 'story' && viewKey !== 'story';
+  const previousView = store.getState().view;
+
+  if (previousView && previousView !== viewKey) {
+    requestManager.abortRoute(previousView);
+  }
 
   if (isEnteringStory && typeof document !== 'undefined') {
     captureStoryFocusReturn(store.getState().view);
@@ -186,32 +193,43 @@ async function loadView(viewKey, renderFn, routeParams = {}) {
     document.title = `HERMES | ${pageTitle}`;
   }
 
-  // Render view
-  await renderFn(contentContainer, store, routeParams);
+  try {
+    // Render view
+    await renderFn(contentContainer, store, routeParams);
 
-  // Bind view-level interactive elements (retry, cards)
-  bindViewInteractions(contentContainer);
+    // Bind view-level interactive elements (retry, cards)
+    bindViewInteractions(contentContainer);
 
-  // Focus management:
-  // - returning from story: restore to initiating card/link, else focus h1/container
-  // - entering story: focus story dossier h1
-  // - initial page load: leave focus on body so first Tab reaches .skip-link
-  // - subsequent SPA route changes: focus new view h1
-  if (isLeavingStory && typeof document !== 'undefined') {
-    restoreRouteFocus(contentContainer);
-    storyFocusReturn = null;
-    lastInitiatingStoryId = null;
-  } else if (isEnteringStory) {
-    focusPageHeading(contentContainer);
-  } else if (!hasCompletedInitialNavigation) {
-    hasCompletedInitialNavigation = true;
-    // Leave focus on body on initial load so the first Tab reaches .skip-link
-  } else {
-    focusPageHeading(contentContainer);
+    // Focus management:
+    // - returning from story: restore to initiating card/link, else focus h1/container
+    // - entering story: focus story dossier h1
+    // - initial page load: leave focus on body so first Tab reaches .skip-link
+    // - subsequent SPA route changes: focus new view h1
+    if (isLeavingStory && typeof document !== 'undefined') {
+      restoreRouteFocus(contentContainer);
+      storyFocusReturn = null;
+      lastInitiatingStoryId = null;
+    } else if (isEnteringStory) {
+      focusPageHeading(contentContainer);
+    } else if (!hasCompletedInitialNavigation) {
+      hasCompletedInitialNavigation = true;
+      // Leave focus on body on initial load so the first Tab reaches .skip-link
+    } else {
+      focusPageHeading(contentContainer);
+    }
+
+    // Announce view transition to screen readers
+    announceToScreenReader(`Navigated to ${pageTitle}`);
+  } catch (err) {
+    if (err && (err.isStale || (err.isAborted && !err.isTimeout))) {
+      return; // Silent cancellation for superseded navigation
+    }
+    mountErrorBoundary(contentContainer, {
+      error: err,
+      viewKey,
+      retryFn: () => loadView(viewKey, renderFn, routeParams),
+    });
   }
-
-  // Announce view transition to screen readers
-  announceToScreenReader(`Navigated to ${pageTitle}`);
 }
 
 /**
