@@ -1,0 +1,22 @@
+{
+  "asset_sizes_bytes": {
+    "js": 178251,
+    "css": 64269,
+    "html": 468,
+    "other": 0,
+    "total": 242988
+  },
+  "ceilings_bytes": {
+    "js": 185000,
+    "css": 70000,
+    "html": 1000,
+    "total": 250000
+  },
+  "file_breakdown": {
+    "index.html": 468,
+    "assets\\index-BdsDWhB0.css": 64269,
+    "assets\\index-CsMsgskE.js": 178251
+  },
+  "passed": true,
+  "violations": []
+}

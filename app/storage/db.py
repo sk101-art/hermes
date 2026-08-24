@@ -34,6 +34,11 @@ from app.models.schemas import (
 )
 
 
+class DatabaseMigrationError(Exception):
+    """Raised when an unexpected database schema migration or table rebuild failure occurs."""
+    pass
+
+
 class Database:
     """SQLite storage layer for events, embeddings, clusters, relationships, claims, evidence, revisions, and longitudinal state."""
 
@@ -72,205 +77,277 @@ class Database:
         self.conn.commit()
 
     def _migrate_columns(self) -> None:
-        """Ensure columns added in Session 6 exist in previously created tables."""
-        claim_info = self.conn.execute("PRAGMA table_info(claims)").fetchall()
-        existing_claim_cols = {r["name"] for r in claim_info}
-        claim_additions = [
-            ("assertion_level", "TEXT NOT NULL DEFAULT 'artifact_fact'"),
-            ("is_current", "INTEGER DEFAULT 1"),
-            ("superseded_by", "TEXT"),
-            ("last_verified_at", "TEXT"),
-            ("staleness_score", "REAL DEFAULT 0.0"),
-            ("valid_from", "TEXT"),
-            ("valid_until", "TEXT"),
-        ]
-        for col_name, col_def in claim_additions:
-            if col_name not in existing_claim_cols:
-                try:
-                    self.conn.execute(f"ALTER TABLE claims ADD COLUMN {col_name} {col_def}")
-                except Exception:
-                    pass
-
-        ev_info = self.conn.execute("PRAGMA table_info(evidence)").fetchall()
-        existing_ev_cols = {r["name"] for r in ev_info}
-        ev_additions = [
-            ("is_current", "INTEGER DEFAULT 1"),
-            ("superseded_by", "TEXT"),
-            ("observed_at", "TEXT"),
-            ("valid_from", "TEXT"),
-            ("valid_until", "TEXT"),
-        ]
-        for col_name, col_def in ev_additions:
-            if col_name not in existing_ev_cols:
-                try:
-                    self.conn.execute(f"ALTER TABLE evidence ADD COLUMN {col_name} {col_def}")
-                except Exception:
-                    pass
-
-        ic_info = self.conn.execute("PRAGMA table_info(intelligence_changes)").fetchall()
-        existing_ic_cols = {r["name"] for r in ic_info}
-        if "origin" not in existing_ic_cols:
-            try:
-                self.conn.execute("ALTER TABLE intelligence_changes ADD COLUMN origin TEXT NOT NULL DEFAULT 'live_update'")
-            except Exception:
-                pass
-
-        # Check claim_revisions.new_verification_score nullability
-        cr_info = self.conn.execute("PRAGMA table_info(claim_revisions)").fetchall()
-        for col in cr_info:
-            if col["name"] == "new_verification_score" and col["notnull"] == 1:
-                try:
-                    self.conn.execute("PRAGMA foreign_keys=OFF")
-                    self.conn.execute("""
-                        CREATE TABLE IF NOT EXISTS claim_revisions_mig_tmp (
-                            id TEXT PRIMARY KEY,
-                            claim_id TEXT NOT NULL,
-                            previous_status TEXT,
-                            new_status TEXT NOT NULL,
-                            previous_verification_score REAL,
-                            new_verification_score REAL,
-                            reason TEXT NOT NULL,
-                            trigger_event_id TEXT,
-                            trigger_evidence_id TEXT,
-                            created_at TEXT NOT NULL
-                        )
-                    """)
-                    self.conn.execute("""
-                        INSERT INTO claim_revisions_mig_tmp (
-                            id, claim_id, previous_status, new_status,
-                            previous_verification_score, new_verification_score,
-                            reason, trigger_event_id, trigger_evidence_id, created_at
-                        )
-                        SELECT
-                            id, claim_id, previous_status, new_status,
-                            previous_verification_score, new_verification_score,
-                            reason, trigger_event_id, trigger_evidence_id, created_at
-                        FROM claim_revisions
-                    """)
-                    self.conn.execute("DROP TABLE claim_revisions")
-                    self.conn.execute("ALTER TABLE claim_revisions_mig_tmp RENAME TO claim_revisions")
-                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_claim_id ON claim_revisions(claim_id)")
-                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_created_at ON claim_revisions(created_at DESC)")
-                    self.conn.execute("PRAGMA foreign_keys=ON")
-                except Exception:
-                    pass
-                break
-
-        # Check technology_assessment_revisions.new_score nullability
-        tar_info = self.conn.execute("PRAGMA table_info(technology_assessment_revisions)").fetchall()
-        for col in tar_info:
-            if col["name"] == "new_score" and col["notnull"] == 1:
-                try:
-                    self.conn.execute("PRAGMA foreign_keys=OFF")
-                    self.conn.execute("""
-                        CREATE TABLE IF NOT EXISTS technology_assessment_revisions_mig_tmp (
-                            id TEXT PRIMARY KEY,
-                            cluster_id TEXT NOT NULL,
-                            previous_stage TEXT,
-                            new_stage TEXT NOT NULL,
-                            previous_score REAL,
-                            new_score REAL,
-                            reason TEXT NOT NULL,
-                            created_at TEXT NOT NULL
-                        )
-                    """)
-                    self.conn.execute("""
-                        INSERT INTO technology_assessment_revisions_mig_tmp (
-                            id, cluster_id, previous_stage, new_stage,
-                            previous_score, new_score, reason, created_at
-                        )
-                        SELECT
-                            id, cluster_id, previous_stage, new_stage,
-                            previous_score, new_score, reason, created_at
-                        FROM technology_assessment_revisions
-                    """)
-                    self.conn.execute("DROP TABLE technology_assessment_revisions")
-                    self.conn.execute("ALTER TABLE technology_assessment_revisions_mig_tmp RENAME TO technology_assessment_revisions")
-                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tech_rev_cluster_id ON technology_assessment_revisions(cluster_id)")
-                    self.conn.execute("PRAGMA foreign_keys=ON")
-                except Exception:
-                    pass
-                break
-
-        saved_info = self.conn.execute("PRAGMA table_info(saved_items)").fetchall()
-        existing_saved_cols = {r["name"] for r in saved_info}
-        saved_additions = [
-            ("claim_status_snapshot", "TEXT"),
-            ("risk_status_snapshot", "TEXT"),
-            ("risk_level_snapshot", "TEXT"),
-        ]
-        for col_name, col_def in saved_additions:
-            if col_name not in existing_saved_cols:
-                try:
-                    self.conn.execute(f"ALTER TABLE saved_items ADD COLUMN {col_name} {col_def}")
-                except Exception:
-                    pass
-
-        dbi_info = self.conn.execute("PRAGMA table_info(daily_briefing_items)").fetchall()
-        existing_dbi_cols = {r["name"] for r in dbi_info}
-        dbi_additions = [
-            ("title", "TEXT"),
-            ("summary", "TEXT"),
-            ("story_cluster_id", "TEXT"),
-            ("item_type", "TEXT"),
-            ("reason_codes_json", "TEXT"),
-            ("inbox_score", "REAL"),
-            ("rank_score", "REAL"),
-            ("project_impact_score", "REAL"),
-            ("matched_project_ids_json", "TEXT"),
-            ("snapshot_version", "TEXT"),
-        ]
-        for col_name, col_def in dbi_additions:
-            if col_name not in existing_dbi_cols:
-                try:
-                    self.conn.execute(f"ALTER TABLE daily_briefing_items ADD COLUMN {col_name} {col_def}")
-                except Exception:
-                    pass
-
-        # Phase 13: Runtime error categories, threshold state, evaluation status, and blocked reasons
-        scp_info = self.conn.execute("PRAGMA table_info(source_checkpoints)").fetchall()
-        existing_scp_cols = {r["name"] for r in scp_info}
-        for col_name, col_def in [
-            ("last_error_category", "TEXT"),
-            ("failure_threshold_reached", "INTEGER DEFAULT 0"),
-            ("max_consecutive_failures", "INTEGER DEFAULT 5"),
-        ]:
-            if col_name not in existing_scp_cols:
-                try:
-                    self.conn.execute(f"ALTER TABLE source_checkpoints ADD COLUMN {col_name} {col_def}")
-                except Exception:
-                    pass
-
-        rj_info = self.conn.execute("PRAGMA table_info(runtime_jobs)").fetchall()
-        existing_rj_cols = {r["name"] for r in rj_info}
-        for col_name, col_def in [
-            ("last_error_category", "TEXT"),
-            ("evaluation_status", "TEXT DEFAULT 'pending'"),
-            ("evaluated_at", "TEXT"),
-            ("next_run_at", "TEXT"),
-            ("blocked_by", "TEXT"),
-            ("blocked_reason", "TEXT"),
-        ]:
-            if col_name not in existing_rj_cols:
-                try:
-                    self.conn.execute(f"ALTER TABLE runtime_jobs ADD COLUMN {col_name} {col_def}")
-                except Exception:
-                    pass
-
-        rjr_info = self.conn.execute("PRAGMA table_info(runtime_job_runs)").fetchall()
-        existing_rjr_cols = {r["name"] for r in rjr_info}
-        if "error_category" not in existing_rjr_cols:
-            try:
-                self.conn.execute("ALTER TABLE runtime_job_runs ADD COLUMN error_category TEXT")
-            except Exception:
-                pass
-
+        """Ensure columns added across all sessions exist in previously created tables with strict atomicity and error discipline."""
         try:
-            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status)")
-        except Exception:
-            pass
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            all_tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
-        self.conn.commit()
+            def _safe_add_column(table: str, col_name: str, col_def: str, existing_cols: set):
+                if table not in all_tables:
+                    return
+                if col_name not in existing_cols:
+                    try:
+                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                    except sqlite3.OperationalError as e:
+                        err_str = str(e).lower()
+                        if "duplicate column name" not in err_str:
+                            sanitized = str(e).split("\n")[0]
+                            raise DatabaseMigrationError(f"Failed adding column {col_name} to {table}: {sanitized}") from e
+
+            # 1. Claims columns
+            if "claims" in all_tables:
+                claim_info = self.conn.execute("PRAGMA table_info(claims)").fetchall()
+                existing_claim_cols = {r["name"] for r in claim_info}
+                for col_name, col_def in [
+                    ("assertion_level", "TEXT NOT NULL DEFAULT 'artifact_fact'"),
+                    ("is_current", "INTEGER DEFAULT 1"),
+                    ("superseded_by", "TEXT"),
+                    ("last_verified_at", "TEXT"),
+                    ("staleness_score", "REAL DEFAULT 0.0"),
+                    ("valid_from", "TEXT"),
+                    ("valid_until", "TEXT"),
+                ]:
+                    _safe_add_column("claims", col_name, col_def, existing_claim_cols)
+
+            # 2. Evidence columns
+            if "evidence" in all_tables:
+                ev_info = self.conn.execute("PRAGMA table_info(evidence)").fetchall()
+                existing_ev_cols = {r["name"] for r in ev_info}
+                for col_name, col_def in [
+                    ("source", "TEXT NOT NULL DEFAULT 'unknown'"),
+                    ("evidence_class", "TEXT NOT NULL DEFAULT 'primary'"),
+                    ("excerpt", "TEXT"),
+                    ("url", "TEXT"),
+                    ("quality_score", "REAL DEFAULT 0.50"),
+                    ("independence_score", "REAL DEFAULT 0.50"),
+                    ("reproducibility_score", "REAL DEFAULT 0.50"),
+                    ("is_current", "INTEGER DEFAULT 1"),
+                    ("superseded_by", "TEXT"),
+                    ("observed_at", "TEXT"),
+                    ("valid_from", "TEXT"),
+                    ("valid_until", "TEXT"),
+                ]:
+                    _safe_add_column("evidence", col_name, col_def, existing_ev_cols)
+
+            # 3. Intelligence Changes columns
+            if "intelligence_changes" in all_tables:
+                ic_info = self.conn.execute("PRAGMA table_info(intelligence_changes)").fetchall()
+                existing_ic_cols = {r["name"] for r in ic_info}
+                _safe_add_column("intelligence_changes", "origin", "TEXT NOT NULL DEFAULT 'live_update'", existing_ic_cols)
+
+            # 4. Technology Assessments columns
+            if "technology_assessments" in all_tables:
+                ta_info = self.conn.execute("PRAGMA table_info(technology_assessments)").fetchall()
+                existing_ta_cols = {r["name"] for r in ta_info}
+                for col_name, col_def in [
+                    ("research_score", "REAL DEFAULT 0.0"),
+                    ("implementation_score", "REAL DEFAULT 0.0"),
+                    ("adoption_score", "REAL DEFAULT 0.0"),
+                    ("reproducibility_score", "REAL DEFAULT 0.0"),
+                    ("community_score", "REAL DEFAULT 0.0"),
+                    ("assessment_score", "REAL DEFAULT 0.0"),
+                ]:
+                    _safe_add_column("technology_assessments", col_name, col_def, existing_ta_cols)
+
+            # 5. Check claim_revisions.new_verification_score nullability
+            if "claim_revisions" in all_tables:
+                cr_info = self.conn.execute("PRAGMA table_info(claim_revisions)").fetchall()
+                for col in cr_info:
+                    if col["name"] == "new_verification_score" and col["notnull"] == 1:
+                        try:
+                            self.conn.execute("""
+                                CREATE TABLE IF NOT EXISTS claim_revisions_mig_tmp (
+                                    id TEXT PRIMARY KEY,
+                                    claim_id TEXT NOT NULL,
+                                    previous_status TEXT,
+                                    new_status TEXT NOT NULL,
+                                    previous_verification_score REAL,
+                                    new_verification_score REAL,
+                                    reason TEXT NOT NULL,
+                                    trigger_event_id TEXT,
+                                    trigger_evidence_id TEXT,
+                                    created_at TEXT NOT NULL
+                                )
+                            """)
+                            self.conn.execute("""
+                                INSERT INTO claim_revisions_mig_tmp (
+                                    id, claim_id, previous_status, new_status,
+                                    previous_verification_score, new_verification_score,
+                                    reason, trigger_event_id, trigger_evidence_id, created_at
+                                )
+                                SELECT
+                                    id, claim_id, previous_status, new_status,
+                                    previous_verification_score, new_verification_score,
+                                    reason, trigger_event_id, trigger_evidence_id, created_at
+                                FROM claim_revisions
+                            """)
+                            self.conn.execute("DROP TABLE claim_revisions")
+                            self.conn.execute("ALTER TABLE claim_revisions_mig_tmp RENAME TO claim_revisions")
+                            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_claim_id ON claim_revisions(claim_id)")
+                            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_created_at ON claim_revisions(created_at DESC)")
+                        except Exception as err:
+                            self.conn.execute("DROP TABLE IF EXISTS claim_revisions_mig_tmp")
+                            sanitized = str(err).split("\n")[0]
+                            raise DatabaseMigrationError(f"Failed migrating claim_revisions: {sanitized}") from err
+                        break
+
+            # 5. Check technology_assessment_revisions.new_score nullability
+            if "technology_assessment_revisions" in all_tables:
+                tar_info = self.conn.execute("PRAGMA table_info(technology_assessment_revisions)").fetchall()
+                for col in tar_info:
+                    if col["name"] == "new_score" and col["notnull"] == 1:
+                        try:
+                            self.conn.execute("""
+                                CREATE TABLE IF NOT EXISTS technology_assessment_revisions_mig_tmp (
+                                    id TEXT PRIMARY KEY,
+                                    cluster_id TEXT NOT NULL,
+                                    previous_stage TEXT,
+                                    new_stage TEXT NOT NULL,
+                                    previous_score REAL,
+                                    new_score REAL,
+                                    reason TEXT NOT NULL,
+                                    created_at TEXT NOT NULL
+                                )
+                            """)
+                            self.conn.execute("""
+                                INSERT INTO technology_assessment_revisions_mig_tmp (
+                                    id, cluster_id, previous_stage, new_stage,
+                                    previous_score, new_score, reason, created_at
+                                )
+                                SELECT
+                                    id, cluster_id, previous_stage, new_stage,
+                                    previous_score, new_score, reason, created_at
+                                FROM technology_assessment_revisions
+                            """)
+                            self.conn.execute("DROP TABLE technology_assessment_revisions")
+                            self.conn.execute("ALTER TABLE technology_assessment_revisions_mig_tmp RENAME TO technology_assessment_revisions")
+                            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tech_rev_cluster_id ON technology_assessment_revisions(cluster_id)")
+                        except Exception as err:
+                            self.conn.execute("DROP TABLE IF EXISTS technology_assessment_revisions_mig_tmp")
+                            sanitized = str(err).split("\n")[0]
+                            raise DatabaseMigrationError(f"Failed migrating technology_assessment_revisions: {sanitized}") from err
+                        break
+
+            # 6. Projects and Project Matches columns
+            if "projects" in all_tables:
+                p_info = self.conn.execute("PRAGMA table_info(projects)").fetchall()
+                existing_p_cols = {r["name"] for r in p_info}
+                for col_name, col_def in [
+                    ("languages_json", "TEXT"),
+                    ("frameworks_json", "TEXT"),
+                    ("libraries_json", "TEXT"),
+                    ("databases_json", "TEXT"),
+                    ("infrastructure_json", "TEXT"),
+                    ("models_json", "TEXT"),
+                    ("tools_json", "TEXT"),
+                    ("topics_json", "TEXT"),
+                    ("keywords_json", "TEXT"),
+                    ("is_active", "INTEGER DEFAULT 1"),
+                    ("context_hash", "TEXT NOT NULL DEFAULT ''"),
+                    ("last_indexed_at", "TEXT"),
+                    ("tags_json", "TEXT"),
+                    ("description", "TEXT"),
+                ]:
+                    _safe_add_column("projects", col_name, col_def, existing_p_cols)
+
+            if "project_matches" in all_tables:
+                pm_info = self.conn.execute("PRAGMA table_info(project_matches)").fetchall()
+                existing_pm_cols = {r["name"] for r in pm_info}
+                for col_name, col_def in [
+                    ("entity_type", "TEXT NOT NULL DEFAULT 'cluster'"),
+                    ("entity_id", "TEXT"),
+                    ("recommendation", "TEXT"),
+                    ("reason_codes_json", "TEXT"),
+                    ("updated_at", "TEXT"),
+                ]:
+                    _safe_add_column("project_matches", col_name, col_def, existing_pm_cols)
+                if "cluster_id" in existing_pm_cols and "entity_id" in existing_pm_cols:
+                    try:
+                        self.conn.execute("UPDATE project_matches SET entity_id = cluster_id WHERE (entity_id IS NULL OR entity_id = '') AND cluster_id IS NOT NULL")
+                    except Exception:
+                        pass
+
+            # 7. Saved items columns
+            if "saved_items" in all_tables:
+                saved_info = self.conn.execute("PRAGMA table_info(saved_items)").fetchall()
+                existing_saved_cols = {r["name"] for r in saved_info}
+                for col_name, col_def in [
+                    ("is_active", "INTEGER DEFAULT 1"),
+                    ("title", "TEXT"),
+                    ("summary", "TEXT"),
+                    ("sources_json", "TEXT"),
+                    ("cluster_score_snapshot", "REAL"),
+                    ("verification_snapshot", "REAL"),
+                    ("maturity_snapshot", "TEXT"),
+                    ("risk_snapshot", "REAL"),
+                    ("claim_status_snapshot", "TEXT"),
+                    ("risk_status_snapshot", "TEXT"),
+                    ("risk_level_snapshot", "TEXT"),
+                    ("project_ids_json", "TEXT"),
+                    ("link_status", "TEXT DEFAULT 'resolved'"),
+                    ("event_ids_snapshot_json", "TEXT"),
+                ]:
+                    _safe_add_column("saved_items", col_name, col_def, existing_saved_cols)
+
+            # 8. Daily briefing items columns
+            if "daily_briefing_items" in all_tables:
+                dbi_info = self.conn.execute("PRAGMA table_info(daily_briefing_items)").fetchall()
+                existing_dbi_cols = {r["name"] for r in dbi_info}
+                for col_name, col_def in [
+                    ("title", "TEXT"),
+                    ("summary", "TEXT"),
+                    ("story_cluster_id", "TEXT"),
+                    ("item_type", "TEXT"),
+                    ("reason_codes_json", "TEXT"),
+                    ("inbox_score", "REAL"),
+                    ("rank_score", "REAL"),
+                    ("project_impact_score", "REAL"),
+                    ("matched_project_ids_json", "TEXT"),
+                    ("snapshot_version", "TEXT"),
+                ]:
+                    _safe_add_column("daily_briefing_items", col_name, col_def, existing_dbi_cols)
+
+            # 8. Runtime error categories, threshold state, evaluation status, and blocked reasons
+            if "source_checkpoints" in all_tables:
+                scp_info = self.conn.execute("PRAGMA table_info(source_checkpoints)").fetchall()
+                existing_scp_cols = {r["name"] for r in scp_info}
+                for col_name, col_def in [
+                    ("last_error_category", "TEXT"),
+                    ("failure_threshold_reached", "INTEGER DEFAULT 0"),
+                    ("max_consecutive_failures", "INTEGER DEFAULT 5"),
+                ]:
+                    _safe_add_column("source_checkpoints", col_name, col_def, existing_scp_cols)
+
+            if "runtime_jobs" in all_tables:
+                rj_info = self.conn.execute("PRAGMA table_info(runtime_jobs)").fetchall()
+                existing_rj_cols = {r["name"] for r in rj_info}
+                for col_name, col_def in [
+                    ("last_error_category", "TEXT"),
+                    ("evaluation_status", "TEXT DEFAULT 'pending'"),
+                    ("evaluated_at", "TEXT"),
+                    ("next_run_at", "TEXT"),
+                    ("blocked_by", "TEXT"),
+                    ("blocked_reason", "TEXT"),
+                ]:
+                    _safe_add_column("runtime_jobs", col_name, col_def, existing_rj_cols)
+
+            if "runtime_job_runs" in all_tables:
+                rjr_info = self.conn.execute("PRAGMA table_info(runtime_job_runs)").fetchall()
+                existing_rjr_cols = {r["name"] for r in rjr_info}
+                _safe_add_column("runtime_job_runs", "error_category", "TEXT", existing_rjr_cols)
+
+            if "runtime_jobs" in all_tables:
+                try:
+                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status)")
+                except Exception as e:
+                    pass
+
+            self.conn.commit()
+        finally:
+            try:
+                self.conn.execute("PRAGMA foreign_keys=ON")
+            except Exception:
+                pass
 
     # --- Event Methods ---
 
@@ -1672,25 +1749,26 @@ class Database:
         return True
 
     def _row_to_project(self, r: sqlite3.Row) -> Project:
+        d = dict(r)
         return Project(
-            id=r["id"],
-            name=r["name"],
-            path=r["path"],
-            description=r["description"],
-            languages=json.loads(r["languages_json"]) if r["languages_json"] else [],
-            frameworks=json.loads(r["frameworks_json"]) if r["frameworks_json"] else [],
-            libraries=json.loads(r["libraries_json"]) if r["libraries_json"] else [],
-            databases=json.loads(r["databases_json"]) if r["databases_json"] else [],
-            infrastructure=json.loads(r["infrastructure_json"]) if r["infrastructure_json"] else [],
-            models=json.loads(r["models_json"]) if r["models_json"] else [],
-            tools=json.loads(r["tools_json"]) if r["tools_json"] else [],
-            topics=json.loads(r["topics_json"]) if r["topics_json"] else [],
-            keywords=json.loads(r["keywords_json"]) if r["keywords_json"] else [],
-            is_active=bool(r["is_active"]),
-            context_hash=r["context_hash"] or "",
-            created_at=datetime.fromisoformat(r["created_at"]),
-            updated_at=datetime.fromisoformat(r["updated_at"]),
-            last_indexed_at=datetime.fromisoformat(r["last_indexed_at"]) if r["last_indexed_at"] else None,
+            id=d["id"],
+            name=d["name"],
+            path=d["path"],
+            description=d.get("description"),
+            languages=json.loads(d["languages_json"]) if d.get("languages_json") else [],
+            frameworks=json.loads(d["frameworks_json"]) if d.get("frameworks_json") else [],
+            libraries=json.loads(d["libraries_json"]) if d.get("libraries_json") else [],
+            databases=json.loads(d["databases_json"]) if d.get("databases_json") else [],
+            infrastructure=json.loads(d["infrastructure_json"]) if d.get("infrastructure_json") else [],
+            models=json.loads(d["models_json"]) if d.get("models_json") else [],
+            tools=json.loads(d["tools_json"]) if d.get("tools_json") else [],
+            topics=json.loads(d["topics_json"]) if d.get("topics_json") else [],
+            keywords=json.loads(d["keywords_json"]) if d.get("keywords_json") else [],
+            is_active=bool(d.get("is_active", 1)),
+            context_hash=d.get("context_hash") or "",
+            created_at=datetime.fromisoformat(d["created_at"]),
+            updated_at=datetime.fromisoformat(d["updated_at"]),
+            last_indexed_at=datetime.fromisoformat(d["last_indexed_at"]) if d.get("last_indexed_at") else None,
         )
 
     def get_project(self, project_id: str) -> Optional[Project]:
@@ -2179,31 +2257,41 @@ class Database:
     # --- SavedItem Methods ---
 
     def _row_to_saved_item(self, r: sqlite3.Row) -> SavedItem:
-        keys = r.keys() if hasattr(r, "keys") else []
-        claim_status_snap = r["claim_status_snapshot"] if "claim_status_snapshot" in keys and r["claim_status_snapshot"] is not None else None
-        risk_status_snap = r["risk_status_snapshot"] if "risk_status_snapshot" in keys and r["risk_status_snapshot"] is not None else None
-        risk_level_snap = r["risk_level_snapshot"] if "risk_level_snapshot" in keys and r["risk_level_snapshot"] is not None else None
+        d = dict(r)
+        entity_type = d.get("entity_type") or "cluster"
+        entity_id = d.get("entity_id") or d.get("story_cluster_id") or ""
+        story_cluster_id = d.get("story_cluster_id") or entity_id
+        title_snap = d.get("title_snapshot") or d.get("snapshot_title")
+        mat_snap = d.get("maturity_snapshot") or d.get("snapshot_maturity_stage")
+        ver_snap = d.get("verification_snapshot") or d.get("snapshot_verification_score")
+        risk_snap = d.get("risk_snapshot")
+        claim_status_snap = d.get("claim_status_snapshot")
+        risk_status_snap = d.get("risk_status_snapshot")
+        risk_level_snap = d.get("risk_level_snapshot")
+        tags = json.loads(d["tags_json"]) if d.get("tags_json") else []
+        proj_ids = json.loads(d["project_ids_json"]) if d.get("project_ids_json") else []
+        event_ids = json.loads(d["event_ids_snapshot_json"]) if d.get("event_ids_snapshot_json") else []
 
         return SavedItem(
-            id=r["id"],
-            entity_type=r["entity_type"],
-            entity_id=r["entity_id"],
-            story_cluster_id=r["story_cluster_id"],
-            inbox_item_id=r["inbox_item_id"],
-            title_snapshot=r["title_snapshot"],
-            saved_at=datetime.fromisoformat(r["saved_at"]),
-            verification_snapshot=r["verification_snapshot"] if r["verification_snapshot"] is not None else None,
-            maturity_snapshot=r["maturity_snapshot"] if r["maturity_snapshot"] is not None else None,
-            risk_snapshot=r["risk_snapshot"] if r["risk_snapshot"] is not None else None,
+            id=d["id"],
+            entity_type=entity_type,
+            entity_id=entity_id,
+            story_cluster_id=story_cluster_id,
+            inbox_item_id=d.get("inbox_item_id"),
+            title_snapshot=title_snap,
+            saved_at=datetime.fromisoformat(d["saved_at"]),
+            verification_snapshot=ver_snap,
+            maturity_snapshot=mat_snap,
+            risk_snapshot=risk_snap,
             claim_status_snapshot=claim_status_snap,
             risk_status_snapshot=risk_status_snap,
             risk_level_snapshot=risk_level_snap,
-            user_note=r["user_note"],
-            tags=json.loads(r["tags_json"]) if r["tags_json"] else [],
-            project_ids=json.loads(r["project_ids_json"]) if r["project_ids_json"] else [],
-            is_active=bool(r["is_active"]),
-            link_status=r["link_status"] or "resolved",
-            event_ids_snapshot=json.loads(r["event_ids_snapshot_json"]) if r["event_ids_snapshot_json"] else [],
+            user_note=d.get("user_note"),
+            tags=tags,
+            project_ids=proj_ids,
+            is_active=bool(d.get("is_active", 1)),
+            link_status=d.get("link_status") or "resolved",
+            event_ids_snapshot=event_ids,
         )
 
     def save_saved_item(self, item: SavedItem) -> bool:
@@ -2262,6 +2350,9 @@ class Database:
         else:
             cursor.execute("SELECT * FROM saved_items ORDER BY saved_at DESC")
         return [self._row_to_saved_item(r) for r in cursor.fetchall()]
+
+    def get_saved_items(self, active_only: bool = True) -> List[SavedItem]:
+        return self.get_all_saved_items(active_only=active_only)
 
     def update_saved_item_note(self, saved_id: str, user_note: str) -> bool:
         cursor = self.conn.cursor()

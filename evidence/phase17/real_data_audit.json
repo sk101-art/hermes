@@ -1,0 +1,65 @@
+{
+  "database_file": "data/tech_intel.db",
+  "database_sha256": "f2966347f86f9ecd7343683f595f5d48b7fb940324eb5d936716f8899f5d5a77",
+  "sha256_verified": true,
+  "authoritative_table_counts": {
+    "events": 368,
+    "story_clusters": 345,
+    "claims": 360,
+    "evidence": 416,
+    "technology_assessments": 345,
+    "projects": 2,
+    "inbox_items": 322,
+    "saved_items": 2,
+    "daily_briefings": 1,
+    "source_checkpoints": 9,
+    "runtime_jobs": 10,
+    "intelligence_changes": 0
+  },
+  "table_count_verified": true,
+  "mismatches": [],
+  "event_source_distribution": {
+    "github": 266,
+    "arxiv": 40,
+    "openalex": 28,
+    "crossref": 16,
+    "huggingface": 14,
+    "hackernews": 2,
+    "rss": 2
+  },
+  "source_count": 7,
+  "representative_entities": {
+    "multi_source_story": null,
+    "claim_with_evidence": {
+      "id": "claim:006e857cc5a9e5a5",
+      "subject": "Jetson-ORB-SLAM3: Accuracy-Preserving GPU Implementation for Edge Computing Devi...",
+      "predicate": "investigates_or_proposes",
+      "object": "Visual-inertial SLAM on low-power edge platforms is constrained by the cost of dense feature extraction and loop clos...",
+      "status": "supported",
+      "verification_score": 0.6863,
+      "ev_count": 1
+    },
+    "project_match": {
+      "id": "match:project:cuda-compiler-lab:cluster:671ba7837486",
+      "project_name": "cuda-compiler-lab",
+      "cluster_id": "cluster:671ba7837486",
+      "relevance_score": 0.8437,
+      "impact_score": 0.7814,
+      "match_type": "direct_dependency"
+    },
+    "saved_item": {
+      "id": "saved:cluster:573a965570bd",
+      "story_cluster_id": "cluster:573a965570bd",
+      "user_note": null,
+      "tags_json": "[]",
+      "saved_at": "2026-08-20T09:47:32.331578+00:00"
+    },
+    "daily_briefing": {
+      "id": "briefing:2026-08-20",
+      "briefing_date": "2026-08-20",
+      "total_items": 20,
+      "created_at": "2026-08-20T09:51:58.075804+00:00"
+    },
+    "intelligence_changes_count": 0
+  }
+}

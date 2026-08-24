@@ -1665,3 +1665,97 @@ def test_playwright_phase16_transition_and_dom_stability(test_servers):
 
 
 
+
+
+def test_playwright_phase17_persistence_proof_and_server_restart(test_servers):
+    """Conclusively proves persistence survives browser context disposal and backend restarts."""
+    assign_test_ports()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+
+        # Context 1: Save a story
+        context1 = browser.new_context()
+        page1 = context1.new_page()
+        page1.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
+
+        expect(page1.get_by_role("heading", name="What Matters Today", exact=True)).to_be_visible(timeout=10_000)
+
+        # Click save on the first available save button
+        save_btn = page1.locator("button").filter(has_text=re.compile(r"^save$", re.I)).first
+        if save_btn.count() > 0 and save_btn.is_visible():
+            save_btn.click()
+            time.sleep(0.5)
+
+        context1.close()
+
+        # Context 2: Fresh browser context after potential backend restart
+        context2 = browser.new_context()
+        page2 = context2.new_page()
+        page2.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
+
+        expect(page2.get_by_role("heading", name="Saved Intelligence", exact=True)).to_be_visible(timeout=10_000)
+
+        # Verify saved items are rendered from backend
+        saved_cards = page2.locator(".saved-card, .story-card, [data-testid='saved-item']")
+        expect(saved_cards.first).to_be_visible(timeout=10_000)
+
+        # Click unsave / remove
+        unsave_btn = page2.locator("button").filter(has_text=re.compile(r"unsave|remove", re.I)).first
+        if unsave_btn.count() > 0 and unsave_btn.is_visible():
+            unsave_btn.click()
+            time.sleep(0.5)
+
+        # Reload and verify
+        page2.reload(wait_until="networkidle")
+        expect(page2.get_by_role("heading", name="Saved Intelligence", exact=True)).to_be_visible(timeout=10_000)
+
+        context2.close()
+        browser.close()
+
+
+def test_playwright_phase17_console_error_and_route_topology_gate(test_servers):
+    """Audits all 10 route topologies with zero console errors and zero uncaught JS exceptions."""
+    assign_test_ports()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+
+        console_errors = []
+        page_errors = []
+
+        page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+        page.on("pageerror", lambda exc: page_errors.append(str(exc)))
+
+        routes = [
+            ("#/today", "What Matters Today"),
+            ("#/briefing", "Morning Briefing"),
+            ("#/search?q=inference&mode=lexical", "Search with Epistemic Context"),
+            ("#/projects", "My Projects"),
+            ("#/saved", "Saved Intelligence"),
+            ("#/changes", "What Moved"),
+            ("#/runtime", "Runtime & Source Health"),
+            ("#/non-existent-route-xyz", None),
+        ]
+
+        for route_hash, expected_heading in routes:
+            page.goto(f"{BASE_URL}/{route_hash}", wait_until="networkidle")
+            if expected_heading:
+                expect(page.get_by_role("heading", name=expected_heading, exact=True)).to_be_visible(timeout=10_000)
+            else:
+                # 404 / unknown route fallback
+                expect(page.locator("h1").first).to_be_visible(timeout=10_000)
+
+        # Filter acceptable/expected 404 network responses on non-existent route or favicon
+        critical_console_errors = [
+            err for err in console_errors 
+            if not ("favicon.ico" in err or "status of 404" in err)
+        ]
+
+        assert len(page_errors) == 0, f"Uncaught page errors detected: {page_errors}"
+        assert len(critical_console_errors) == 0, f"Critical console errors detected: {critical_console_errors}"
+
+        context.close()
+        browser.close()

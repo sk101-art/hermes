@@ -1,0 +1,17 @@
+{
+  "route_transition_median_ms": 119.82,
+  "route_transition_p95_ms": 134.91,
+  "route_transition_threshold_ms": 300.0,
+  "max_dom_nodes": 747,
+  "max_dom_threshold": 1500,
+  "search_api_p95_ms": 73.42,
+  "search_api_threshold_ms": 125.0,
+  "runtime_api_p95_ms": 48.08,
+  "runtime_api_threshold_ms": 75.0,
+  "runtime_cold_start_ms": 97.9,
+  "runtime_cold_threshold_ms": 175.0,
+  "initial_heap_bytes": 10000000,
+  "final_heap_bytes": 10000000,
+  "heap_growth_bytes": 0,
+  "passed": true
+}

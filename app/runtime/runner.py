@@ -1,11 +1,11 @@
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from app.runtime.locks import SingleInstanceLock
 from app.runtime.logging_config import setup_runtime_logging
@@ -84,7 +84,8 @@ def run_daemon(
         return
 
     # 2. Acquire Single Instance Lock
-    lock = SingleInstanceLock(lock_path=config.get("lock_file", "data/hermes.lock"))
+    lock_path = os.getenv("HERMES_LOCK_PATH", config.get("lock_file", "data/hermes.lock"))
+    lock = SingleInstanceLock(lock_path=lock_path)
     if not lock.acquire():
         info = lock.get_lock_info() or {}
         print(f"[Error] Another HERMES instance is already running (PID: {info.get('pid', 'unknown')}). Exiting.")
@@ -161,12 +162,12 @@ def run_daemon(
         print("[HERMES] Shutdown complete.")
 
 
-def main():
+def main(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="HERMES Autonomous Runtime Runner")
     parser.add_argument("--once", action="store_true", help="Run all currently due jobs once and exit")
     parser.add_argument("--job", type=str, default=None, help="Run a specific named job once")
     parser.add_argument("--dry-run", action="store_true", help="Preview due jobs and sources without mutating state")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     import os
     db = Database(db_path=os.getenv("HERMES_DB_PATH", "data/tech_intel.db"))
     run_daemon(
@@ -175,6 +176,7 @@ def main():
         job_name=args.job,
         dry_run=args.dry_run,
     )
+    return 0
 
 
 if __name__ == "__main__":

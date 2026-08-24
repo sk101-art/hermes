@@ -1,10 +1,10 @@
-﻿# HERMES
+# HERMES
 
-A local-first autonomous technology intelligence and verification engine.
+A local-first autonomous technology intelligence, verification, and epistemic tracking engine.
 
 ---
 
-## Architecture
+## 1. Architecture
 
 ```text
     GitHub Repos ──┐
@@ -40,12 +40,12 @@ A local-first autonomous technology intelligence and verification engine.
                                       SQLite + FTS5
                                             │
                                             ▼
-                               Top Intelligence Stories
+                               Top Intelligence Stories & Epistemic Tracking
 ```
 
 ---
 
-## Ingested Source Ecosystems
+## 2. Ingested Source Ecosystems
 
 | Source | Adapter | Source Type | Default Trust | Popularity Metric |
 | :--- | :--- | :--- | :--- | :--- |
@@ -61,72 +61,82 @@ A local-first autonomous technology intelligence and verification engine.
 
 ---
 
-## Verification & Technology Maturity Engine (Session 5)
+## 3. Epistemic Verification & Technology Maturity
 
 1. **Deterministic Claim Model:**
-   - Extracts structured claims (`Claim`) with stable fingerprint hashes.
-   - Distinct claim types: `release`, `architecture`, `availability`, `scholarly_identity`, `research_result`, `performance`.
-   - Distinguishes artifact facts from self-reported assertions (`self_reported=True/False`).
-   - Strict rule: **Claims require $\ge 1$ supporting Evidence row to be saved**.
+   - Structured claims (`Claim`) with stable content fingerprint hashes.
+   - Types: `release`, `architecture`, `availability`, `scholarly_identity`, `research_result`, `performance`.
+   - Distinguishes artifact facts from self-reported assertions.
 2. **Evidence Graph & Provenance:**
-   - Classifies evidence into deterministic classes (`peer_reviewed_research`, `preprint`, `official_release`, `source_code`, `registry_metadata`, `community_discussion`, `developer_experience`, `technical_blog`, etc.).
-   - Full provenance tracking (`Claim` $\to$ `Evidence` $\to$ `Event` $\to$ Source URL).
-3. **Independence Scoring & Echo Penalty:**
+   - Deterministic classification (`peer_reviewed_research`, `preprint`, `official_release`, `source_code`, `registry_metadata`, `community_discussion`, `developer_experience`, `technical_blog`, etc.).
+   - Full provenance: Claim -> Evidence -> Event -> Source URL.
+3. **Independence Scoring & Anti-Echo Penalty:**
    - Detects correlated sources, shared authors, duplicate URLs, and syndicated announcements to prevent echo amplification.
 4. **Transparent Verification Scoring:**
-   - Computes transparent multi-factor score: Evidence Quality (35%), Independence (25%), Reproducibility (20%), Source Diversity (10%), Saturating Quantity (10%) minus Contradiction Penalties.
-   - Maps to conservative claim statuses: `unverified`, `weakly_supported`, `supported`, `strongly_supported`, `mixed`, `contradicted`.
+   - Quality (35%), Independence (25%), Reproducibility (20%), Diversity (10%), Quantity (10%) minus Contradiction Penalties.
+   - Conservative statuses: `unverified`, `weakly_supported`, `supported`, `strongly_supported`, `mixed`, `contradicted`.
 5. **Technology Maturity Model:**
-   - Multidimensional assessment across Implementation, Adoption, Research, Reproducibility, and Community signals.
-   - Maturity Stages: `concept`, `research`, `prototype`, `experimental`, `early_adoption`, `production_candidate`, `established`.
+   - Stages: `concept`, `research`, `prototype`, `experimental`, `early_adoption`, `production_candidate`, `established`.
 
 ---
 
-## CLI Tools & Diagnostics
+## 4. CLI Tools & Operational Runtime
 
 ```bash
 # 1. Main Ingestion & Intelligence Radar
 python -m app.main
 
-# 2. Claims & Evidence Graph Backfill
+# 2. Autonomous Background Runtime
+python -m app.runtime.runner [--once] [--dry-run] [--job <job_name>]
+
+# 3. Local API Server (FastAPI + Uvicorn)
+python -m app.api.server [--port 8765]
+
+# 4. Claims & Evidence Graph Backfill / Audit
 python -m app.claims_backfill [--rebuild]
-
-# 3. Claims, Evidence & Verification Audit
 python -m app.claims_audit
-
-# 4. Explain Claim & Trace Evidence Provenance
 python -m app.explain_claim <claim_id>
 
-# 5. Source Ingestion Status & Stored Event Matrix
-python -m app.source_status
-
-# 6. Semantic Embedding Backfill & Cluster Rebuilding
+# 5. Semantic Embedding & Audit
 python -m app.semantic_backfill
-
-# 7. Semantic Diagnostic & Similarity Recall Audit
 python -m app.semantic.audit
+
+# 6. Real Production Data Audit
+python -m scripts.audit_phase17_real_data
+
+# 7. Frontend Bundle Verification
+python -m scripts.verify_bundle_size
+
+# 8. Browser Performance Measurement
+python -m scripts.measure_phase17_browser_performance
 ```
 
 ---
 
-## Configuration
+## 5. Test Suites & Quality Gates
 
-- **`config/sources.yaml`**: Enable/disable sources, query terms, watch repositories, feeds, max results.
-- **`config/interests.yaml`**: Technical interest tiers (high, medium, low).
-- **`config/semantic.yaml`**: Local embedding model, device (`cpu`), batch size, and clustering similarity threshold (`0.78`).
+```bash
+# Backend pytest suite (333 tests)
+pytest -v
+
+# Frontend unit & integration test suite (235 tests)
+node --test frontend/tests/*.test.js
+
+# Playwright End-to-End Suite (16 tests)
+pytest tests/test_e2e_playwright.py -vv
+
+# Bundle size verification
+python scripts/verify_bundle_size.py
+
+# Real production data audit
+python scripts/audit_phase17_real_data.py
+```
 
 ---
 
-## Setup & Running
+## 6. Safety & Database Immutability Rules
 
-### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Run Full Test Suite
-
-```bash
-pytest
-```
+- Never run mutating, migration, or daemon tests against `data/tech_intel.db`.
+- Always set `HERMES_DB_PATH` to an isolated temporary database for mutating operations.
+- The production database SHA-256 baseline is strictly verified:
+  `f2966347f86f9ecd7343683f595f5d48b7fb940324eb5d936716f8899f5d5a77`
