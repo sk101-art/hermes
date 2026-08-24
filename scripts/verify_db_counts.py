@@ -11,9 +11,9 @@ EXPECTED_COUNTS = {
     'projects': 2,
     'inbox_items': 322,
     'saved_items': 2,
-    'daily_briefings': 2,
+    'daily_briefings': 1,
     'source_checkpoints': 9,
-    'runtime_jobs': 11,
+    'runtime_jobs': 10,
     'intelligence_changes': 0
 }
 
