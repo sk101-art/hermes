@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import logging
 import signal
 import sys
@@ -167,8 +167,8 @@ def main():
     parser.add_argument("--job", type=str, default=None, help="Run a specific named job once")
     parser.add_argument("--dry-run", action="store_true", help="Preview due jobs and sources without mutating state")
     args = parser.parse_args()
-
-    db = Database()
+    import os
+    db = Database(db_path=os.getenv("HERMES_DB_PATH", "data/tech_intel.db"))
     run_daemon(
         db=db,
         once=args.once,

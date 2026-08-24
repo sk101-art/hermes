@@ -15,6 +15,8 @@ from app.services.schemas import (
     ProjectMatchSummary,
     RelationshipSummary,
 )
+from app.runtime.state import load_runtime_config
+from app.runtime.timezone import runtime_date_string
 from app.services.synthesis import synthesize_story
 from app.storage.db import Database
 
@@ -876,7 +878,8 @@ def get_morning_brief(
         db = Database()
 
     if not date_str:
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        config = load_runtime_config()
+        date_str = runtime_date_string(datetime.now(timezone.utc), config)
 
     briefing = db.get_daily_briefing(date_str)
     if not briefing:

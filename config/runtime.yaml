@@ -1,5 +1,5 @@
 runtime:
-  timezone: "local"
+  timezone: "Asia/Kolkata"
   min_free_disk_mb: 1024
   max_parallel_sources: 2
   semantic_batch_size: 16

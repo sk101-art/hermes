@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.runtime.state import load_runtime_config
+from app.runtime.timezone import runtime_date_string
 from app.services import claims as claims_service
 from app.services import intelligence as intel_service
 from app.services import projects as projects_service
@@ -89,7 +91,8 @@ def get_briefing(
             raise HTTPException(status_code=422, detail=f"Invalid date format '{date}'. Expected valid calendar date in YYYY-MM-DD format.")
         target_date = date_clean
     else:
-        target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        config = load_runtime_config()
+        target_date = runtime_date_string(datetime.now(timezone.utc), config)
 
     briefing = intel_service.get_morning_brief(date_str=target_date, db=db)
     if not briefing:

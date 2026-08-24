@@ -2,10 +2,11 @@ import logging
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    import zoneinfo
-except ImportError:
-    from backports import zoneinfo  # type: ignore
+from app.runtime.timezone import (
+    get_effective_timezone,
+    runtime_date_string,
+    to_runtime_local,
+)
 
 from app.runtime.jobs import (
     generate_scheduled_morning_briefing,
@@ -85,30 +86,7 @@ def parse_time_string(t_str: str) -> dtime:
     return dtime(hour=int(parts[0]), minute=int(parts[1]))
 
 
-def get_effective_timezone(config: Optional[Dict[str, Any]] = None) -> Tuple[timezone, str, Optional[str]]:
-    """
-    Resolves the effective timezone for scheduling and calendar operations.
-    Returns: (tzinfo_obj, tz_name, optional_warning)
-    """
-    if config is None:
-        config = load_runtime_config()
 
-    tz_str = config.get("timezone", "local")
-    if not tz_str or tz_str.lower() in ("local", "auto"):
-        local_tz = datetime.now().astimezone().tzinfo
-        tz_name = getattr(local_tz, "key", None) or getattr(local_tz, "zone", None)
-        if not tz_name:
-            warning = "System local timezone is a fixed offset without IANA identity; consider setting an explicit IANA timezone in config/runtime.yaml."
-            return local_tz or timezone.utc, "local", warning
-        return local_tz, str(tz_name), None
-
-    try:
-        zi = zoneinfo.ZoneInfo(tz_str)
-        return zi, tz_str, None
-    except Exception:
-        warning = f"Invalid timezone '{tz_str}'; fell back to UTC."
-        logger.warning(warning)
-        return timezone.utc, "UTC", warning
 
 
 def check_job_dependencies(
@@ -190,7 +168,7 @@ def is_job_due(
         return False, "NOT_CONFIGURED"
 
     eff_tz, tz_name, _ = get_effective_timezone(config)
-    now_local = now.astimezone(eff_tz)
+    now_local = to_runtime_local(now, config)
 
     job_state = cached_job if cached_job is not None else (db.get_runtime_job(job_name) if db else None)
 
@@ -198,7 +176,7 @@ def is_job_due(
     if job_name == "morning_brief":
         target_time_str = j_cfg.get("time", "07:30")
         sched_time = parse_time_string(target_time_str)
-        today_date_str = now_local.strftime("%Y-%m-%d")
+        today_date_str = runtime_date_string(now, config)
 
         briefing = cached_briefing if (cached_briefing and cached_briefing.briefing_date == today_date_str) else (db.get_daily_briefing(today_date_str) if db else None)
         if not briefing:

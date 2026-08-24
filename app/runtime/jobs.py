@@ -26,13 +26,14 @@ from app.evidence.recheck import populate_recheck_queue, process_recheck_queue
 from app.evidence.reevaluate import reevaluate_claim, reevaluate_cluster_maturity, sequence_cluster_releases, update_technology_state
 from app.inbox.briefing import export_briefing_markdown, generate_morning_briefing
 from app.inbox.generator import generate_daily_inbox
-from app.models.schemas import DailyBriefing, Project
+from app.models.schemas import DailyBriefing, Event, Project
 from app.pipeline.dedup import is_duplicate_event
 from app.pipeline.filter import filter_event
 from app.pipeline.rank import score_event
 from app.runtime.health import check_system_health
 from app.runtime.locks import JobLock
 from app.runtime.sanitization import sanitize_error
+from app.runtime.timezone import runtime_date_string
 from app.runtime.state import (
     finish_job_run,
     is_source_due,
@@ -165,17 +166,67 @@ def run_source_ingestion(
             continue
 
         logger.info(f"Polling source: {src_name}...")
+        current_stage = "construct"
         try:
-            # Instantiate adapter ONLY when due and enabled
+            # 1. Construct adapter
+            current_stage = "construct"
             adapter = factory_fn()
+
+            # 2. Fetch raw items
+            current_stage = "fetch"
             raw_items = adapter.fetch(limit=max_res)
+
+            # 3. Validate fetch shape
+            current_stage = "validate_fetch_shape"
+            if not isinstance(raw_items, list):
+                raise TypeError(f"Adapter '{src_name}' fetch() must return a list, got {type(raw_items).__name__}")
+
+            items_fetched = len(raw_items)
+            items_normalized = 0
+            items_failed = 0
+            items_rejected = 0
             new_events_count = 0
+
+            # 4. Normalize & Validate Event Schema
+            current_stage = "normalize"
             for item in raw_items:
+                if not isinstance(item, dict):
+                    items_failed += 1
+                    continue
+
                 try:
                     event = adapter.normalize(item)
                 except Exception:
+                    items_failed += 1
                     continue
 
+                if not isinstance(event, Event):
+                    items_failed += 1
+                    continue
+
+                if not event.id or not isinstance(event.id, str):
+                    items_failed += 1
+                    continue
+
+                if event.published_at is not None and not isinstance(event.published_at, datetime):
+                    items_failed += 1
+                    continue
+
+                if not isinstance(event.discovered_at, datetime) or event.discovered_at.tzinfo is None:
+                    items_failed += 1
+                    continue
+
+                if not isinstance(event.metadata, dict) or not isinstance(event.raw_payload, dict):
+                    items_failed += 1
+                    continue
+
+                if not isinstance(event.authors, list) or not isinstance(event.topics, list):
+                    items_failed += 1
+                    continue
+
+                items_normalized += 1
+
+                # 5. Deduplicate
                 if is_duplicate_event(event, seen_ids, seen_urls) or db.event_exists(event.id):
                     continue
 
@@ -183,18 +234,29 @@ def run_source_ingestion(
                 if event.url:
                     seen_urls.add(event.url)
 
+                # 6. Filter
                 if not filter_event(event, interests_cfg):
+                    items_rejected += 1
                     continue
 
+                # 7. Score & Persist
                 scored_event = score_event(event, interests_cfg)
                 if db.insert_event(scored_event):
                     db.add_event_to_fts(scored_event)
                     new_events_count += 1
 
+            # Determine per-source outcome
+            if items_failed > 0 and items_normalized == 0 and items_fetched > 0:
+                raise ValueError(f"All {items_fetched} items returned by '{src_name}' failed normalization/schema validation")
+
+            # 8. Checkpoint
+            current_stage = "checkpoint"
             record_source_success(src_name, db, now=now)
             results["sources_polled"].append({
                 "source": src_name,
-                "events_found": len(raw_items),
+                "events_found": items_fetched,
+                "items_normalized": items_normalized,
+                "items_failed": items_failed,
                 "new_events": new_events_count,
             })
             results["events_ingested"] += new_events_count
@@ -202,12 +264,12 @@ def run_source_ingestion(
             db.increment_runtime_metric("events_ingested", new_events_count)
             logger.info(f"Source '{src_name}' complete: {new_events_count} new events persisted.")
         except Exception as e:
-            raw_err = str(e)
-            category, sanitized_err = sanitize_error(raw_err)
-            logger.warning(f"Source '{src_name}' failed: {sanitized_err}")
-            record_source_failure(src_name, sanitized_err, db, now=now, config=config)
+            category, sanitized_err = sanitize_error(e)
+            logger.warning(f"Source '{src_name}' failed at stage '{current_stage}': {sanitized_err}")
+            record_source_failure(src_name, e, db, now=now, config=config, error_category=category)
             results["sources_failed"].append({
                 "source": src_name,
+                "stage": current_stage,
                 "error": sanitized_err,
                 "error_category": category,
             })
@@ -432,6 +494,7 @@ def generate_scheduled_morning_briefing(
     dry_run: bool = False,
     now: Optional[datetime] = None,
     refresh: bool = False,
+    target_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Scheduled entry point: Generates morning briefing snapshot directly from existing DB state
@@ -440,12 +503,60 @@ def generate_scheduled_morning_briefing(
     if now is None:
         now = datetime.now(timezone.utc)
 
-    target_date = now.strftime("%Y-%m-%d")
+    config = load_runtime_config()
+    if target_date is not None:
+        target_date_clean = target_date.strip()
+        try:
+            parsed = datetime.strptime(target_date_clean, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != target_date_clean:
+                raise ValueError()
+        except ValueError:
+            raise ValueError(f"Invalid target_date format '{target_date}'. Expected valid calendar date in YYYY-MM-DD format.")
+        target_date = target_date_clean
+    else:
+        target_date = runtime_date_string(now, config)
+
     existing_briefing = db.get_daily_briefing(target_date)
 
     if existing_briefing and not refresh and not dry_run:
-        logger.info(f"Morning briefing for {target_date} already exists.")
-        return {"status": "already_exists", "briefing_id": existing_briefing.id, "total_items": existing_briefing.total_items}
+        export_file = Path("data/briefings") / f"{target_date}.md"
+        if export_file.exists():
+            logger.info(f"Morning briefing for {target_date} already exists.")
+            return {
+                "status": "already_exists",
+                "briefing_id": existing_briefing.id,
+                "briefing_date": target_date,
+                "total_items": existing_briefing.total_items,
+                "markdown_file": str(export_file),
+            }
+        else:
+            logger.info(f"Morning briefing row exists for {target_date}, but markdown file is missing. Re-exporting stored summary...")
+            try:
+                markdown_file_path = export_briefing_markdown(
+                    briefing_date=target_date,
+                    text=existing_briefing.summary_text or "",
+                    export_dir="data/briefings",
+                )
+                logger.info(f"Morning briefing recovered export to {markdown_file_path} ({existing_briefing.total_items} items).")
+                return {
+                    "status": "completed",
+                    "briefing_id": existing_briefing.id,
+                    "briefing_date": target_date,
+                    "total_items": existing_briefing.total_items,
+                    "high_priority_count": existing_briefing.high_priority_count,
+                    "project_relevant_count": existing_briefing.project_relevant_count,
+                    "markdown_file": markdown_file_path,
+                    "recovered_export": True,
+                }
+            except Exception as e:
+                logger.error(f"Failed to recover morning briefing markdown export: {e}")
+                return {
+                    "status": "export_failed",
+                    "briefing_id": existing_briefing.id,
+                    "briefing_date": target_date,
+                    "total_items": existing_briefing.total_items,
+                    "error": str(e),
+                }
 
     if dry_run:
         return {"status": "dry_run", "target_date": target_date}
@@ -494,6 +605,7 @@ def run_morning_pipeline_orchestration(
     dry_run: bool = False,
     now: Optional[datetime] = None,
     refresh: bool = False,
+    target_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Standalone / manual entry point: Sequentially executes all upstream pipeline stages
@@ -502,12 +614,26 @@ def run_morning_pipeline_orchestration(
     if now is None:
         now = datetime.now(timezone.utc)
 
-    target_date = now.strftime("%Y-%m-%d")
+    config = load_runtime_config()
+    if target_date is not None:
+        target_date_clean = target_date.strip()
+        try:
+            parsed = datetime.strptime(target_date_clean, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != target_date_clean:
+                raise ValueError()
+        except ValueError:
+            raise ValueError(f"Invalid target_date format '{target_date}'. Expected valid calendar date in YYYY-MM-DD format.")
+        target_date = target_date_clean
+    else:
+        target_date = runtime_date_string(now, config)
+
     existing_briefing = db.get_daily_briefing(target_date)
 
     if existing_briefing and not refresh and not dry_run:
-        logger.info(f"Morning briefing for {target_date} already exists.")
-        return {"status": "already_exists", "briefing_id": existing_briefing.id, "total_items": existing_briefing.total_items}
+        export_file = Path("data/briefings") / f"{target_date}.md"
+        if export_file.exists():
+            logger.info(f"Morning briefing for {target_date} already exists.")
+            return {"status": "already_exists", "briefing_id": existing_briefing.id, "total_items": existing_briefing.total_items}
 
     if dry_run:
         return {"status": "dry_run", "target_date": target_date}
@@ -522,7 +648,7 @@ def run_morning_pipeline_orchestration(
     run_context_match(db, now=now)
     run_inbox_generation(db, now=now)
 
-    return generate_scheduled_morning_briefing(db, dry_run=False, now=now, refresh=True)
+    return generate_scheduled_morning_briefing(db, dry_run=False, now=now, refresh=True, target_date=target_date)
 
 
 # Backwards compatibility alias

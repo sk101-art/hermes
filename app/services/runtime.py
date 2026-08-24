@@ -7,8 +7,12 @@ from app.runtime.locks import SingleInstanceLock
 from app.runtime.sanitization import sanitize_error, sanitize_error_category, sanitize_error_summary
 from app.runtime.scheduler import (
     JOB_DEPENDENCIES_ORDER,
-    get_effective_timezone,
     is_job_due,
+)
+from app.runtime.timezone import (
+    get_effective_timezone,
+    runtime_date_string,
+    to_runtime_local,
 )
 from app.runtime.state import (
     is_heartbeat_alive,
@@ -49,7 +53,7 @@ def get_runtime_overview(
 
     # 1. Resolve Timezone
     eff_tz, tz_name, tz_warning = get_effective_timezone(config)
-    now_local = now.astimezone(eff_tz)
+    now_local = to_runtime_local(now, config)
     scheduler_time_str = now_local.strftime("%Y-%m-%d %H:%M:%S %Z")
 
     # 2. Daemon & Heartbeat Info
@@ -395,7 +399,7 @@ def get_runtime_overview(
     )
     last_ingestion_str = last_ingest_cp.isoformat() if last_ingest_cp else None
 
-    today_str = now_local.strftime("%Y-%m-%d")
+    today_str = runtime_date_string(now, config)
     today_briefing = latest_briefing if (latest_briefing and latest_briefing.briefing_date == today_str) else None
 
     briefing_info = BriefingFreshnessInfo(
