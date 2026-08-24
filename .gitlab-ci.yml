@@ -1,5 +1,5 @@
-﻿# HERMES GitLab CI Pipeline
-# Enforces mandatory closure gates across repository integrity, database immutability,
+# HERMES GitLab CI Pipeline
+# Enforces mandatory closure gates across repository integrity, intra-job database immutability,
 # contrast contracts, backend unit/integration tests, frontend tests/builds, and Playwright E2E.
 
 stages:
@@ -30,19 +30,20 @@ repository_integrity:
   image: python:3.11-slim
   allow_failure: false
   script:
+    - mkdir -p reports
     - 'echo "Verifying repository integrity at commit $CI_COMMIT_SHA on branch $CI_COMMIT_REF_NAME"'
     - 'test -f data/tech_intel.db || exit 1'
     - 'test -f frontend/package.json || exit 1'
     - 'test -f app/api/server.py || exit 1'
     - 'test -f tests/test_e2e_playwright.py || exit 1'
-    - 'sha256sum data/tech_intel.db > db-before.sha256'
+    - 'sha256sum data/tech_intel.db > reports/db-repo-base.sha256'
     - 'echo "Base DB SHA256:"'
-    - 'cat db-before.sha256'
+    - 'cat reports/db-repo-base.sha256'
   artifacts:
     when: always
     expire_in: 30 days
     paths:
-      - db-before.sha256
+      - reports/db-repo-base.sha256
 
 # -----------------------------------------------------------------------------
 # 2. Database Immutability & Authoritative Table Counts
@@ -52,16 +53,16 @@ db_immutability:
   image: python:3.11-slim
   allow_failure: false
   script:
-    - >-
-      python -c "import sqlite3, sys; expected = {'events': 368, 'story_clusters': 345, 'claims': 360, 'evidence': 416, 'technology_assessments': 345, 'projects': 2, 'inbox_items': 322, 'saved_items': 2, 'daily_briefings': 1, 'source_checkpoints': 9, 'runtime_jobs': 10, 'intelligence_changes': 0}; conn = sqlite3.connect('data/tech_intel.db'); c = conn.cursor(); [sys.exit(1) for t, exp in expected.items() if c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] != exp]; print('All counts verified') if (open('db_row_counts.md','w').write('Counts verified\n')) is not None else None"
+    - mkdir -p reports
+    - python scripts/verify_db_counts.py data/tech_intel.db reports/db_row_counts.md
   artifacts:
     when: always
     expire_in: 30 days
     paths:
-      - db_row_counts.md
+      - reports/db_row_counts.md
 
 # -----------------------------------------------------------------------------
-# 3. Backend Unit & Integration Tests (304 Tests)
+# 3. Backend Unit & Integration Tests (Exact 304 Tests)
 # -----------------------------------------------------------------------------
 backend_tests:
   stage: test
@@ -71,17 +72,24 @@ backend_tests:
     - mkdir -p reports
     - pip install -r requirements.txt
   script:
+    - sha256sum data/tech_intel.db > reports/db-before-backend.sha256
     - python -m pytest tests/ --ignore=tests/test_e2e_playwright.py --ignore=tests/test_contrast_contract.py -v --junitxml=reports/backend.xml
+    - sha256sum data/tech_intel.db > reports/db-after-backend.sha256
+    - diff -u reports/db-before-backend.sha256 reports/db-after-backend.sha256 || exit 1
+    - git diff --exit-code -- data/tech_intel.db
+    - python scripts/verify_ci_counts.py reports/backend.xml 304 "Backend Suite"
   artifacts:
     when: always
     expire_in: 30 days
     paths:
       - reports/backend.xml
+      - reports/db-before-backend.sha256
+      - reports/db-after-backend.sha256
     reports:
       junit: reports/backend.xml
 
 # -----------------------------------------------------------------------------
-# 4. Contrast & Accessibility Static Contract Tests (96 Tests)
+# 4. Contrast & Accessibility Static Contract Tests (Exact 96 Tests)
 # -----------------------------------------------------------------------------
 contrast_contract:
   stage: test
@@ -91,17 +99,24 @@ contrast_contract:
     - mkdir -p reports
     - pip install -r requirements.txt
   script:
+    - sha256sum data/tech_intel.db > reports/db-before-contrast.sha256
     - python -m pytest tests/test_contrast_contract.py -v --junitxml=reports/contrast.xml
+    - sha256sum data/tech_intel.db > reports/db-after-contrast.sha256
+    - diff -u reports/db-before-contrast.sha256 reports/db-after-contrast.sha256 || exit 1
+    - git diff --exit-code -- data/tech_intel.db
+    - python scripts/verify_ci_counts.py reports/contrast.xml 96 "Contrast Contract Suite"
   artifacts:
     when: always
     expire_in: 30 days
     paths:
       - reports/contrast.xml
+      - reports/db-before-contrast.sha256
+      - reports/db-after-contrast.sha256
     reports:
       junit: reports/contrast.xml
 
 # -----------------------------------------------------------------------------
-# 5. Frontend Unit Tests & Production Build (222 Tests)
+# 5. Frontend Unit Tests & Production Build (Exact 222 Tests)
 # -----------------------------------------------------------------------------
 frontend_tests_and_build:
   stage: test
@@ -111,19 +126,25 @@ frontend_tests_and_build:
     key: "$CI_COMMIT_REF_SLUG-npm"
     paths:
       - .npm/
+  before_script:
+    - apt-get update && apt-get install -y python3
+    - mkdir -p reports
   script:
     - cd frontend
     - npm ci --cache "$CI_PROJECT_DIR/.npm"
-    - npm test
+    - npm test 2>&1 | tee ../reports/frontend.log
     - npm run build
+    - cd ..
+    - python3 scripts/verify_frontend_counts.py reports/frontend.log 222
   artifacts:
     when: always
     expire_in: 30 days
     paths:
       - frontend/dist/
+      - reports/frontend.log
 
 # -----------------------------------------------------------------------------
-# 6. Playwright E2E Integration Suite (11 Tests)
+# 6. Playwright E2E Integration Suite (Exact 11 Tests)
 # -----------------------------------------------------------------------------
 playwright_e2e:
   stage: test
@@ -138,18 +159,25 @@ playwright_e2e:
     - playwright install --with-deps chromium
     - cd frontend && npm ci && cd ..
   script:
+    - sha256sum data/tech_intel.db > reports/db-before-e2e.sha256
     - python -m pytest tests/test_e2e_playwright.py -v --junitxml=reports/e2e.xml
+    - sha256sum data/tech_intel.db > reports/db-after-e2e.sha256
+    - diff -u reports/db-before-e2e.sha256 reports/db-after-e2e.sha256 || exit 1
+    - git diff --exit-code -- data/tech_intel.db
+    - python scripts/verify_ci_counts.py reports/e2e.xml 11 "Playwright E2E Suite"
   artifacts:
     when: always
     expire_in: 30 days
     paths:
       - reports/e2e.xml
+      - reports/db-before-e2e.sha256
+      - reports/db-after-e2e.sha256
       - tests/e2e_screenshots/
     reports:
       junit: reports/e2e.xml
 
 # -----------------------------------------------------------------------------
-# 7. Final Consolidated Evidence Summary
+# 7. Final Consolidated Evidence Summary & Cross-Job Proof
 # -----------------------------------------------------------------------------
 evidence_summary:
   stage: summary
@@ -163,17 +191,21 @@ evidence_summary:
     - frontend_tests_and_build
     - playwright_e2e
   script:
-    - sha256sum data/tech_intel.db > db-after.sha256
-    - diff -u db-before.sha256 db-after.sha256 || exit 1
-    - echo "Production DB Checksum match verified:"
-    - cat db-after.sha256
+    - 'echo "Verifying intra-job checksum proofs from all test jobs..."'
+    - diff -u reports/db-before-backend.sha256 reports/db-after-backend.sha256 || exit 1
+    - diff -u reports/db-before-contrast.sha256 reports/db-after-contrast.sha256 || exit 1
+    - diff -u reports/db-before-e2e.sha256 reports/db-after-e2e.sha256 || exit 1
+    - diff -u reports/db-repo-base.sha256 reports/db-before-backend.sha256 || exit 1
+    - diff -u reports/db-repo-base.sha256 reports/db-before-e2e.sha256 || exit 1
+    - python scripts/verify_ci_counts.py reports/backend.xml 304 "Backend Suite (Post-Verification)"
+    - python scripts/verify_ci_counts.py reports/contrast.xml 96 "Contrast Contract Suite (Post-Verification)"
+    - python scripts/verify_ci_counts.py reports/e2e.xml 11 "Playwright E2E Suite (Post-Verification)"
+    - python scripts/verify_frontend_counts.py reports/frontend.log 222
     - >-
-      python -c "open('pipeline_evidence_summary.md', 'w').write('# HERMES Phase 15 CI Closure Report\n\nAll mandatory automated quality and accessibility gates passed cleanly.\n\n### Verified Gates:\n- Repository Integrity: PASSED\n- Database Immutability (Checksum & 12 Table Counts): PASSED\n- Backend Suite (304 tests): PASSED\n- Contrast & Static Contracts (96 tests): PASSED\n- Frontend Unit Suite (222 tests) & Vite Build: PASSED\n- Playwright E2E Suite (11 tests): PASSED\n- Production DB Immutability: VERIFIED (Zero Byte Drift)\n')"
-    - cat pipeline_evidence_summary.md
+      python -c "open('reports/pipeline_evidence_summary.md', 'w').write('# HERMES Phase 15 CI Closure Report\n\nAll mandatory automated quality and accessibility gates passed cleanly.\n\n### Verified Gates:\n- Repository Integrity & Baseline Checksum: PASSED\n- Authoritative Table Counts (12 tables): PASSED\n- Backend Suite (exact 304 tests): PASSED\n- Backend Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Contrast & Static Contracts (exact 96 tests): PASSED\n- Contrast Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Frontend Unit Suite (exact 222 tests) & Vite Build: PASSED\n- Playwright E2E Suite (exact 11 tests): PASSED\n- Playwright Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Cross-Job Checksum Parity: VERIFIED\n')"
+    - cat reports/pipeline_evidence_summary.md
   artifacts:
     when: always
     expire_in: 30 days
     paths:
-      - db-before.sha256
-      - db-after.sha256
-      - pipeline_evidence_summary.md
+      - reports/

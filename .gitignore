@@ -26,4 +26,5 @@ logs/
 reference/*
 !reference/README.md
 *.zip
+reports/
 
