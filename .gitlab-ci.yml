@@ -1,4 +1,4 @@
-# HERMES GitLab CI Pipeline
+﻿# HERMES GitLab CI Pipeline
 # Enforces mandatory closure gates across repository integrity, database immutability,
 # contrast contracts, backend unit/integration tests, frontend tests/builds, and Playwright E2E.
 
@@ -127,7 +127,7 @@ frontend_tests_and_build:
 # -----------------------------------------------------------------------------
 playwright_e2e:
   stage: test
-  image: mcr.microsoft.com/playwright/python:v1.58.0-jammy
+  image: mcr.microsoft.com/playwright/python:v1.40.0-jammy
   allow_failure: false
   before_script:
     - mkdir -p reports tests/e2e_screenshots
@@ -135,6 +135,7 @@ playwright_e2e:
     - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     - apt-get install -y nodejs
     - pip install -r requirements.txt
+    - playwright install --with-deps chromium
     - cd frontend && npm ci && cd ..
   script:
     - python -m pytest tests/test_e2e_playwright.py -v --junitxml=reports/e2e.xml
