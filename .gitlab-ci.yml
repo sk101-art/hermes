@@ -69,6 +69,7 @@ backend_tests:
   image: python:3.11-slim
   allow_failure: false
   before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git
     - mkdir -p reports
     - pip install -r requirements.txt
   script:
@@ -96,6 +97,7 @@ contrast_contract:
   image: python:3.11-slim
   allow_failure: false
   before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git
     - mkdir -p reports
     - pip install -r requirements.txt
   script:
@@ -127,12 +129,12 @@ frontend_tests_and_build:
     paths:
       - .npm/
   before_script:
-    - apt-get update && apt-get install -y python3
+    - apt-get update && apt-get install -y --no-install-recommends python3 bash
     - mkdir -p reports
   script:
     - cd frontend
     - npm ci --cache "$CI_PROJECT_DIR/.npm"
-    - npm test 2>&1 | tee ../reports/frontend.log
+    - bash -o pipefail -c 'npm test 2>&1 | tee ../reports/frontend.log'
     - npm run build
     - cd ..
     - python3 scripts/verify_frontend_counts.py reports/frontend.log 222
@@ -152,9 +154,9 @@ playwright_e2e:
   allow_failure: false
   before_script:
     - mkdir -p reports tests/e2e_screenshots
-    - apt-get update && apt-get install -y curl
+    - apt-get update && apt-get install -y --no-install-recommends curl git
     - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    - apt-get install -y nodejs
+    - apt-get install -y --no-install-recommends nodejs
     - pip install -r requirements.txt
     - playwright install --with-deps chromium
     - cd frontend && npm ci && cd ..
@@ -196,13 +198,14 @@ evidence_summary:
     - diff -u reports/db-before-contrast.sha256 reports/db-after-contrast.sha256 || exit 1
     - diff -u reports/db-before-e2e.sha256 reports/db-after-e2e.sha256 || exit 1
     - diff -u reports/db-repo-base.sha256 reports/db-before-backend.sha256 || exit 1
+    - diff -u reports/db-repo-base.sha256 reports/db-before-contrast.sha256 || exit 1
     - diff -u reports/db-repo-base.sha256 reports/db-before-e2e.sha256 || exit 1
     - python scripts/verify_ci_counts.py reports/backend.xml 304 "Backend Suite (Post-Verification)"
     - python scripts/verify_ci_counts.py reports/contrast.xml 96 "Contrast Contract Suite (Post-Verification)"
     - python scripts/verify_ci_counts.py reports/e2e.xml 11 "Playwright E2E Suite (Post-Verification)"
     - python scripts/verify_frontend_counts.py reports/frontend.log 222
     - >-
-      python -c "open('reports/pipeline_evidence_summary.md', 'w').write('# HERMES Phase 15 CI Closure Report\n\nAll mandatory automated quality and accessibility gates passed cleanly.\n\n### Verified Gates:\n- Repository Integrity & Baseline Checksum: PASSED\n- Authoritative Table Counts (12 tables): PASSED\n- Backend Suite (exact 304 tests): PASSED\n- Backend Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Contrast & Static Contracts (exact 96 tests): PASSED\n- Contrast Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Frontend Unit Suite (exact 222 tests) & Vite Build: PASSED\n- Playwright E2E Suite (exact 11 tests): PASSED\n- Playwright Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Cross-Job Checksum Parity: VERIFIED\n')"
+      python -c "open('reports/pipeline_evidence_summary.md', 'w').write('# HERMES Phase 15 CI Closure Report\n\nAll mandatory automated quality and accessibility gates passed cleanly.\n\n### Verified Gates:\n- Repository Integrity & Baseline Checksum: PASSED\n- Authoritative Table Counts (12 tables): PASSED\n- Backend Suite (exact 304 tests): PASSED\n- Backend Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Contrast & Static Contracts (exact 96 tests): PASSED\n- Contrast Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Frontend Unit Suite (exact 222 tests) & Vite Build: PASSED\n- Playwright E2E Suite (exact 11 tests): PASSED\n- Playwright Intra-Job DB Immutability: VERIFIED (Zero Drift)\n- Complete Cross-Job Checksum Parity: VERIFIED across Base, Backend, Contrast, and E2E\n')"
     - cat reports/pipeline_evidence_summary.md
   artifacts:
     when: always
