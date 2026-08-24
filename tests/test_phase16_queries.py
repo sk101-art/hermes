@@ -10,6 +10,7 @@ from app.models.schemas import (
     DailyBriefingItem,
     Event,
     InboxItem,
+    IntelligenceChange,
     Project,
     ProjectMatch,
     SavedItem,
@@ -17,7 +18,7 @@ from app.models.schemas import (
     TechnologyAssessment,
     TechnologyState,
 )
-from app.services.intelligence import get_morning_brief, get_top_developments, search_intelligence
+from app.services.intelligence import get_morning_brief, get_recent_changes, get_top_developments, search_intelligence
 from app.services.projects import get_project_intelligence, list_projects
 from app.services.runtime import get_runtime_overview
 from app.services.saved import get_saved_items
@@ -356,4 +357,62 @@ def test_morning_brief_query_ceiling(temp_db):
     assert counts_by_n[50] <= 2
     assert counts_by_n[1] == counts_by_n[10] == counts_by_n[50]
     assert counts_by_n[50] <= 2
+
+
+def test_changes_query_ceiling(temp_db):
+    counter = QueryCounter(temp_db)
+    counts_by_n = {}
+    now = datetime.now(timezone.utc)
+
+    for n in [1, 10, 50]:
+        temp_db.conn.execute("DELETE FROM intelligence_changes")
+        temp_db.conn.execute("DELETE FROM claims")
+        temp_db.conn.execute("DELETE FROM story_clusters")
+        temp_db.conn.commit()
+
+        # Seed N claims and N changes referencing those claims
+        for i in range(n):
+            cid = f"cluster:chg:{i}"
+            clm_id = f"claim:chg:{i}"
+            clm = Claim(
+                id=clm_id,
+                cluster_id=cid,
+                subject=f"tech_{i}",
+                predicate="advances",
+                object="state",
+                claim_text=f"Claim text {i}",
+                status="supported",
+                verification_score=0.88,
+                is_current=True,
+                created_at=now,
+            )
+            temp_db.save_claim(clm)
+
+            chg = IntelligenceChange(
+                id=f"chg:{i}",
+                entity_type="claim",
+                entity_id=clm_id,
+                change_type="status_change",
+                old_value="unverified",
+                new_value="supported",
+                importance=0.80,
+                reason=f"Verification confirmed for {i}",
+                created_at=now,
+            )
+            temp_db.save_intelligence_change(chg)
+
+        counter.reset()
+        res = get_recent_changes(hours=24, limit=n, db=temp_db)
+        counts_by_n[n] = counter.count
+        assert len(res) == n
+        # Check that cluster_id is properly resolved for each
+        for item in res:
+            assert item["cluster_id"] is not None
+
+    # Exact query ceiling verification: batch queries must remain constant regardless of N
+    assert counts_by_n[1] <= 5
+    assert counts_by_n[10] <= 5
+    assert counts_by_n[50] <= 5
+    assert counts_by_n[1] == counts_by_n[10] == counts_by_n[50]
+
 

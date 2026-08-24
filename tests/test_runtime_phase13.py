@@ -563,18 +563,11 @@ def test_probe_isolation_socket_timeout_does_not_fail_database(temp_db):
 def test_missing_required_embedding_dependency_cannot_be_healthy(temp_db):
     """Proves that a missing runtime dependency causes UNHEALTHY status and cannot produce HEALTHY."""
     now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
-    import builtins
-    real_import = builtins.__import__
 
-    def mock_import(name, *args, **kwargs):
-        if name == "sentence_transformers":
-            raise ImportError("No module named 'sentence_transformers'")
-        return real_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", side_effect=mock_import):
+    with patch("importlib.util.find_spec", return_value=None):
         h = check_system_health(temp_db, now=now, use_cache=False)
         assert h["embedding_model"] == "missing_dependency"
-        assert "sentence_transformers package not importable" in h["issues"]
+        assert any("sentence_transformers" in issue for issue in h["issues"])
         assert h["status"] != "HEALTHY"
         assert h["status"] == "UNHEALTHY"
 

@@ -39,9 +39,9 @@ def invalidate_health_cache(db_path: Optional[str] = None) -> None:
                 _health_cache.pop(k, None)
 
 
-def check_network_connectivity(timeout: float = 1.0) -> bool:
-    """Fast check for external network availability with bounded 1.0s timeout."""
-    test_hosts = [("1.1.1.1", 53), ("8.8.8.8", 53), ("github.com", 443)]
+def check_network_connectivity(timeout: float = 0.5) -> bool:
+    """Fast check for external network availability with bounded timeout."""
+    test_hosts = [("1.1.1.1", 53), ("8.8.8.8", 53), ("1.0.0.1", 53)]
     for host, port in test_hosts:
         try:
             sock = socket.create_connection((host, port), timeout=timeout)
@@ -143,12 +143,15 @@ def check_system_health(
         disk_status = f"error: {clean_disk}"
 
     # 5. Embedding Model Check
-    emb_status = "cached"
-    try:
-        __import__("sentence_transformers")
-    except ImportError:
-        emb_status = "missing_dependency"
-        issues.append("sentence_transformers package not importable")
+    from importlib.util import find_spec
+    emb_status = (
+        "available"
+        if find_spec("sentence_transformers") is not None
+        else "missing_dependency"
+    )
+
+    if emb_status == "missing_dependency":
+        issues.append("sentence_transformers package not available")
 
     # 6. Runtime Lock & Daemon Heartbeat
     lock_info = SingleInstanceLock().get_lock_info()

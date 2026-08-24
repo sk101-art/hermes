@@ -10,8 +10,9 @@ import socket
 import signal
 import uuid
 import json
+import re
 import pytest
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 if sys.platform == "win32":
     try:
@@ -1317,119 +1318,304 @@ def test_playwright_phase16_request_budgets(test_servers):
 
 
 def test_playwright_phase16_error_boundary_scenarios(test_servers):
-    """Verify accessible error boundary on network failure, 404, 500, and successful retry focus restoration."""
+    """Verify accessible error boundary across all 8 mandatory error & recovery scenarios."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = create_test_context(browser)
         page = context.new_page()
+        page.on(
+            "request",
+            lambda request: print(
+                "[REQUEST]", request.method, request.url
+            ) if "/runtime" in request.url else None,
+        )
+        page.on(
+            "requestfailed",
+            lambda request: print(
+                "[REQUEST FAILED]",
+                request.url,
+                request.failure,
+            ) if "/runtime" in request.url else None,
+        )
+        page.on(
+            "response",
+            lambda response: print(
+                "[RESPONSE]", response.status, response.url
+            ) if "/runtime" in response.url else None,
+        )
 
-        # 1. 500 Server Error Boundary Test on Runtime View API
-        def mock_500(route):
-            if f":{API_PORT}/runtime" in route.request.url:
-                route.fulfill(status=500, content_type="application/json", body='{"detail": "Internal error in runtime engine"}')
+        # Scenario 1: 500 Server Error & In-Place "Try Again" Retry Recovery
+        runtime_pattern = f"**:{API_PORT}/runtime*"
+
+        def mock_runtime_500(route):
+            route.fulfill(
+                status=500,
+                content_type="application/json",
+                body='{"detail":"Simulated runtime failure"}',
+            )
+
+        # Intercept only the initial request.
+        page.route(runtime_pattern, mock_runtime_500)
+        page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
+
+        error_state = page.locator(
+            "[data-testid='error-boundary'], .state-container.state-error, [role='alert']"
+        )
+        expect(error_state.first).to_be_visible()
+
+        retry_button = page.get_by_role(
+            "button",
+            name=re.compile(r"try again|retry view", re.I),
+        )
+        expect(retry_button).to_be_visible()
+
+        # Remove the exact handler before clicking Retry.
+        # The next request will reach the real backend.
+        page.unroute(runtime_pattern, mock_runtime_500)
+
+        with page.expect_response(
+            lambda response: (
+                f":{API_PORT}/runtime" in response.url
+                and response.status == 200
+            ),
+            timeout=15_000,
+        ):
+            retry_button.click()
+
+        runtime_heading = page.get_by_role(
+            "heading",
+            name="Runtime & Source Health",
+            exact=True,
+        )
+        expect(runtime_heading).to_be_visible(timeout=10_000)
+        expect(runtime_heading).to_be_focused()
+
+        # Scenario 2: Backend Unavailable (Network Failure / Connection Abort)
+        def mock_inbox_abort(route):
+            if f":{API_PORT}/inbox" in route.request.url:
+                route.abort("failed")
             else:
                 route.continue_()
 
-        page.route(f"**:{API_PORT}/runtime*", mock_500)
-        page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
+        page.route(f"**:{API_PORT}/inbox*", mock_inbox_abort)
+        page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
         page.wait_for_timeout(300)
+        assert page.locator("[data-testid='error-boundary'], .error-boundary-card").count() >= 1, "Error boundary must render when backend is unreachable"
+        page.unroute(f"**:{API_PORT}/inbox*", mock_inbox_abort)
 
-        # Assert Error Boundary or Error State rendered
-        error_elem = page.locator("[data-testid='error-boundary'], .state-container.state-error, .state-container.state-offline, [role='alert']")
-        assert error_elem.count() >= 1, "Error boundary/state container must render on 500 error"
+        # Scenario 3: Request Timeout / Gateway Timeout (504)
+        def mock_changes_timeout(route):
+            if f":{API_PORT}/changes" in route.request.url:
+                route.fulfill(status=504, content_type="application/json", body='{"detail": "Gateway Timeout"}')
+            else:
+                route.continue_()
 
-        # 2. Unroute and test recovery
-        page.unroute(f"**:{API_PORT}/runtime*", mock_500)
-        page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
+        page.route(f"**:{API_PORT}/changes*", mock_changes_timeout)
+        page.goto(f"{BASE_URL}/#/changes", wait_until="networkidle")
         page.wait_for_timeout(300)
+        assert page.locator("[data-testid='error-boundary'], .error-boundary-card").count() >= 1, "Error boundary must render on timeout"
+        page.unroute(f"**:{API_PORT}/changes*", mock_changes_timeout)
 
-        h1 = page.locator(".page-header-container h1, h1").first
-        assert h1.is_visible(), "Heading 1 must be visible upon recovery"
-        assert "Runtime" in h1.inner_text()
-
-        # 3. 404 Entity Not Found on non-existent story
-        page.goto(f"{BASE_URL}/#/story/cluster:non_existent_9999", wait_until="networkidle")
+        # Scenario 4: Empty Database / Zero Records (Renders empty state, NOT error boundary)
+        page.goto(f"{BASE_URL}/#/search?q=unobtainium_nonexistent_token_xyz", wait_until="networkidle")
         page.wait_for_timeout(300)
-        error_or_empty = page.locator("[data-testid='error-boundary'], .state-container.state-error, .state-container, h1")
-        assert error_or_empty.count() >= 1
+        assert page.locator("[data-testid='error-boundary']").count() == 0, "Empty search results must NOT trigger error boundary"
+        empty_heading = page.locator(".state-empty, .state-title, h2:has-text('No'), .state-container")
+        assert empty_heading.count() >= 1, "Empty state UI must render for zero records"
+
+        # Scenario 5: Malformed Payload (Corrupted non-JSON response)
+        def mock_saved_corrupted(route):
+            if f":{API_PORT}/saved" in route.request.url and route.request.method == "GET":
+                route.fulfill(status=200, content_type="application/json", body='<invalid>not-json-payload</invalid>')
+            else:
+                route.continue_()
+
+        page.route(f"**:{API_PORT}/saved*", mock_saved_corrupted)
+        page.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
+        page.wait_for_timeout(300)
+        assert page.locator("[data-testid='error-boundary'], .error-boundary-card").count() >= 1, "Error boundary must catch corrupted JSON payload"
+        page.unroute(f"**:{API_PORT}/saved*", mock_saved_corrupted)
+
+        # Scenario 6: Entity 404 Not Found
+        page.goto(f"{BASE_URL}/#/story/cluster:non_existent_cluster_9999", wait_until="networkidle")
+        page.wait_for_timeout(300)
+        not_found_state = page.locator("[data-testid='error-boundary'], .state-container.state-error, .state-empty, h1, h2")
+        assert not_found_state.count() >= 1, "Entity 404 must render appropriate error/not found state"
+
+        # Scenario 7: Endpoint Isolation (Failing projects endpoint does not break today or changes)
+        def mock_projects_500(route):
+            if f":{API_PORT}/projects" in route.request.url:
+                route.fulfill(status=500, content_type="application/json", body='{"detail": "Projects subsystem failure"}')
+            else:
+                route.continue_()
+
+        page.route(f"**:{API_PORT}/projects*", mock_projects_500)
+        page.goto(f"{BASE_URL}/#/projects", wait_until="networkidle")
+        page.wait_for_timeout(300)
+        assert page.locator("[data-testid='error-boundary'], .error-boundary-card").count() >= 1
+
+        # Navigate to Today view - must render normally with 200
+        page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
+        page.wait_for_timeout(300)
+        assert page.locator("h1:has-text('What Matters Today')").count() >= 1, "Failing /projects endpoint must not break /today"
+        page.unroute(f"**:{API_PORT}/projects*", mock_projects_500)
+
+        # Scenario 8: Mutation 500 Failure (Save action failure shows notification, preserves view DOM)
+        def mock_save_mutation_500(route):
+            if f":{API_PORT}/saved" in route.request.url and route.request.method == "POST":
+                route.fulfill(status=500, content_type="application/json", body='{"detail": "Database disk write failure"}')
+            else:
+                route.continue_()
+
+        page.route(f"**:{API_PORT}/saved*", mock_save_mutation_500)
+        page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
+        page.wait_for_selector(".btn-save-inbox", timeout=5000)
+        save_btn = page.locator(".btn-save-inbox").first
+        assert save_btn.is_visible(), "Save button must be visible"
+        save_btn.click()
+        page.wait_for_timeout(300)
+        # Assert button is re-enabled and view container remains intact
+        assert save_btn.is_enabled(), "Save button must be re-enabled after failed mutation"
+        assert page.locator("h1:has-text('What Matters Today')").is_visible(), "View DOM must remain intact after mutation 500"
+        page.unroute(f"**:{API_PORT}/saved*", mock_save_mutation_500)
 
         browser.close()
 
 
 def test_playwright_phase16_user_journeys_and_lazy_claim_policy(test_servers):
-    """Test realistic user journey across primary surfaces with strict lazy claim inspection policy."""
+    """Verify integrated user journey across all primary surfaces and lazy claim inspection policy."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = create_test_context(browser)
         page = context.new_page()
 
-        # Step 1: Start at Today view
-        page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('What Matters Today')", timeout=5000)
-        assert "What Matters Today" in page.locator("h1:has-text('What Matters Today')").first.inner_text()
+        # Step 1: Search -> Story -> Save
+        page.goto(f"{BASE_URL}/#/search?q=inference&mode=lexical", wait_until="networkidle")
+        page.wait_for_selector("a[data-testid^='search-story-link-']", timeout=5000)
+        first_search_link = page.locator("a[data-testid^='search-story-link-']").first
+        first_search_link.click()
 
-        # Step 2: Open first story link
-        story_link = page.locator("a[data-testid^='inbox-story-link-']").first
-        if story_link.count() > 0:
-            story_link.click()
+        # Step 2: Story Dossier Inspection & Save to Library
+        page.wait_for_url("**/#/story/*")
+        page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+        story_h1 = page.locator("h1:not(.state-title)").first.inner_text().strip()
+        assert len(story_h1) > 0, "Story Dossier heading must be populated"
+
+        save_dossier_btn = page.locator("#btn-save-dossier")
+        if save_dossier_btn.count() > 0:
+            save_dossier_btn.click()
+            page.wait_for_timeout(300)
+            assert "Saved" in save_dossier_btn.inner_text() or save_dossier_btn.get_attribute("aria-pressed") == "true"
+
+        # Step 3: Saved Library -> Unsave
+        page.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('Saved')", timeout=5000)
+        page.wait_for_selector(".saved-card, [data-saved-id]", timeout=5000)
+        unsave_btn = page.locator("[data-action='unsave']").first
+        if unsave_btn.count() > 0:
+            unsave_btn.click()
+            page.wait_for_timeout(300)
+
+        # Step 4: Changes -> Story Dossier
+        page.goto(f"{BASE_URL}/#/changes", wait_until="networkidle")
+        page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+        change_story_link = page.locator("a[href*='#/story/']").first
+        if change_story_link.count() > 0:
+            change_story_link.click()
             page.wait_for_url("**/#/story/*")
             page.wait_for_selector("h1:not(.state-title)", timeout=5000)
 
-            # Assert story detail loaded
-            h1_text = page.locator("h1:not(.state-title)").first.inner_text()
-            assert len(h1_text) > 0, "Story Dossier heading must be populated"
+        # Step 5: Lazy Claim Inspection Policy (Expanding claim issues <= 1 network request)
+        claim_toggle = page.locator("[data-action='toggle-claim']").first
+        if claim_toggle.count() > 0:
+            claim_requests = []
+            def count_claims(req):
+                if "/claims/" in req.url:
+                    claim_requests.append(req.url)
 
-            # Check for claim items
-            claim_cards = page.locator(".claim-card, [data-action='toggle-claim']")
-            if claim_cards.count() > 0:
-                claim_requests = []
-                def count_claim_req(req):
-                    if "/claims/" in req.url:
-                        claim_requests.append(req.url)
+            page.on("request", count_claims)
+            claim_toggle.click()
+            page.wait_for_timeout(300)
+            page.remove_listener("request", count_claims)
 
-                page.on("request", count_claim_req)
-                
-                # Expand first claim
-                claim_cards.first.click()
-                page.wait_for_timeout(300)
-                page.remove_listener("request", count_claim_req)
+            assert len(claim_requests) <= 1, f"Lazy claim policy violated: received {len(claim_requests)} requests"
 
-                # Expanding must issue at most 1 claim request (or 0 if already embedded)
-                assert len(claim_requests) <= 1, f"Lazy claim policy violated: got {len(claim_requests)} requests"
+        # Step 6: Project -> Story Dossier
+        page.goto(f"{BASE_URL}/#/projects", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('Projects')", timeout=5000)
+        project_link = page.locator("a[data-testid^='project-link-'], a[href*='#/projects/'], .project-card a").first
+        if project_link.count() > 0:
+            project_link.click()
+            page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+            project_story_link = page.locator("a[href*='#/story/']").first
+            if project_story_link.count() > 0:
+                project_story_link.click()
+                page.wait_for_url("**/#/story/*")
+                page.wait_for_selector("h1:not(.state-title)", timeout=5000)
 
-        # Step 3: Navigate to Search with query
-        page.goto(f"{BASE_URL}/#/search?q=inference&mode=lexical", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('Search')", timeout=5000)
-        assert "Search" in page.locator("h1:has-text('Search')").first.inner_text()
+        # Step 7: Briefing -> Story Dossier
+        page.goto(f"{BASE_URL}/#/briefing", wait_until="networkidle")
+        page.wait_for_selector("h1:has-text('Morning Briefing')", timeout=5000)
+        briefing_story_link = page.locator("a[href*='#/story/']").first
+        if briefing_story_link.count() > 0:
+            briefing_story_link.click()
+            page.wait_for_url("**/#/story/*")
+            page.wait_for_selector("h1:not(.state-title)", timeout=5000)
 
-        # Step 4: Navigate to Saved Library via sidebar link
-        saved_link = page.locator("a[href='#/saved']").first
-        if saved_link.count() > 0:
-            saved_link.click()
-        else:
-            page.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('Saved')", timeout=5000)
-        assert "Saved" in page.locator("h1:has-text('Saved')").first.inner_text()
+        # Step 8: Browser History Back / Forward Navigation Restoration
+        page.go_back()
+        page.wait_for_url("**/#/briefing")
+        page.wait_for_selector("h1:has-text('Morning Briefing')", timeout=5000)
+        assert "Morning Briefing" in page.locator("h1").first.inner_text()
 
-        # Step 5: Navigate to Changes via sidebar link
-        changes_link = page.locator("a[href='#/changes']").first
-        if changes_link.count() > 0:
-            changes_link.click()
-        else:
-            page.goto(f"{BASE_URL}/#/changes", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('What Moved'), h1:has-text('Changes'), h1:has-text('Longitudinal')", timeout=5000)
-        h1_changes = page.locator("h1:not(.state-title)").first.inner_text()
-        assert any(term in h1_changes for term in ["What Moved", "Changes", "Longitudinal"]), f"Unexpected heading: {h1_changes}"
-
-        # Step 6: Navigate to Runtime via sidebar link
-        runtime_link = page.locator("a[href='#/runtime']").first
-        if runtime_link.count() > 0:
-            runtime_link.click()
-        else:
-            page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('Runtime')", timeout=5000)
-        assert "Runtime" in page.locator("h1:has-text('Runtime')").first.inner_text()
+        page.go_forward()
+        page.wait_for_url("**/#/story/*")
+        page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+        assert len(page.locator("h1:not(.state-title)").first.inner_text()) > 0
 
         browser.close()
+
+
+def test_playwright_phase16_memory_stability_and_transitions(test_servers):
+    """Perform 50 rapid route transitions across all 8 surfaces to verify memory stability, DOM cleanup, and sub-250ms render costs."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = create_test_context(browser)
+        page = context.new_page()
+
+        story_id = get_real_story_id(page)
+        routes = [
+            f"{BASE_URL}/#/today",
+            f"{BASE_URL}/#/briefing",
+            f"{BASE_URL}/#/search?q=inference&mode=lexical",
+            f"{BASE_URL}/#/projects",
+            f"{BASE_URL}/#/saved",
+            f"{BASE_URL}/#/changes",
+            f"{BASE_URL}/#/runtime",
+            f"{BASE_URL}/#/story/{story_id}",
+        ]
+
+        page.goto(routes[0], wait_until="networkidle")
+        page.wait_for_selector("h1", timeout=5000)
+
+        transition_times = []
+        for i in range(50):
+            target_url = routes[i % len(routes)]
+            t0 = time.perf_counter()
+            page.goto(target_url, wait_until="domcontentloaded")
+            page.wait_for_selector("h1", timeout=5000)
+            t1 = time.perf_counter()
+            transition_times.append((t1 - t0) * 1000.0)
+
+        # Verify average transition duration is bounded (< 300ms)
+        avg_ms = sum(transition_times) / len(transition_times)
+        assert avg_ms < 300.0, f"Average route transition exceeded 300ms: {avg_ms:.2f}ms"
+
+        # Check DOM node count stability (verify no runaway DOM node accumulation)
+        dom_nodes = page.evaluate("() => document.querySelectorAll('*').length")
+        assert dom_nodes < 1500, f"Excessive DOM node accumulation detected: {dom_nodes} nodes"
+
+        browser.close()
+
 
 

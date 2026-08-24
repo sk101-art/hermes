@@ -767,8 +767,9 @@ def get_recent_changes(
 
     min_imp_rank = _normalize_importance_rank(importance_min or "low")
 
-    # Cache claims lookup to avoid repetitive queries
-    claims_cache = {}
+    # Batch prefetch claims lookup to avoid N+1 repetitive queries
+    claim_ids = [ch.entity_id for ch in changes if ch.entity_type == "claim"]
+    claims_cache = db.get_claims_by_ids(claim_ids) if claim_ids else {}
 
     for ch in changes:
         if ch.created_at < cutoff:
@@ -782,9 +783,7 @@ def get_recent_changes(
         if ch.entity_type in ("cluster", "technology_assessment", "technology_state"):
             cluster_id = ch.entity_id
         elif ch.entity_type == "claim":
-            if ch.entity_id not in claims_cache:
-                claims_cache[ch.entity_id] = db.get_claim(ch.entity_id)
-            claim_obj = claims_cache[ch.entity_id]
+            claim_obj = claims_cache.get(ch.entity_id)
             if claim_obj:
                 cluster_id = claim_obj.cluster_id
 

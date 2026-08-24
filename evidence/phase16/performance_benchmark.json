@@ -1,8 +1,8 @@
 {
   "meta": {
     "title": "HERMES Phase 16 Performance Evidence",
-    "timestamp": "2026-08-24T10:33:53.100519+00:00",
-    "git_commit": "11f711f40044d9b8db613bbb6828d8034d0c3c2e",
+    "timestamp": "2026-08-24T13:55:08.733313+00:00",
+    "git_commit": "204ea827d751326bbbdb564c9e93b80c0b799dc6",
     "os": "Windows-10-10.0.26200-SP0",
     "python_version": "3.11.9",
     "sqlite_version": "3.45.1",
@@ -10,138 +10,161 @@
     "table_record_counts": {
       "events": 368,
       "story_clusters": 345,
+      "cluster_events": 368,
       "claims": 360,
-      "evidence_links": 0,
+      "evidence": 416,
       "technology_assessments": 345,
-      "technology_current_states": 0,
-      "project_story_matches": 0,
+      "technology_states": 345,
+      "projects": 2,
+      "project_matches": 93,
       "daily_briefings": 1,
-      "runtime_jobs": 10,
-      "source_checkpoints": 9
+      "source_checkpoints": 9,
+      "runtime_jobs": 10
     }
   },
   "database_batch_queries": {
     "get_claims_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 2.539,
-      "min_ms": 1.857,
-      "median_ms": 2.032,
-      "p95_ms": 3.392,
-      "max_ms": 4.121
+      "cold_ms": 3.967,
+      "min_ms": 2.5,
+      "median_ms": 3.495,
+      "p95_ms": 4.317,
+      "max_ms": 4.406
     },
     "get_evidence_by_claim_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 0.221,
+      "cold_ms": 0.399,
       "min_ms": 0.029,
-      "median_ms": 0.044,
-      "p95_ms": 0.092,
-      "max_ms": 0.118
+      "median_ms": 0.067,
+      "p95_ms": 0.113,
+      "max_ms": 0.137
     },
     "get_assessments_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 0.903,
-      "min_ms": 0.485,
-      "median_ms": 0.524,
-      "p95_ms": 0.753,
-      "max_ms": 1.099
+      "cold_ms": 1.313,
+      "min_ms": 0.576,
+      "median_ms": 0.94,
+      "p95_ms": 1.181,
+      "max_ms": 1.195
     },
     "get_current_states_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 0.996,
-      "min_ms": 0.65,
-      "median_ms": 0.69,
-      "p95_ms": 1.049,
-      "max_ms": 1.482
+      "cold_ms": 1.332,
+      "min_ms": 0.816,
+      "median_ms": 1.216,
+      "p95_ms": 1.877,
+      "max_ms": 2.868
     },
     "get_project_matches_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 1.598,
-      "min_ms": 0.937,
-      "median_ms": 0.996,
-      "p95_ms": 1.792,
-      "max_ms": 2.021
+      "cold_ms": 1.582,
+      "min_ms": 1.011,
+      "median_ms": 1.36,
+      "p95_ms": 2.295,
+      "max_ms": 2.429
     },
     "get_event_clusters_batch (N=50)": {
       "samples": 50,
-      "cold_ms": 0.253,
-      "min_ms": 0.065,
-      "median_ms": 0.067,
-      "p95_ms": 0.09,
-      "max_ms": 0.103
+      "cold_ms": 0.426,
+      "min_ms": 0.071,
+      "median_ms": 0.103,
+      "p95_ms": 0.209,
+      "max_ms": 0.226
     }
   },
   "api_endpoints": {
     "GET /inbox?limit=40": {
       "samples": 50,
-      "cold_ms": 34.777,
-      "min_ms": 17.09,
-      "median_ms": 18.951,
-      "p95_ms": 23.702,
-      "max_ms": 24.723
+      "cold_ms": 51.555,
+      "min_ms": 23.499,
+      "median_ms": 27.166,
+      "p95_ms": 29.712,
+      "max_ms": 32.582
     },
     "GET /briefing": {
       "samples": 50,
-      "cold_ms": 41.18,
-      "min_ms": 22.774,
-      "median_ms": 25.176,
-      "p95_ms": 31.876,
-      "max_ms": 67.178
+      "cold_ms": 58.462,
+      "min_ms": 30.073,
+      "median_ms": 36.21,
+      "p95_ms": 45.04,
+      "max_ms": 102.402
     },
     "GET /search?q=inference&mode=lexical": {
       "samples": 50,
-      "cold_ms": 64.343,
-      "min_ms": 55.304,
-      "median_ms": 61.793,
-      "p95_ms": 73.762,
-      "max_ms": 119.173
+      "cold_ms": 96.457,
+      "min_ms": 81.622,
+      "median_ms": 92.538,
+      "p95_ms": 100.555,
+      "max_ms": 180.293
     },
     "GET /projects": {
       "samples": 50,
-      "cold_ms": 19.452,
-      "min_ms": 13.372,
-      "median_ms": 15.415,
-      "p95_ms": 17.165,
-      "max_ms": 18.161
+      "cold_ms": 49.942,
+      "min_ms": 18.409,
+      "median_ms": 21.119,
+      "p95_ms": 25.418,
+      "max_ms": 28.009
     },
-    "GET /projects/proj_hermes_core/intelligence": {
+    "GET /projects/project:cuda-compiler-lab/intelligence": {
       "samples": 50,
-      "cold_ms": 16.111,
-      "min_ms": 13.537,
-      "median_ms": 15.354,
-      "p95_ms": 19.278,
-      "max_ms": 35.008
+      "cold_ms": 45.455,
+      "min_ms": 38.748,
+      "median_ms": 43.641,
+      "p95_ms": 48.725,
+      "max_ms": 55.756
     },
     "GET /saved?include_current=true&limit=50": {
       "samples": 50,
-      "cold_ms": 19.357,
-      "min_ms": 16.491,
-      "median_ms": 17.608,
-      "p95_ms": 20.614,
-      "max_ms": 27.256
+      "cold_ms": 30.234,
+      "min_ms": 22.495,
+      "median_ms": 25.421,
+      "p95_ms": 28.571,
+      "max_ms": 39.826
     },
     "GET /changes?hours=168&limit=50": {
       "samples": 50,
-      "cold_ms": 17.648,
-      "min_ms": 14.001,
-      "median_ms": 15.201,
-      "p95_ms": 18.53,
-      "max_ms": 21.318
+      "cold_ms": 25.733,
+      "min_ms": 17.905,
+      "median_ms": 21.899,
+      "p95_ms": 24.33,
+      "max_ms": 29.061
     },
     "GET /runtime": {
       "samples": 50,
-      "cold_ms": 17604.137,
-      "min_ms": 29.703,
-      "median_ms": 33.062,
-      "p95_ms": 41.158,
-      "max_ms": 152.043
+      "cold_ms": 132.54,
+      "min_ms": 41.678,
+      "median_ms": 46.899,
+      "p95_ms": 51.537,
+      "max_ms": 52.253
     },
     "GET /stories/cluster:0098b4102473": {
       "samples": 50,
-      "cold_ms": 28.652,
-      "min_ms": 22.393,
-      "median_ms": 24.133,
-      "p95_ms": 28.312,
-      "max_ms": 29.382
+      "cold_ms": 36.872,
+      "min_ms": 30.012,
+      "median_ms": 34.112,
+      "p95_ms": 39.849,
+      "max_ms": 52.428
     }
+  },
+  "frontend_bundle": {
+    "built": true,
+    "total_js_bytes": 178251,
+    "total_css_bytes": 64269,
+    "total_html_bytes": 468,
+    "total_bundle_bytes": 242988,
+    "assets": [
+      {
+        "file": "index.html",
+        "bytes": 468
+      },
+      {
+        "file": "assets/index-BdsDWhB0.css",
+        "bytes": 64269
+      },
+      {
+        "file": "assets/index-CsMsgskE.js",
+        "bytes": 178251
+      }
+    ]
   }
 }

@@ -55,18 +55,18 @@ export function renderEmptyState(title, description, actionHtml = '', headingTag
  * @returns {string} HTML string
  */
 export function renderOfflineState(apiUrl = 'http://127.0.0.1:8765', errorDetail = '', headingTag = 'h1') {
-  return `<div class="state-container state-offline" role="alert" aria-live="assertive">
+  return `<div class="state-container state-offline error-boundary-card" data-testid="error-boundary" role="alert" aria-live="assertive">
     <div class="state-icon-wrapper">
       ${getIcon('wifiOff')}
     </div>
-    <${headingTag} class="state-title" style="font-size:var(--text-xl);margin:var(--space-2) 0;">Unable to Connect to HERMES API</${headingTag}>
-    <p class="state-description">
+    <${headingTag} class="state-title error-boundary-heading" style="font-size:var(--text-xl);margin:var(--space-2) 0;">Unable to Connect to HERMES API</${headingTag}>
+    <p class="state-description error-boundary-message">
       HERMES could not establish a connection to <code>${escapeHtml(apiUrl)}</code>. 
       Start the FastAPI backend server to load live intelligence.
     </p>
     ${errorDetail ? `<p class="state-description" style="font-size:12px;color:#dc2626;background:#fee2e2;padding:6px 12px;border-radius:6px;">${escapeHtml(errorDetail)}</p>` : ''}
-    <div class="state-actions">
-      <button class="btn btn-secondary btn-sm" id="retry-btn">
+    <div class="state-actions error-boundary-actions">
+      <button class="btn btn-secondary btn-sm btn-retry-view" id="retry-btn" data-testid="btn-retry-view">
         ${getIcon('refresh')} Retry Connection
       </button>
       <a href="${escapeHtml(apiUrl)}/docs" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">
@@ -84,14 +84,14 @@ export function renderOfflineState(apiUrl = 'http://127.0.0.1:8765', errorDetail
  * @returns {string} HTML string
  */
 export function renderErrorState(title, errorMessage, headingTag = 'h1') {
-  return `<div class="state-container state-error" role="alert" aria-live="assertive">
+  return `<div class="state-container state-error error-boundary-card" data-testid="error-boundary" role="alert" aria-live="assertive">
     <div class="state-icon-wrapper">
       ${getIcon('alertTriangle')}
     </div>
-    <${headingTag} class="state-title" style="font-size:var(--text-xl);margin:var(--space-2) 0;">${escapeHtml(title)}</${headingTag}>
-    <p class="state-description">${escapeHtml(errorMessage)}</p>
-    <div class="state-actions">
-      <button class="btn btn-secondary btn-sm" id="retry-btn">
+    <${headingTag} class="state-title error-boundary-heading" style="font-size:var(--text-xl);margin:var(--space-2) 0;">${escapeHtml(title)}</${headingTag}>
+    <p class="state-description error-boundary-message">${escapeHtml(errorMessage)}</p>
+    <div class="state-actions error-boundary-actions">
+      <button class="btn btn-secondary btn-sm btn-retry-view" id="retry-btn" data-testid="btn-retry-view">
         ${getIcon('refresh')} Try Again
       </button>
     </div>

@@ -667,11 +667,11 @@ class Database:
     def get_clusters_by_ids(self, cluster_ids: List[str]) -> List[StoryCluster]:
         if not cluster_ids:
             return []
-        clean_ids = list({cid for cid in cluster_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in cluster_ids if cid))
         if not clean_ids:
             return []
         cursor = self.conn.cursor()
-        clusters = []
+        cluster_map = {}
         for i in range(0, len(clean_ids), 500):
             chunk = clean_ids[i:i + 500]
             ph = ",".join("?" for _ in chunk)
@@ -699,20 +699,18 @@ class Database:
 
             for r in rows:
                 cid = r["id"]
-                clusters.append(
-                    StoryCluster(
-                        id=cid,
-                        canonical_title=r["canonical_title"],
-                        event_ids=events_by_cluster.get(cid, []),
-                        sources=sorted(list(sources_by_cluster.get(cid, set()))),
-                        cluster_score=r["cluster_score"] or 0.0,
-                        source_diversity_score=r["source_diversity_score"] or 0.0,
-                        max_event_score=r["max_event_score"] or 0.0,
-                        created_at=datetime.fromisoformat(r["created_at"]),
-                        updated_at=datetime.fromisoformat(r["updated_at"]),
-                    )
+                cluster_map[cid] = StoryCluster(
+                    id=cid,
+                    canonical_title=r["canonical_title"],
+                    event_ids=events_by_cluster.get(cid, []),
+                    sources=sorted(list(sources_by_cluster.get(cid, set()))),
+                    cluster_score=r["cluster_score"] or 0.0,
+                    source_diversity_score=r["source_diversity_score"] or 0.0,
+                    max_event_score=r["max_event_score"] or 0.0,
+                    created_at=datetime.fromisoformat(r["created_at"]),
+                    updated_at=datetime.fromisoformat(r["updated_at"]),
                 )
-        return clusters
+        return [cluster_map[cid] for cid in clean_ids if cid in cluster_map]
 
     def get_all_clusters(self) -> List[StoryCluster]:
         cursor = self.conn.cursor()
@@ -781,7 +779,7 @@ class Database:
         """Batch lookup cluster_id for multiple event_ids."""
         if not event_ids:
             return {}
-        clean_ids = list({eid for eid in event_ids if eid})
+        clean_ids = list(dict.fromkeys(eid for eid in event_ids if eid))
         if not clean_ids:
             return {}
         cursor = self.conn.cursor()
@@ -811,7 +809,7 @@ class Database:
         """Batch load events for multiple cluster IDs to avoid N+1 queries."""
         if not cluster_ids:
             return {}
-        clean_ids = list({cid for cid in cluster_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in cluster_ids if cid))
         if not clean_ids:
             return {}
         cursor = self.conn.cursor()
@@ -834,7 +832,7 @@ class Database:
         """Batch check existence of story cluster IDs."""
         if not cluster_ids:
             return set()
-        clean_ids = list({cid for cid in cluster_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in cluster_ids if cid))
         if not clean_ids:
             return set()
         cursor = self.conn.cursor()
@@ -1015,7 +1013,7 @@ class Database:
         """Batch load claims for multiple cluster IDs grouped by cluster_id."""
         if not cluster_ids:
             return {}
-        clean_ids = list({cid for cid in cluster_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in cluster_ids if cid))
         if not clean_ids:
             return {}
         cursor = self.conn.cursor()
@@ -1031,6 +1029,23 @@ class Database:
             for r in cursor.fetchall():
                 out[r["cluster_id"]].append(self._row_to_claim(r))
         return dict(out)
+
+    def get_claims_by_ids(self, claim_ids: List[str]) -> Dict[str, Claim]:
+        """Batch load claims by claim IDs as a mapping."""
+        if not claim_ids:
+            return {}
+        clean_ids = list(dict.fromkeys(cid for cid in claim_ids if cid))
+        if not clean_ids:
+            return {}
+        cursor = self.conn.cursor()
+        out = {}
+        for i in range(0, len(clean_ids), 500):
+            chunk = clean_ids[i:i + 500]
+            ph = ",".join("?" for _ in chunk)
+            cursor.execute(f"SELECT * FROM claims WHERE id IN ({ph})", tuple(chunk))
+            for r in cursor.fetchall():
+                out[r["id"]] = self._row_to_claim(r)
+        return out
 
     # --- Evidence Storage Methods ---
 
@@ -1117,7 +1132,7 @@ class Database:
         """Batch load evidence records for multiple claim IDs grouped by claim_id."""
         if not claim_ids:
             return {}
-        clean_ids = list({cid for cid in claim_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in claim_ids if cid))
         if not clean_ids:
             return {}
         cursor = self.conn.cursor()
@@ -1186,7 +1201,7 @@ class Database:
         """Batch load technology assessments for multiple cluster IDs."""
         if not cluster_ids:
             return {}
-        clean_ids = list({cid for cid in cluster_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in cluster_ids if cid))
         if not clean_ids:
             return {}
         cursor = self.conn.cursor()
@@ -1447,7 +1462,7 @@ class Database:
         """Batch load current technology states for multiple cluster IDs as a mapping."""
         if not cluster_ids:
             return {}
-        clean_ids = list({cid for cid in cluster_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in cluster_ids if cid))
         if not clean_ids:
             return {}
         cursor = self.conn.cursor()
@@ -1938,7 +1953,7 @@ class Database:
         """Batch load project matches for multiple cluster IDs grouped by cluster ID."""
         if not cluster_ids:
             return {}
-        clean_ids = list({cid for cid in cluster_ids if cid})
+        clean_ids = list(dict.fromkeys(cid for cid in cluster_ids if cid))
         if not clean_ids:
             return {}
         cursor = self.conn.cursor()

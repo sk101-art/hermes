@@ -8,6 +8,7 @@ import { api } from '../api/endpoints.js';
 import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, formatTime, ensureArray, toTitleCase } from '../utils/adapters.js';
+import { focusPageHeading } from '../utils/a11y.js';
 
 function formatFiniteNumber(val, fallback = '—') {
   if (typeof val === 'number' && Number.isFinite(val)) {
@@ -434,6 +435,7 @@ export async function renderRuntimeView(container, store) {
     `;
 
     container.innerHTML = html;
+    focusPageHeading(container);
 
     // Attach read-only refresh button handler
     const btnRefresh = container.querySelector('#btn-refresh-runtime');
@@ -453,7 +455,7 @@ export async function renderRuntimeView(container, store) {
       store.setConnection('degraded', err.message);
       container.innerHTML = renderErrorState('Failed to Load Runtime Status', err.message);
     }
-    const retryBtn = container.querySelector('#retry-btn');
+    const retryBtn = container.querySelector('#retry-btn') || container.querySelector('.btn-retry-view');
     if (retryBtn) {
       retryBtn.addEventListener('click', () => {
         renderRuntimeView(container, store);

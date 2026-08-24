@@ -142,7 +142,8 @@ export class RequestManager {
       this.routeControllers.get(viewKey).add(controller);
     }
 
-    const promise = (async () => {
+    let promise;
+    promise = (async () => {
       try {
         const data = await baseRequest(endpoint, {
           ...fetchOptions,
@@ -160,7 +161,9 @@ export class RequestManager {
         return data;
       } finally {
         if (isGet) {
-          this.inFlight.delete(canonicalKey);
+          if (this.inFlight.get(canonicalKey) === promise) {
+            this.inFlight.delete(canonicalKey);
+          }
         }
         if (viewKey && this.routeControllers.has(viewKey)) {
           this.routeControllers.get(viewKey).delete(controller);

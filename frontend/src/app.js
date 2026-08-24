@@ -339,12 +339,7 @@ function bindShellEvents() {
  * Bind view-level controls.
  */
 function bindViewInteractions(container) {
-  // Retry buttons in error/offline states
-  const retryBtn = container.querySelector('#retry-btn');
-  retryBtn?.addEventListener('click', () => {
-    router._handleHashChange();
-    checkBackendHealth();
-  });
+  // Views bind their own retry and card interactions
 }
 
 /**

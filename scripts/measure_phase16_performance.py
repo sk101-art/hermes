@@ -93,9 +93,9 @@ def main():
     cursor = conn.cursor()
     counts = {}
     tables = [
-        "events", "story_clusters", "claims", "evidence_links",
-        "technology_assessments", "technology_current_states",
-        "project_story_matches", "daily_briefings", "runtime_jobs", "source_checkpoints"
+        "events", "story_clusters", "cluster_events", "claims", "evidence",
+        "technology_assessments", "technology_states", "projects", "project_matches",
+        "daily_briefings", "source_checkpoints", "runtime_jobs"
     ]
     for table in tables:
         try:
@@ -112,10 +112,10 @@ def main():
         sample_cluster_id = "cluster:test001"
 
     try:
-        sample_project = cursor.execute("SELECT id FROM tracked_projects LIMIT 1").fetchone()
-        sample_project_id = sample_project[0] if sample_project else "proj_hermes_core"
+        sample_project = cursor.execute("SELECT id FROM projects LIMIT 1").fetchone()
+        sample_project_id = sample_project[0] if sample_project else "project:hermes"
     except Exception:
-        sample_project_id = "proj_hermes_core"
+        sample_project_id = "project:hermes"
     conn.close()
 
     # Import database module and FastAPI test client
@@ -171,7 +171,32 @@ def main():
         print(f"  Measuring {ep_name}...")
         api_benchmarks[ep_name] = measure_function_latency(ep_fn, samples=50)
 
-    # 3. Assemble Report Payload
+    # 3. Measure Frontend Bundle Size Metrics
+    dist_dir = os.path.join(REPO_ROOT, "frontend", "dist")
+    frontend_bundle = {
+        "built": os.path.exists(dist_dir),
+        "total_js_bytes": 0,
+        "total_css_bytes": 0,
+        "total_html_bytes": 0,
+        "total_bundle_bytes": 0,
+        "assets": []
+    }
+    if os.path.exists(dist_dir):
+        for root, _, files in os.walk(dist_dir):
+            for file in files:
+                fpath = os.path.join(root, file)
+                size = os.path.getsize(fpath)
+                rel_path = os.path.relpath(fpath, dist_dir).replace("\\", "/")
+                frontend_bundle["total_bundle_bytes"] += size
+                if file.endswith(".js"):
+                    frontend_bundle["total_js_bytes"] += size
+                elif file.endswith(".css"):
+                    frontend_bundle["total_css_bytes"] += size
+                elif file.endswith(".html"):
+                    frontend_bundle["total_html_bytes"] += size
+                frontend_bundle["assets"].append({"file": rel_path, "bytes": size})
+
+    # 4. Assemble Report Payload
     report = {
         "meta": {
             "title": "HERMES Phase 16 Performance Evidence",
@@ -184,14 +209,22 @@ def main():
             "table_record_counts": counts
         },
         "database_batch_queries": db_benchmarks,
-        "api_endpoints": api_benchmarks
+        "api_endpoints": api_benchmarks,
+        "frontend_bundle": frontend_bundle,
     }
 
     reports_dir = os.path.join(REPO_ROOT, "reports")
     os.makedirs(reports_dir, exist_ok=True)
     report_path = os.path.join(reports_dir, "phase16_performance.json")
 
+    evidence_dir = os.path.join(REPO_ROOT, "evidence", "phase16")
+    os.makedirs(evidence_dir, exist_ok=True)
+    evidence_path = os.path.join(evidence_dir, "performance_benchmark.json")
+
     with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    with open(evidence_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     # Cleanup temporary benchmark database
@@ -199,6 +232,7 @@ def main():
 
     print("\nBenchmark successfully complete!")
     print(f"Report saved to: {report_path}")
+    print(f"Evidence saved to: {evidence_path}")
     print("\n--- Summary of Median (p50) & p95 Response Times ---")
     for name, m in api_benchmarks.items():
         print(f"  {name:<45} | Cold: {m['cold_ms']:>6.2f}ms | p50: {m['median_ms']:>6.2f}ms | p95: {m['p95_ms']:>6.2f}ms")
