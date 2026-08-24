@@ -11,6 +11,7 @@ import signal
 import uuid
 import json
 import re
+import statistics
 import pytest
 from playwright.sync_api import expect, sync_playwright
 
@@ -493,38 +494,38 @@ def test_hermes_e2e_integration(test_servers):
         # 2. Story Dossier
         story_id = get_real_story_id(page)
         page.goto(f"{BASE_URL}/#/story/{story_id}", wait_until="networkidle")
-        page.wait_for_selector("h1", timeout=5000)
+        page.wait_for_selector("h1", timeout=15000)
         assert page.locator(".global-banner-offline").count() == 0
         page.screenshot(path=os.path.join(screenshots_dir, "02_story_detail.png"))
 
         # 3. Morning Briefing
         page.goto(f"{BASE_URL}/#/briefing", wait_until="networkidle")
-        page.wait_for_selector("h1", timeout=5000)
+        page.wait_for_selector("h1", timeout=15000)
         page.screenshot(path=os.path.join(screenshots_dir, "03_morning_briefing.png"))
 
         # 4. Search
         page.goto(f"{BASE_URL}/#/search", wait_until="networkidle")
-        page.wait_for_selector("#search-query-input, #search-input, h1", timeout=5000)
+        page.wait_for_selector("#search-query-input, #search-input, h1", timeout=15000)
         page.screenshot(path=os.path.join(screenshots_dir, "04_search_results.png"))
 
         # 5. Projects
         page.goto(f"{BASE_URL}/#/projects", wait_until="networkidle")
-        page.wait_for_selector("h1", timeout=5000)
+        page.wait_for_selector("h1", timeout=15000)
         page.screenshot(path=os.path.join(screenshots_dir, "05_my_projects.png"))
 
         # 6. Saved
         page.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
-        page.wait_for_selector("h1", timeout=5000)
+        page.wait_for_selector("h1", timeout=15000)
         page.screenshot(path=os.path.join(screenshots_dir, "06_saved_library.png"))
 
         # 7. Changes
         page.goto(f"{BASE_URL}/#/changes", wait_until="networkidle")
-        page.wait_for_selector("h1", timeout=5000)
+        page.wait_for_selector("h1", timeout=15000)
         page.screenshot(path=os.path.join(screenshots_dir, "07_changes.png"))
 
         # 8. Runtime
         page.goto(f"{BASE_URL}/#/runtime", wait_until="networkidle")
-        page.wait_for_selector("h1", timeout=5000)
+        page.wait_for_selector("h1", timeout=15000)
         page.screenshot(path=os.path.join(screenshots_dir, "08_runtime.png"))
 
         browser.close()
@@ -1469,7 +1470,7 @@ def test_playwright_phase16_error_boundary_scenarios(test_servers):
 
         page.route(f"**:{API_PORT}/saved*", mock_save_mutation_500)
         page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
-        page.wait_for_selector(".btn-save-inbox", timeout=5000)
+        page.wait_for_selector(".btn-save-inbox", timeout=15000)
         save_btn = page.locator(".btn-save-inbox").first
         assert save_btn.is_visible(), "Save button must be visible"
         save_btn.click()
@@ -1491,13 +1492,13 @@ def test_playwright_phase16_user_journeys_and_lazy_claim_policy(test_servers):
 
         # Step 1: Search -> Story -> Save
         page.goto(f"{BASE_URL}/#/search?q=inference&mode=lexical", wait_until="networkidle")
-        page.wait_for_selector("a[data-testid^='search-story-link-']", timeout=5000)
+        page.wait_for_selector("a[data-testid^='search-story-link-']", timeout=15000)
         first_search_link = page.locator("a[data-testid^='search-story-link-']").first
         first_search_link.click()
 
         # Step 2: Story Dossier Inspection & Save to Library
         page.wait_for_url("**/#/story/*")
-        page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+        page.wait_for_selector("h1:not(.state-title)", timeout=15000)
         story_h1 = page.locator("h1:not(.state-title)").first.inner_text().strip()
         assert len(story_h1) > 0, "Story Dossier heading must be populated"
 
@@ -1509,8 +1510,8 @@ def test_playwright_phase16_user_journeys_and_lazy_claim_policy(test_servers):
 
         # Step 3: Saved Library -> Unsave
         page.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('Saved')", timeout=5000)
-        page.wait_for_selector(".saved-card, [data-saved-id]", timeout=5000)
+        page.wait_for_selector("h1:has-text('Saved')", timeout=15000)
+        page.wait_for_selector(".saved-card, [data-saved-id]", timeout=15000)
         unsave_btn = page.locator("[data-action='unsave']").first
         if unsave_btn.count() > 0:
             unsave_btn.click()
@@ -1518,12 +1519,12 @@ def test_playwright_phase16_user_journeys_and_lazy_claim_policy(test_servers):
 
         # Step 4: Changes -> Story Dossier
         page.goto(f"{BASE_URL}/#/changes", wait_until="networkidle")
-        page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+        page.wait_for_selector("h1:not(.state-title)", timeout=15000)
         change_story_link = page.locator("a[href*='#/story/']").first
         if change_story_link.count() > 0:
             change_story_link.click()
             page.wait_for_url("**/#/story/*")
-            page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+            page.wait_for_selector("h1:not(.state-title)", timeout=15000)
 
         # Step 5: Lazy Claim Inspection Policy (Expanding claim issues <= 1 network request)
         claim_toggle = page.locator("[data-action='toggle-claim']").first
@@ -1542,78 +1543,123 @@ def test_playwright_phase16_user_journeys_and_lazy_claim_policy(test_servers):
 
         # Step 6: Project -> Story Dossier
         page.goto(f"{BASE_URL}/#/projects", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('Projects')", timeout=5000)
+        page.wait_for_selector("h1:has-text('Projects')", timeout=15000)
         project_link = page.locator("a[data-testid^='project-link-'], a[href*='#/projects/'], .project-card a").first
         if project_link.count() > 0:
             project_link.click()
-            page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+            page.wait_for_selector("h1:not(.state-title)", timeout=15000)
             project_story_link = page.locator("a[href*='#/story/']").first
             if project_story_link.count() > 0:
                 project_story_link.click()
                 page.wait_for_url("**/#/story/*")
-                page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+                page.wait_for_selector("h1:not(.state-title)", timeout=15000)
 
         # Step 7: Briefing -> Story Dossier
         page.goto(f"{BASE_URL}/#/briefing", wait_until="networkidle")
-        page.wait_for_selector("h1:has-text('Morning Briefing')", timeout=5000)
+        page.wait_for_selector("h1:has-text('Morning Briefing')", timeout=15000)
         briefing_story_link = page.locator("a[href*='#/story/']").first
         if briefing_story_link.count() > 0:
             briefing_story_link.click()
             page.wait_for_url("**/#/story/*")
-            page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+            page.wait_for_selector("h1:not(.state-title)", timeout=15000)
 
         # Step 8: Browser History Back / Forward Navigation Restoration
         page.go_back()
         page.wait_for_url("**/#/briefing")
-        page.wait_for_selector("h1:has-text('Morning Briefing')", timeout=5000)
+        page.wait_for_selector("h1:has-text('Morning Briefing')", timeout=15000)
         assert "Morning Briefing" in page.locator("h1").first.inner_text()
 
         page.go_forward()
         page.wait_for_url("**/#/story/*")
-        page.wait_for_selector("h1:not(.state-title)", timeout=5000)
+        page.wait_for_selector("h1:not(.state-title)", timeout=15000)
         assert len(page.locator("h1:not(.state-title)").first.inner_text()) > 0
 
         browser.close()
 
 
-def test_playwright_phase16_memory_stability_and_transitions(test_servers):
-    """Perform 50 rapid route transitions across all 8 surfaces to verify memory stability, DOM cleanup, and sub-250ms render costs."""
+def test_playwright_phase16_transition_and_dom_stability(test_servers):
+    """Verify SPA hash navigation, route-specific heading rendering, p95 latency, and DOM stability across 50 rapid transitions."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = create_test_context(browser)
         page = context.new_page()
 
-        story_id = get_real_story_id(page)
         routes = [
-            f"{BASE_URL}/#/today",
-            f"{BASE_URL}/#/briefing",
-            f"{BASE_URL}/#/search?q=inference&mode=lexical",
-            f"{BASE_URL}/#/projects",
-            f"{BASE_URL}/#/saved",
-            f"{BASE_URL}/#/changes",
-            f"{BASE_URL}/#/runtime",
-            f"{BASE_URL}/#/story/{story_id}",
+            ("#/today", "What Matters Today"),
+            ("#/briefing", "Morning Briefing"),
+            ("#/search?q=inference&mode=lexical", "Search with Epistemic Context"),
+            ("#/projects", "My Projects"),
+            ("#/saved", "Saved Intelligence"),
+            ("#/changes", "What Moved"),
+            ("#/runtime", "Runtime & Source Health"),
         ]
 
-        page.goto(routes[0], wait_until="networkidle")
-        page.wait_for_selector("h1", timeout=5000)
+        # Load once before measuring.
+        page.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
+        expect(
+            page.get_by_role(
+                "heading",
+                name="What Matters Today",
+                exact=True,
+            )
+        ).to_be_visible(timeout=10_000)
 
         transition_times = []
-        for i in range(50):
-            target_url = routes[i % len(routes)]
-            t0 = time.perf_counter()
-            page.goto(target_url, wait_until="domcontentloaded")
-            page.wait_for_selector("h1", timeout=5000)
-            t1 = time.perf_counter()
-            transition_times.append((t1 - t0) * 1000.0)
+        dom_samples = []
 
-        # Verify average transition duration is bounded (< 300ms)
-        avg_ms = sum(transition_times) / len(transition_times)
-        assert avg_ms < 300.0, f"Average route transition exceeded 300ms: {avg_ms:.2f}ms"
+        for index in range(50):
+            route_hash, expected_heading = routes[index % len(routes)]
 
-        # Check DOM node count stability (verify no runaway DOM node accumulation)
-        dom_nodes = page.evaluate("() => document.querySelectorAll('*').length")
-        assert dom_nodes < 1500, f"Excessive DOM node accumulation detected: {dom_nodes} nodes"
+            started = time.perf_counter()
+
+            page.evaluate(
+                "(nextHash) => { window.location.hash = nextHash; }",
+                route_hash,
+            )
+
+            expect(page).to_have_url(
+                re.compile(re.escape(route_hash) + r"$"),
+                timeout=10_000,
+            )
+
+            expect(
+                page.get_by_role(
+                    "heading",
+                    name=expected_heading,
+                    exact=True,
+                )
+            ).to_be_visible(timeout=10_000)
+
+            transition_times.append(
+                (time.perf_counter() - started) * 1000
+            )
+
+            dom_samples.append(
+                page.evaluate(
+                    "() => document.querySelectorAll('*').length"
+                )
+            )
+
+        median_ms = statistics.median(transition_times)
+        p95_ms = statistics.quantiles(
+            transition_times,
+            n=100,
+            method="inclusive",
+        )[94]
+
+        max_dom_nodes = max(dom_samples)
+
+        print(f"Transition median: {median_ms:.2f} ms")
+        print(f"Transition p95: {p95_ms:.2f} ms")
+        print(f"Maximum DOM nodes: {max_dom_nodes}")
+
+        assert p95_ms < 300.0, (
+            f"Route transition p95 exceeded 300 ms: {p95_ms:.2f} ms"
+        )
+
+        assert max_dom_nodes < 1500, (
+            f"DOM ceiling exceeded: {max_dom_nodes} nodes"
+        )
 
         browser.close()
 

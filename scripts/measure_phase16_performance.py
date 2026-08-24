@@ -93,9 +93,10 @@ def main():
     cursor = conn.cursor()
     counts = {}
     tables = [
-        "events", "story_clusters", "cluster_events", "claims", "evidence",
-        "technology_assessments", "technology_states", "projects", "project_matches",
-        "daily_briefings", "source_checkpoints", "runtime_jobs"
+        "events", "story_clusters", "claims", "evidence",
+        "technology_assessments", "projects", "inbox_items",
+        "saved_items", "daily_briefings", "source_checkpoints",
+        "runtime_jobs", "intelligence_changes"
     ]
     for table in tables:
         try:

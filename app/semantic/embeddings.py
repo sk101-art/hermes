@@ -21,6 +21,7 @@ def prepare_event_text(event: Event, max_chars: int = 2500) -> str:
 
 class EmbeddingService:
     """Local embedding service using sentence-transformers on CPU."""
+    _cached_models = {}
 
     def __init__(
         self,
@@ -34,12 +35,13 @@ class EmbeddingService:
         self._model = None
 
     def _load_model(self):
-        if self._model is None:
+        cache_key = (self.model_name, self.device)
+        if cache_key not in EmbeddingService._cached_models:
             try:
                 from sentence_transformers import SentenceTransformer
 
                 print(f"Loading local embedding model ({self.model_name}) on {self.device}...", flush=True)
-                self._model = SentenceTransformer(self.model_name, device=self.device)
+                EmbeddingService._cached_models[cache_key] = SentenceTransformer(self.model_name, device=self.device)
             except Exception as e:
                 # If specified device fails, fall back to CPU
                 if self.device != "cpu":
@@ -47,9 +49,10 @@ class EmbeddingService:
                     self.device = "cpu"
                     from sentence_transformers import SentenceTransformer
 
-                    self._model = SentenceTransformer(self.model_name, device="cpu")
+                    EmbeddingService._cached_models[(self.model_name, "cpu")] = SentenceTransformer(self.model_name, device="cpu")
                 else:
                     raise e
+        self._model = EmbeddingService._cached_models.get(cache_key) or EmbeddingService._cached_models.get((self.model_name, "cpu"))
         return self._model
 
     def embed(self, text: str) -> np.ndarray:
@@ -72,8 +75,7 @@ class EmbeddingService:
         return np.asarray(vecs, dtype=np.float32)
 
     def unload(self) -> None:
-        """Releases the underlying model from memory and forces garbage collection."""
-        if self._model is not None:
-            self._model = None
-            import gc
-            gc.collect()
+        """Releases the underlying model reference from instance and triggers garbage collection."""
+        self._model = None
+        import gc
+        gc.collect()
