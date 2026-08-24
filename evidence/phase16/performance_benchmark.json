@@ -1,8 +1,8 @@
 {
   "meta": {
     "title": "HERMES Phase 16 Performance Evidence",
-    "timestamp": "2026-08-24T13:55:08.733313+00:00",
-    "git_commit": "204ea827d751326bbbdb564c9e93b80c0b799dc6",
+    "timestamp": "2026-08-24T14:01:39.784741+00:00",
+    "git_commit": "b7899986b869d57cce01dd7094605e38996ee324",
     "os": "Windows-10-10.0.26200-SP0",
     "python_version": "3.11.9",
     "sqlite_version": "3.45.1",
@@ -25,125 +25,125 @@
   "database_batch_queries": {
     "get_claims_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 3.967,
-      "min_ms": 2.5,
-      "median_ms": 3.495,
-      "p95_ms": 4.317,
-      "max_ms": 4.406
+      "cold_ms": 2.661,
+      "min_ms": 1.91,
+      "median_ms": 2.111,
+      "p95_ms": 3.366,
+      "max_ms": 3.919
     },
     "get_evidence_by_claim_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 0.399,
+      "cold_ms": 0.385,
       "min_ms": 0.029,
-      "median_ms": 0.067,
-      "p95_ms": 0.113,
-      "max_ms": 0.137
+      "median_ms": 0.041,
+      "p95_ms": 0.101,
+      "max_ms": 0.119
     },
     "get_assessments_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 1.313,
-      "min_ms": 0.576,
-      "median_ms": 0.94,
-      "p95_ms": 1.181,
-      "max_ms": 1.195
+      "cold_ms": 1.406,
+      "min_ms": 0.495,
+      "median_ms": 0.613,
+      "p95_ms": 1.096,
+      "max_ms": 1.173
     },
     "get_current_states_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 1.332,
-      "min_ms": 0.816,
-      "median_ms": 1.216,
-      "p95_ms": 1.877,
-      "max_ms": 2.868
+      "cold_ms": 1.308,
+      "min_ms": 0.673,
+      "median_ms": 0.842,
+      "p95_ms": 1.302,
+      "max_ms": 1.481
     },
     "get_project_matches_by_cluster_ids (N=50)": {
       "samples": 50,
-      "cold_ms": 1.582,
-      "min_ms": 1.011,
-      "median_ms": 1.36,
-      "p95_ms": 2.295,
-      "max_ms": 2.429
+      "cold_ms": 1.876,
+      "min_ms": 1.037,
+      "median_ms": 1.364,
+      "p95_ms": 1.919,
+      "max_ms": 2.025
     },
     "get_event_clusters_batch (N=50)": {
       "samples": 50,
-      "cold_ms": 0.426,
+      "cold_ms": 0.58,
       "min_ms": 0.071,
-      "median_ms": 0.103,
-      "p95_ms": 0.209,
-      "max_ms": 0.226
+      "median_ms": 0.073,
+      "p95_ms": 0.151,
+      "max_ms": 0.249
     }
   },
   "api_endpoints": {
     "GET /inbox?limit=40": {
       "samples": 50,
-      "cold_ms": 51.555,
-      "min_ms": 23.499,
-      "median_ms": 27.166,
-      "p95_ms": 29.712,
-      "max_ms": 32.582
+      "cold_ms": 40.485,
+      "min_ms": 18.439,
+      "median_ms": 21.741,
+      "p95_ms": 24.684,
+      "max_ms": 27.996
     },
     "GET /briefing": {
       "samples": 50,
-      "cold_ms": 58.462,
-      "min_ms": 30.073,
-      "median_ms": 36.21,
-      "p95_ms": 45.04,
-      "max_ms": 102.402
+      "cold_ms": 45.499,
+      "min_ms": 27.134,
+      "median_ms": 30.513,
+      "p95_ms": 39.491,
+      "max_ms": 77.603
     },
     "GET /search?q=inference&mode=lexical": {
       "samples": 50,
-      "cold_ms": 96.457,
-      "min_ms": 81.622,
-      "median_ms": 92.538,
-      "p95_ms": 100.555,
-      "max_ms": 180.293
+      "cold_ms": 85.132,
+      "min_ms": 65.757,
+      "median_ms": 77.108,
+      "p95_ms": 99.382,
+      "max_ms": 148.23
     },
     "GET /projects": {
       "samples": 50,
-      "cold_ms": 49.942,
-      "min_ms": 18.409,
-      "median_ms": 21.119,
-      "p95_ms": 25.418,
-      "max_ms": 28.009
+      "cold_ms": 20.357,
+      "min_ms": 15.483,
+      "median_ms": 17.89,
+      "p95_ms": 21.493,
+      "max_ms": 22.5
     },
     "GET /projects/project:cuda-compiler-lab/intelligence": {
       "samples": 50,
-      "cold_ms": 45.455,
-      "min_ms": 38.748,
-      "median_ms": 43.641,
-      "p95_ms": 48.725,
-      "max_ms": 55.756
+      "cold_ms": 34.156,
+      "min_ms": 31.745,
+      "median_ms": 33.828,
+      "p95_ms": 42.573,
+      "max_ms": 51.658
     },
     "GET /saved?include_current=true&limit=50": {
       "samples": 50,
-      "cold_ms": 30.234,
-      "min_ms": 22.495,
-      "median_ms": 25.421,
-      "p95_ms": 28.571,
-      "max_ms": 39.826
+      "cold_ms": 23.836,
+      "min_ms": 18.243,
+      "median_ms": 21.154,
+      "p95_ms": 25.235,
+      "max_ms": 32.063
     },
     "GET /changes?hours=168&limit=50": {
       "samples": 50,
-      "cold_ms": 25.733,
-      "min_ms": 17.905,
-      "median_ms": 21.899,
-      "p95_ms": 24.33,
-      "max_ms": 29.061
+      "cold_ms": 19.129,
+      "min_ms": 15.103,
+      "median_ms": 17.124,
+      "p95_ms": 19.931,
+      "max_ms": 22.99
     },
     "GET /runtime": {
       "samples": 50,
-      "cold_ms": 132.54,
-      "min_ms": 41.678,
-      "median_ms": 46.899,
-      "p95_ms": 51.537,
-      "max_ms": 52.253
+      "cold_ms": 114.357,
+      "min_ms": 35.07,
+      "median_ms": 38.731,
+      "p95_ms": 46.082,
+      "max_ms": 49.554
     },
     "GET /stories/cluster:0098b4102473": {
       "samples": 50,
-      "cold_ms": 36.872,
-      "min_ms": 30.012,
-      "median_ms": 34.112,
-      "p95_ms": 39.849,
-      "max_ms": 52.428
+      "cold_ms": 31.984,
+      "min_ms": 23.832,
+      "median_ms": 28.211,
+      "p95_ms": 35.225,
+      "max_ms": 36.227
     }
   },
   "frontend_bundle": {
