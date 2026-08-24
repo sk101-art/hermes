@@ -9,6 +9,7 @@ venv/
 htmlcov/
 .env
 data/*.db
+!data/tech_intel.db
 data/*.sqlite
 data/*.db-journal
 data/*.db-wal
