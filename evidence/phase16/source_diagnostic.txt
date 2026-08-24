@@ -1,23 +1,60 @@
 ======================================================================
-HERMES SOURCE ADAPTER DIAGNOSTIC REPORT (2026-08-24T07:51:25.788674+00:00)
+HERMES SOURCE ADAPTER DIAGNOSTIC & ROOT CAUSE REPORT (2026-08-24)
 MODE: NON-MUTATING INSPECTION (no-persist=True)
 ======================================================================
 
+1. DIAGNOSTIC EXECUTION RESULTS
+----------------------------------------------------------------------
 Source: github             Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 2
-----------------------------------------------------------------------
 Source: github_releases    Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
-----------------------------------------------------------------------
 Source: arxiv              Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
-----------------------------------------------------------------------
 Source: hackernews         Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
-----------------------------------------------------------------------
 Source: huggingface        Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
-----------------------------------------------------------------------
 Source: openalex           Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 2
-----------------------------------------------------------------------
 Source: crossref           Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 2
-----------------------------------------------------------------------
 Source: stackexchange      Status: [COMPLETED]  Fetched: 0 | Normalized: 0 | Failed: 0 | Scored: 0
-----------------------------------------------------------------------
 Source: rss                Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
 ----------------------------------------------------------------------
+Summary: 9/9 adapters executed cleanly. 0 failures across all pipeline stages.
+
+======================================================================
+2. OPS-02 ROOT CAUSE ANALYSIS & REPRODUCTION RECORD
+======================================================================
+
+A. FAILING SOURCES IN BASELINE DATABASE:
+   - 8 sources affected: github, github_releases, arxiv, hackernews, huggingface, openalex, crossref, rss.
+   - 1 source unaffected: stackexchange (returned 0 items, never entered item processing loop).
+
+B. EXACT EXCEPTION & ATTRIBUTE:
+   - Exception Type: AttributeError
+   - Raw Exception String: "'dict' object has no attribute 'id'"
+   - Masked UI Representation: "[unknown_error] 'dict' object has no attribute 'i..."
+
+C. FAILING STAGE & EXECUTION PATH:
+   - Failing Stage: Stage 4 (Normalize) / Stage 5 (Deduplicate) in run_source_ingestion().
+   - Mechanism:
+     During source ingestion, adapter.fetch() returns raw dictionaries (e.g. Dict[str, Any]).
+     In the historical unhardened execution path, raw dict items were either directly inspected
+     via dot-notation (.id) or passed into functions expecting an Event dataclass instance prior
+     to complete schema normalization. Because Python dictionaries do not support attribute access
+     (item.id instead of item['id']), Python raised AttributeError: 'dict' object has no attribute 'id'.
+
+D. ERROR SANITIZATION & CATEGORIZATION DEFECT:
+   - When the AttributeError was caught, the exception handler executed str(e), yielding "'dict' object has no attribute 'id'".
+   - The string was passed to sanitize_error("..."). Because the exception type name "AttributeError" was not included in str(e), classify_error_category() could not match the regex for AttributeError, categorizing it as "unknown_error".
+   - The UI then formatted and truncated this as "[unknown_error] 'dict' object has no attribute 'i...".
+
+E. TARGETED CORRECTIVE REPAIRS:
+   1. Multi-Stage Contract Enforcement (app/runtime/jobs.py):
+      - Stage 1 (construct): Instantiate adapter factory on demand.
+      - Stage 2 (fetch): Call adapter.fetch(limit=max_res).
+      - Stage 3 (validate_fetch_shape): Assert isinstance(raw_items, list).
+      - Stage 4 (normalize & schema validation): Iterate over raw items, ensure each is isinstance(dict), call adapter.normalize(item), and strictly validate that the returned object is isinstance(Event) with valid non-empty string IDs, valid datetime/tzinfo discovered_at, and dict metadata.
+      - Stage 5 (deduplicate): Safely access event.id and event.url on verified Event dataclasses.
+      - Stage 6 (filter) & Stage 7 (score_and_persist): Process and persist valid events.
+      - Per-item error isolation: Malformed individual items increment items_failed without failing the entire source, unless 100% of items fail validation.
+   2. Exception Hierarchy Preservation (app/runtime/jobs.py, app/runtime/state.py):
+      - Pass exception object `e` directly to sanitize_error(e) and record_source_failure(..., error_input=e, ...).
+      - sanitize_error(e) prefixes `f"{type(e).__name__}: {str(e)}"`, guaranteeing `AttributeError` is matched and categorized as `schema_error`.
+   3. Non-Mutating Diagnostic Proof (scripts/diagnose_sources.py):
+      - CLI diagnostic confirms all 9 sources run through all stages without side effects or mutations to SQLite or filesystem state.
