@@ -1,0 +1,23 @@
+======================================================================
+HERMES SOURCE ADAPTER DIAGNOSTIC REPORT (2026-08-24T07:51:25.788674+00:00)
+MODE: NON-MUTATING INSPECTION (no-persist=True)
+======================================================================
+
+Source: github             Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 2
+----------------------------------------------------------------------
+Source: github_releases    Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
+----------------------------------------------------------------------
+Source: arxiv              Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
+----------------------------------------------------------------------
+Source: hackernews         Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
+----------------------------------------------------------------------
+Source: huggingface        Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
+----------------------------------------------------------------------
+Source: openalex           Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 2
+----------------------------------------------------------------------
+Source: crossref           Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 2
+----------------------------------------------------------------------
+Source: stackexchange      Status: [COMPLETED]  Fetched: 0 | Normalized: 0 | Failed: 0 | Scored: 0
+----------------------------------------------------------------------
+Source: rss                Status: [COMPLETED]  Fetched: 2 | Normalized: 2 | Failed: 0 | Scored: 0
+----------------------------------------------------------------------

@@ -149,10 +149,11 @@ def record_source_success(
 
 def record_source_failure(
     source_name: str,
-    error_msg: str,
+    error_input: Any,
     db: Database,
     now: Optional[datetime] = None,
     config: Optional[Dict[str, Any]] = None,
+    error_category: Optional[str] = None,
 ) -> SourceCheckpoint:
     """Updates source checkpoint with structured sanitization and exponential backoff on failure."""
     if now is None:
@@ -170,10 +171,11 @@ def record_source_failure(
     delay_minutes = min(240, 15 * (2 ** min(fails - 1, 4)))
     next_retry = now + timedelta(minutes=delay_minutes)
 
-    category, sanitized_error = sanitize_error(error_msg)
+    cat, sanitized_error = sanitize_error(error_input)
+    category = error_category or cat
 
     # Determine health_status
-    if category == "rate_limit" or "429" in error_msg or "rate limit" in error_msg.lower():
+    if category == "rate_limit" or "429" in str(error_input) or "rate limit" in str(error_input).lower():
         health_status = "rate_limited"
     elif fails < 3:
         health_status = "retrying"
