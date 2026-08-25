@@ -122,7 +122,9 @@ def run_performance_audit(output_path: str = "reports/phase17_performance.json")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        context = browser.new_context()
+        context.add_init_script(f"window.localStorage.setItem('hermes_api_url', '{api_url}');")
+        page = context.new_page()
 
         page.goto(f"{fe_url}/#/today", wait_until="networkidle")
         expect(page.get_by_role("heading", name="What Matters Today", exact=True)).to_be_visible(timeout=10_000)

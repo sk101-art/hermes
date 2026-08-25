@@ -1675,7 +1675,7 @@ def test_playwright_phase17_persistence_proof_and_server_restart(test_servers):
         browser = p.chromium.launch(headless=True)
 
         # Context 1: Save a story
-        context1 = browser.new_context()
+        context1 = create_test_context(browser)
         page1 = context1.new_page()
         page1.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
 
@@ -1690,7 +1690,7 @@ def test_playwright_phase17_persistence_proof_and_server_restart(test_servers):
         context1.close()
 
         # Context 2: Fresh browser context after potential backend restart
-        context2 = browser.new_context()
+        context2 = create_test_context(browser)
         page2 = context2.new_page()
         page2.goto(f"{BASE_URL}/#/saved", wait_until="networkidle")
 
@@ -1720,7 +1720,7 @@ def test_playwright_phase17_console_error_and_route_topology_gate(test_servers):
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        context = create_test_context(browser)
         page = context.new_page()
 
         console_errors = []
