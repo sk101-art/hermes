@@ -1,6 +1,12 @@
 import json
 import os
 import sqlite3
+import time
+import socket
+import uuid
+import ctypes
+import shutil
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -42,21 +48,337 @@ class DatabaseMigrationError(Exception):
     pass
 
 
+class DatabaseInitializationError(Exception):
+    """Raised when database initialization, locking, or bootstrap fails."""
+    pass
+
+
+def is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        if os.name == 'nt':
+            # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            err = kernel32.GetLastError()
+            if err == 5:  # Access Denied means process is alive
+                return True
+            return False
+        else:
+            os.kill(pid, 0)
+            return True
+    except OSError as e:
+        if getattr(e, 'errno', None) == 1:  # EPERM (operation not permitted)
+            return True
+        return False
+    except Exception:
+        return True
+
+
+def connect_db(db_path: str, timeout: float = 10.0, read_only: bool = False, journal_mode: Optional[str] = None, **kwargs) -> sqlite3.Connection:
+    if read_only:
+        abs_path = os.path.abspath(db_path)
+        uri_str = f"file:{abs_path}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri_str, timeout=timeout, uri=True, **kwargs)
+    else:
+        conn = sqlite3.connect(db_path, timeout=timeout, **kwargs)
+        
+    conn.row_factory = sqlite3.Row
+    
+    try:
+        conn.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+    except Exception:
+        pass
+        
+    if journal_mode:
+        try:
+            conn.execute(f"PRAGMA journal_mode={journal_mode}")
+        except Exception:
+            pass
+            
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+    except Exception:
+        pass
+        
+    if read_only:
+        try:
+            conn.execute("PRAGMA query_only=ON")
+        except Exception:
+            pass
+            
+    return conn
+
+
+class InterprocessLock:
+    def __init__(self, db_path: str, timeout: float = 10.0):
+        self.db_path = os.path.abspath(db_path)
+        self.lock_path = self.db_path + ".lock"
+        self.timeout = timeout
+        self.token = str(uuid.uuid4())
+        self.acquired = False
+
+    def __enter__(self):
+        start = time.monotonic()
+        while True:
+            try:
+                # Try to create exclusively
+                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                try:
+                    meta = {
+                        "pid": os.getpid(),
+                        "timestamp": time.time(),
+                        "hostname": socket.gethostname(),
+                        "token": self.token
+                    }
+                    os.write(fd, json.dumps(meta).encode("utf-8"))
+                finally:
+                    os.close(fd)
+                self.acquired = True
+                break
+            except FileExistsError:
+                # Lock file exists, check if it's stale
+                if os.path.exists(self.lock_path):
+                    try:
+                        mtime = os.path.getmtime(self.lock_path)
+                        age = time.time() - mtime
+                    except Exception:
+                        age = 0
+                    
+                    is_stale = False
+                    if age > 2.0:  # 2.0-second grace period
+                        try:
+                            with open(self.lock_path, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                            pid = data.get("pid")
+                            hostname = data.get("hostname")
+                            if hostname == socket.gethostname():
+                                if pid and not is_pid_alive(pid):
+                                    is_stale = True
+                        except (json.JSONDecodeError, ValueError, KeyError, OSError):
+                            is_stale = True
+                            
+                    if is_stale:
+                        try:
+                            os.unlink(self.lock_path)
+                        except OSError:
+                            pass
+                            
+                if time.monotonic() - start > self.timeout:
+                    raise DatabaseInitializationError(f"Lock acquisition timed out for {self.lock_path}")
+                time.sleep(0.05)
+            except Exception as e:
+                if time.monotonic() - start > self.timeout:
+                    raise DatabaseInitializationError(f"Failed to acquire lock: {e}") from e
+                time.sleep(0.05)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.acquired:
+            try:
+                if os.path.exists(self.lock_path):
+                    with open(self.lock_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data.get("token") == self.token:
+                        os.unlink(self.lock_path)
+            except Exception:
+                pass
+
+
 class Database:
     """SQLite storage layer for events, embeddings, clusters, relationships, claims, evidence, revisions, and longitudinal state."""
 
     def __init__(self, db_path: str = "data/tech_intel.db"):
-        self.db_path = db_path
+        self.db_path = os.path.abspath(db_path)
         self.has_fts5 = False
-        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.init_db()
+        
+        # Determine canonical baseline path
+        repo_root = Path(__file__).resolve().parents[2]
+        baseline_file = (repo_root / "data" / "tech_intel.db").resolve()
+        
+        # Check identity using samefile or casing comparison
+        is_baseline = False
+        if os.path.exists(self.db_path) and baseline_file.exists():
+            try:
+                is_baseline = os.path.samefile(self.db_path, baseline_file)
+            except Exception:
+                pass
+        if not is_baseline:
+            if str(self.db_path).lower() == str(baseline_file).lower():
+                is_baseline = True
+                
+        self.is_baseline = is_baseline
+        self.is_writable = not is_baseline
+        
+        if self.is_baseline:
+            # Baseline is read-only
+            self.conn = connect_db(self.db_path, timeout=10.0, read_only=True)
+            try:
+                cursor = self.conn.cursor()
+                tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                self.has_fts5 = "events_fts" in tables
+            except Exception:
+                pass
+                
+            # Audited mutating method list to wrap
+            mutating_methods = [
+                "insert_event", "save_event", "save_embedding", "create_cluster", "update_cluster",
+                "save_cluster", "add_event_to_cluster", "clear_clusters_and_relationships",
+                "save_relationship", "save_claim", "save_evidence", "save_technology_assessment",
+                "insert_claim_revision", "insert_technology_assessment_revision", "save_technology_state",
+                "insert_recheck_queue_item", "update_recheck_item_status", "clear_recheck_queue",
+                "insert_intelligence_change", "save_intelligence_change", "save_project",
+                "save_project_file", "delete_project_file", "delete_project_files", "save_project_profile",
+                "save_project_embedding", "save_project_match", "clear_project_matches",
+                "clear_claims_and_evidence", "save_inbox_item", "update_inbox_item_state",
+                "clear_inbox_items", "save_saved_item", "update_saved_item_note", "add_saved_item_tag",
+                "clear_saved_items", "save_user_feedback", "save_daily_briefing",
+                "save_daily_briefing_with_items", "save_daily_briefing_items", "save_source_checkpoint",
+                "save_runtime_job", "save_runtime_job_run", "save_daily_signal_run",
+                "save_refresh_operation", "claim_refresh_operation", "recover_stale_refresh_operations",
+                "create_briefing_revision", "archive_project", "restore_project", "enqueue_refresh_operation",
+                "complete_refresh_operation", "fail_refresh_operation", "mark_job_completed", "set_job_status",
+                "record_metric", "upsert_project_match"
+            ]
+            for method_name in mutating_methods:
+                if hasattr(self, method_name):
+                    def make_forbidden(name):
+                        def forbidden(*args, **kwargs):
+                            raise PermissionError(f"Mutation operation '{name}' is disabled on the read-only baseline database.")
+                        return forbidden
+                    setattr(self, method_name, make_forbidden(method_name))
+            return
+
+        # Writable databases:
+        # Check for default runtime path: data/runtime/tech_intel.db
+        default_runtime_file = (repo_root / "data" / "runtime" / "tech_intel.db").resolve()
+        is_default_runtime = False
+        if os.path.exists(self.db_path) and default_runtime_file.exists():
+            try:
+                is_default_runtime = os.path.samefile(self.db_path, default_runtime_file)
+            except Exception:
+                pass
+        if not is_default_runtime:
+            if str(self.db_path).lower() == str(default_runtime_file).lower():
+                is_default_runtime = True
+                
+        # Validate parent directory
+        parent_dir = os.path.dirname(self.db_path)
+        os.makedirs(parent_dir, exist_ok=True)
+        if not os.path.isdir(parent_dir):
+            raise DatabaseInitializationError(f"Database parent directory {parent_dir} is not valid.")
+            
+        # Serialize initialization sequence
+        lock = InterprocessLock(self.db_path, timeout=10.0)
+        with lock:
+            # Recheck if another process created it
+            db_exists = os.path.exists(self.db_path)
+            
+            if not db_exists:
+                if is_default_runtime:
+                    # Operational bootstrap from baseline
+                    import tempfile
+                    temp_fd, temp_db_path = tempfile.mkstemp(suffix=".db", dir=parent_dir)
+                    os.close(temp_fd)
+                    try:
+                        # Copy baseline
+                        shutil.copy2(str(baseline_file), temp_db_path)
+                        
+                        # Verify baseline SHA
+                        h = hashlib.sha256()
+                        with open(temp_db_path, 'rb') as f:
+                            while chunk := f.read(8192):
+                                h.update(chunk)
+                        if h.hexdigest() != "f2966347f86f9ecd7343683f595f5d48b7fb940324eb5d936716f8899f5d5a77":
+                            raise DatabaseInitializationError("Copied baseline SHA-256 mismatch.")
+                            
+                        # Open and migrate the copy using DELETE journal mode (no WAL)
+                        self.conn = connect_db(temp_db_path, timeout=10.0, journal_mode="DELETE")
+                        self.init_db()
+                        self.conn.close()
+                        
+                        # Assert no -wal / -shm exists
+                        for ext in ["-wal", "-shm"]:
+                            sidecar = temp_db_path + ext
+                            if os.path.exists(sidecar) and os.path.getsize(sidecar) > 0:
+                                raise DatabaseInitializationError(f"Temp DB has sidecar file {ext}")
+                                
+                        # Publish atomically
+                        os.replace(temp_db_path, self.db_path)
+                    except Exception as e:
+                        try:
+                            os.unlink(temp_db_path)
+                        except OSError:
+                            pass
+                        raise DatabaseInitializationError(f"Failed to bootstrap default runtime database: {e}") from e
+                else:
+                    # Isolated test database fresh initialization
+                    import tempfile
+                    temp_fd, temp_db_path = tempfile.mkstemp(suffix=".db", dir=parent_dir)
+                    os.close(temp_fd)
+                    try:
+                        self.conn = connect_db(temp_db_path, timeout=10.0, journal_mode="DELETE")
+                        self.init_db()
+                        self.conn.close()
+                        
+                        for ext in ["-wal", "-shm"]:
+                            sidecar = temp_db_path + ext
+                            if os.path.exists(sidecar) and os.path.getsize(sidecar) > 0:
+                                raise DatabaseInitializationError(f"Temp DB has sidecar file {ext}")
+                                
+                        os.replace(temp_db_path, self.db_path)
+                    except Exception as e:
+                        try:
+                            os.unlink(temp_db_path)
+                        except OSError:
+                            pass
+                        raise DatabaseInitializationError(f"Failed to initialize isolated test database: {e}") from e
+            
+            # Open final connection normally and enable WAL
+            self.conn = connect_db(self.db_path, timeout=10.0, journal_mode="WAL")
+            if db_exists:
+                # If database existed, run init_db to run any migrations and validation
+                self.init_db()
+
+    def _require_writable(self, operation_name: str) -> None:
+        if not getattr(self, "is_writable", True):
+            raise PermissionError(f"Mutation operation '{operation_name}' is disabled on this read-only database instance.")
+
+    def _execute_in_write_transaction(self, operation, operation_name="Write transaction"):
+        self._require_writable(operation_name)
+        in_trans = self.conn.in_transaction
+        cursor = self.conn.cursor()
+        if not in_trans:
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower():
+                    raise DatabaseMigrationError(f"Database write lock timeout exceeded: {e}") from e
+                raise
+        try:
+            result = operation(cursor)
+            if not in_trans:
+                self.conn.commit()
+            return result
+        except Exception as e:
+            if not in_trans:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+            raise e
 
     def init_db(self) -> None:
+        # Check and set PRAGMAs (on temp copy or final DB)
         try:
-            self.conn.execute("PRAGMA journal_mode=WAL")
-            self.conn.execute("PRAGMA busy_timeout=5000")
+            # WAL mode is set via connect_db. If connected with DELETE, it uses DELETE.
+            # So do not override journal_mode here unless we are not in read-only.
+            if getattr(self, "is_writable", True):
+                pass
         except Exception:
             pass
 
@@ -65,19 +387,37 @@ class Database:
         schema_path = Path(__file__).parent / "schema.sql"
         if schema_path.exists():
             with open(schema_path, "r", encoding="utf-8") as f:
-                self.conn.executescript(f.read())
+                schema_sql = f.read()
+            try:
+                # executescript executes commits. Running outside transaction is safe because we hold interprocess lock.
+                self.conn.executescript(schema_sql)
+            except Exception as e:
+                raise DatabaseMigrationError(f"Failed executing schema.sql: {e}") from e
 
         self._migrate_columns()
 
         # Check and initialize FTS5 if supported
         try:
+            self.conn.execute("BEGIN IMMEDIATE")
             self.conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(id UNINDEXED, title, text)"
             )
             self.has_fts5 = True
-        except sqlite3.OperationalError:
+            self.conn.commit()
+        except sqlite3.OperationalError as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if "locked" in str(e).lower():
+                raise DatabaseMigrationError(f"Database write lock timeout exceeded during FTS5 creation: {e}") from e
             self.has_fts5 = False
-        self.conn.commit()
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.has_fts5 = False
 
     def _migrate_columns(self) -> None:
         """Ensure columns added across all sessions exist in previously created tables with strict atomicity and error discipline."""
@@ -87,7 +427,12 @@ class Database:
             pass
 
         cursor = self.conn.cursor()
-        cursor.execute("BEGIN TRANSACTION")
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise DatabaseMigrationError(f"Database write lock timeout exceeded during migration: {e}") from e
+            raise DatabaseMigrationError(f"Failed to acquire database write lock: {e}") from e
         try:
             all_tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -452,10 +797,10 @@ class Database:
                 except Exception:
                     pass
 
-            cursor.execute("COMMIT")
+            self.conn.commit()
         except Exception as e:
             try:
-                cursor.execute("ROLLBACK")
+                self.conn.rollback()
             except Exception:
                 pass
             try:
@@ -469,18 +814,19 @@ class Database:
                 self.conn.execute("PRAGMA foreign_keys=ON")
             except Exception:
                 pass
-            # Verification checks
-            try:
-                qc = self.conn.execute("PRAGMA quick_check").fetchone()[0]
-                if qc != "ok":
-                    raise DatabaseMigrationError(f"PRAGMA quick_check failed: {qc}")
-                fk_violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
-                if fk_violations:
-                    raise DatabaseMigrationError(f"PRAGMA foreign_key_check found violations: {fk_violations}")
-            except Exception as check_err:
-                if not isinstance(check_err, DatabaseMigrationError):
-                    raise DatabaseMigrationError(f"Integrity check failed: {check_err}") from check_err
-                raise
+            
+        # Post-transaction validation checks (Run quick_check and foreign_key_check)
+        try:
+            qc = self.conn.execute("PRAGMA quick_check").fetchone()[0]
+            if qc != "ok":
+                raise DatabaseMigrationError(f"PRAGMA quick_check failed: {qc}")
+            fk_violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_violations:
+                raise DatabaseMigrationError(f"PRAGMA foreign_key_check found violations: {fk_violations}")
+        except Exception as check_err:
+            if not isinstance(check_err, DatabaseMigrationError):
+                raise DatabaseMigrationError(f"Integrity check failed: {check_err}") from check_err
+            raise
 
 
     # --- Event Methods ---
@@ -2667,6 +3013,105 @@ class Database:
         if not row:
             return None
         return self._row_to_daily_briefing(row)
+ 
+    def create_briefing_revision(self, briefing_id: str) -> Optional[str]:
+        """Snapshots the current briefing state into a new immutable revision record."""
+        def _operation(cursor):
+            # 1. Determine next revision number
+            cursor.execute(
+                "SELECT MAX(revision_number) FROM daily_briefing_revisions WHERE briefing_id = ?",
+                (briefing_id,)
+            )
+            row = cursor.fetchone()
+            next_rev = 1
+            if row and row[0] is not None:
+                next_rev = row[0] + 1
+
+            # 2. Check if revision already exists (to never overwrite)
+            cursor.execute(
+                "SELECT 1 FROM daily_briefing_revisions WHERE briefing_id = ? AND revision_number = ?",
+                (briefing_id, next_rev)
+            )
+            if cursor.fetchone():
+                raise DatabaseMigrationError(f"Revision {next_rev} already exists for briefing {briefing_id}")
+
+            import uuid
+            rev_id = str(uuid.uuid4())
+
+            # 3. Fetch current briefing
+            cursor.execute("SELECT * FROM daily_briefings WHERE id = ?", (briefing_id,))
+            b_row = cursor.fetchone()
+            if not b_row:
+                return None
+
+            b_dict = dict(b_row)
+
+            # 4. Insert into revisions
+            sql_rev = """
+            INSERT INTO daily_briefing_revisions (
+                id, briefing_id, revision_number, generated_at, data_cutoff_at,
+                source_status_json, content_hash, generation_status, item_count, daily_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            cursor.execute(sql_rev, (
+                rev_id,
+                briefing_id,
+                next_rev,
+                b_dict["generated_at"],
+                b_dict["data_cutoff_at"],
+                b_dict["source_status_json"],
+                b_dict["content_hash"],
+                b_dict["generation_status"],
+                b_dict["total_items"],
+                b_dict["daily_run_id"],
+            ))
+
+            # 5. Copy items
+            cursor.execute("SELECT * FROM daily_briefing_items WHERE briefing_id = ?", (briefing_id,))
+            items = cursor.fetchall()
+
+            if items:
+                sql_item_rev = """
+                INSERT INTO daily_briefing_revision_items (
+                    revision_id, inbox_item_id, position, section, title, summary,
+                    story_cluster_id, item_type, reason_codes_json, inbox_score,
+                    rank_score, project_impact_score, matched_project_ids_json,
+                    snapshot_version, source_published_at, source_updated_at,
+                    first_seen_at, last_changed_at, last_evaluated_at, surfaced_at,
+                    snapshot_date, daily_run_id, freshness_kind, freshness_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                for it_row in items:
+                    it = dict(it_row)
+                    cursor.execute(sql_item_rev, (
+                        rev_id,
+                        it["inbox_item_id"],
+                        it["position"],
+                        it["section"],
+                        it["title"],
+                        it["summary"],
+                        it["story_cluster_id"],
+                        it["item_type"],
+                        it["reason_codes_json"],
+                        it["inbox_score"],
+                        it["rank_score"],
+                        it["project_impact_score"],
+                        it["matched_project_ids_json"],
+                        it["snapshot_version"],
+                        it.get("source_published_at"),
+                        it.get("source_updated_at"),
+                        it.get("first_seen_at"),
+                        it.get("last_changed_at"),
+                        it.get("last_evaluated_at"),
+                        it.get("surfaced_at"),
+                        it.get("snapshot_date"),
+                        it.get("daily_run_id"),
+                        it.get("freshness_kind"),
+                        it.get("freshness_reason")
+                    ))
+            return rev_id
+
+        return self._execute_in_write_transaction(_operation, operation_name="create_briefing_revision")
 
     def save_daily_briefing_with_items(self, briefing: DailyBriefing, items: List[DailyBriefingItem]) -> bool:
         """Atomically saves daily briefing header and its item snapshots in a single transaction."""
@@ -3214,5 +3659,40 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+
+# List of all audited database mutating methods
+MUTATING_METHODS = [
+    "insert_event", "save_event", "save_embedding", "create_cluster", "update_cluster",
+    "save_cluster", "add_event_to_cluster", "clear_clusters_and_relationships",
+    "save_relationship", "save_claim", "save_evidence", "save_technology_assessment",
+    "insert_claim_revision", "insert_technology_assessment_revision", "save_technology_state",
+    "insert_recheck_queue_item", "update_recheck_item_status", "clear_recheck_queue",
+    "insert_intelligence_change", "save_intelligence_change", "save_project",
+    "save_project_file", "delete_project_file", "delete_project_files", "save_project_profile",
+    "save_project_embedding", "save_project_match", "clear_project_matches",
+    "clear_claims_and_evidence", "save_inbox_item", "update_inbox_item_state",
+    "clear_inbox_items", "save_saved_item", "update_saved_item_note", "add_saved_item_tag",
+    "clear_saved_items", "save_user_feedback", "save_daily_briefing",
+    "save_daily_briefing_with_items", "save_daily_briefing_items", "save_source_checkpoint",
+    "save_runtime_job", "save_runtime_job_run", "save_daily_signal_run",
+    "save_refresh_operation", "claim_refresh_operation", "recover_stale_refresh_operations",
+    "create_briefing_revision"
+]
+
+def require_writable(func):
+    def wrapper(self, *args, **kwargs):
+        self._require_writable(func.__name__)
+        return func(self, *args, **kwargs)
+    wrapper.__name__ = func.__name__
+    wrapper.__doc__ = func.__doc__
+    return wrapper
+
+# Wrap all registered mutating methods at module load time
+for name in MUTATING_METHODS:
+    if hasattr(Database, name):
+        original = getattr(Database, name)
+        setattr(Database, name, require_writable(original))
+
 
 
