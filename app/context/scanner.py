@@ -1,9 +1,11 @@
 import fnmatch
 import hashlib
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
 
 from app.models.schemas import ProjectFile
 
@@ -141,11 +143,41 @@ def discover_projects(reference_dir: str = "reference") -> List[Path]:
     return projects
 
 
+def is_path_safe_and_inside_allowed_roots(path: Path) -> bool:
+    """Checks if a resolved path is safe and resides within allowed workspace roots, CWD, or temp directories."""
+    try:
+        resolved = path.resolve()
+        allowed_roots = [
+            Path("C:/Users/sujay/Downloads/hermes").resolve(),
+            Path(os.path.abspath(".")).resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        ]
+        for root in allowed_roots:
+            r_str = str(root).lower().replace("\\", "/")
+            path_str = str(resolved).lower().replace("\\", "/")
+            if path_str == r_str or path_str.startswith(r_str + "/"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def is_subpath(child: Path, parent: Path) -> bool:
+    """Determines if the child path is a subpath of (or equal to) the parent path."""
+    try:
+        c_str = str(child.resolve()).lower().replace("\\", "/")
+        p_str = str(parent.resolve()).lower().replace("\\", "/")
+        return c_str == p_str or c_str.startswith(p_str + "/")
+    except Exception:
+        return False
+
+
 def scan_project_files(
     project_id: str,
     project_path: Path,
     max_file_size_kb: int = 512,
     max_total_project_mb: int = 25,
+    exclude_paths: Optional[List[Path]] = None,
 ) -> Tuple[List[ProjectFile], Dict[str, Any]]:
     """
     Scans a single project folder, extracting text and metadata from supported files.
@@ -162,6 +194,22 @@ def scan_project_files(
         "total_bytes_indexed": 0,
     }
 
+    try:
+        resolved_proj_path = project_path.resolve()
+    except Exception:
+        resolved_proj_path = project_path
+
+    if not is_path_safe_and_inside_allowed_roots(resolved_proj_path):
+        return [], stats
+
+    resolved_excludes = []
+    if exclude_paths:
+        for p in exclude_paths:
+            try:
+                resolved_excludes.append(p.resolve())
+            except Exception:
+                resolved_excludes.append(p)
+
     max_file_bytes = max_file_size_kb * 1024
     max_total_bytes = max_total_project_mb * 1024 * 1024
 
@@ -169,10 +217,31 @@ def scan_project_files(
     total_project_bytes = 0
     now = datetime.now(timezone.utc)
 
-    for root, dirs, files in os.walk(project_path):
-        # Prune ignored directories in-place
-        dirs[:] = [d for d in dirs if d.lower() not in IGNORED_DIRS and not d.startswith(".")]
-        stats["dirs_skipped"] += len([d for d in dirs if d.lower() in IGNORED_DIRS])
+    for root, dirs, files in os.walk(resolved_proj_path):
+        # Prune dirs that are ignored or are other projects (overlap prevention)
+        pruned_dirs = []
+        for d in dirs:
+            try:
+                sub_path = (Path(root) / d).resolve()
+            except Exception:
+                sub_path = Path(root) / d
+            # Check ignored
+            if d.lower() in IGNORED_DIRS or d.startswith("."):
+                stats["dirs_skipped"] += 1
+                continue
+            
+            # Check overlap
+            is_overlap = False
+            for ex_path in resolved_excludes:
+                if is_subpath(sub_path, ex_path):
+                    is_overlap = True
+                    break
+            if is_overlap:
+                stats["dirs_skipped"] += 1
+                continue
+                
+            pruned_dirs.append(d)
+        dirs[:] = pruned_dirs
 
         for fname in sorted(files):
             stats["files_scanned"] += 1
@@ -215,7 +284,10 @@ def scan_project_files(
                 continue
 
             content_hash = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
-            rel_path = str(file_path.relative_to(project_path)).replace("\\", "/")
+            try:
+                rel_path = str(file_path.relative_to(resolved_proj_path)).replace("\\", "/")
+            except Exception:
+                rel_path = str(file_path).replace("\\", "/")
 
             file_id = f"{project_id}:{rel_path}"
             ext = file_path.suffix.lower() or file_path.name.lower()
@@ -240,6 +312,7 @@ def scan_project_files(
 
     project_files.sort(key=lambda pf: pf.relative_path)
     return project_files, stats
+
 
 
 def compute_project_context_hash(files: List[ProjectFile]) -> str:

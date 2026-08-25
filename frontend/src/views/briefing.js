@@ -13,6 +13,8 @@ import {
   renderInboxRankBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
+import { renderRefreshControl } from '../components/refresh-control.js';
+
 
 let activeBriefingRequestToken = 0;
 
@@ -388,8 +390,9 @@ export async function renderBriefingView(container, store, params = {}) {
           <h1>Morning Briefing</h1>
           <p class="lead">A date-addressable engineering read: what deserved attention, why it was selected, and historical intelligence snapshots.</p>
         </div>
-        <div class="page-header-meta">
+        <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
           ${renderDateToolbar(briefingDateStr, todayIso)}
+          <div id="briefing-refresh-container"></div>
         </div>
       </div>
 
@@ -442,6 +445,14 @@ export async function renderBriefingView(container, store, params = {}) {
     container.innerHTML = html;
     bindBriefingEvents(container, todayIso);
 
+    const refreshContainer = container.querySelector('#briefing-refresh-container');
+    if (refreshContainer) {
+      const cleanup = renderRefreshControl(refreshContainer, 'morning_brief', () => {
+        renderBriefingView(container, store, params);
+      });
+      container._viewCleanup = cleanup;
+    }
+
   } catch (err) {
     if (requestToken !== activeBriefingRequestToken) return;
 
@@ -461,8 +472,9 @@ export async function renderBriefingView(container, store, params = {}) {
             <h1>Morning Briefing</h1>
             <p class="lead">A date-addressable engineering read: what deserved attention, why it was selected, and historical intelligence snapshots.</p>
           </div>
-          <div class="page-header-meta">
+          <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
             ${renderDateToolbar(activeDate, todayIso)}
+            <div id="briefing-refresh-container"></div>
           </div>
         </div>
 
@@ -479,6 +491,14 @@ export async function renderBriefingView(container, store, params = {}) {
       `;
       container.innerHTML = notFoundHtml;
       bindBriefingEvents(container, todayIso);
+
+      const refreshContainer = container.querySelector('#briefing-refresh-container');
+      if (refreshContainer) {
+        const cleanup = renderRefreshControl(refreshContainer, 'morning_brief', () => {
+          renderBriefingView(container, store, params);
+        });
+        container._viewCleanup = cleanup;
+      }
     } else if (err.status === 422) {
       // Invalid date format or impossible date
       const invalidDateHtml = `

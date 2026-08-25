@@ -1,7 +1,8 @@
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 
 from app.runtime.state import load_runtime_config
 from app.runtime.timezone import runtime_date_string
@@ -12,6 +13,7 @@ from app.services import runtime as runtime_service
 from app.services import saved as saved_service
 from app.services.schemas import SaveItemRequest
 from app.storage.db import Database
+from app.models.schemas import RefreshOperation
 
 router = APIRouter()
 
@@ -128,8 +130,8 @@ def get_claim_by_id(claim_id: str, db: Database = Depends(get_db)):
 
 
 @router.get("/projects", summary="List project technology profiles")
-def get_projects(db: Database = Depends(get_db)):
-    projects = projects_service.list_projects(db=db)
+def get_projects(active_only: bool = Query(True, description="Only active projects"), db: Database = Depends(get_db)):
+    projects = projects_service.list_projects(db=db, active_only=active_only)
     return {"count": len(projects), "projects": [p.model_dump() for p in projects]}
 
 
@@ -246,3 +248,122 @@ def search(
         "count": len(results),
         "results": [r.model_dump() for r in results],
     }
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    path: str
+    description: Optional[str] = None
+
+class RefreshRequest(BaseModel):
+    scope: str
+    idempotency_key: Optional[str] = None
+
+@router.post("/projects", summary="Add a new project")
+def create_project(req: ProjectCreate, db: Database = Depends(get_db)):
+    try:
+        proj = projects_service.add_project(
+            name=req.name,
+            path=req.path,
+            description=req.description,
+            db=db
+        )
+        return proj.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/projects/{project_id}/archive", summary="Soft-archive a project")
+def archive_project(project_id: str, reason: Optional[str] = None, db: Database = Depends(get_db)):
+    success = projects_service.archive_project(project_id=project_id, reason=reason, db=db)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+    return {"status": "success", "message": "Project archived successfully"}
+
+@router.post("/projects/{project_id}/restore", summary="Restore an archived project")
+def restore_project(project_id: str, db: Database = Depends(get_db)):
+    success = projects_service.restore_project(project_id=project_id, db=db)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+    return {"status": "success", "message": "Project restored successfully"}
+
+@router.post("/projects/{project_id}/scan", summary="Rescan a single project")
+def scan_project(project_id: str, db: Database = Depends(get_db)):
+    try:
+        res = projects_service.scan_single_project(project_id=project_id, db=db)
+        if res.get("status") == "failed":
+            raise HTTPException(status_code=400, detail=res.get("error"))
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.post("/runtime/refresh", summary="Enqueue background refresh operation", status_code=202)
+def enqueue_refresh(req: RefreshRequest, response: Response, db: Database = Depends(get_db)):
+    scope = req.scope
+    idempotency_key = req.idempotency_key or ""
+
+    cursor = db.conn.cursor()
+    cursor.execute(
+        "SELECT * FROM refresh_operations WHERE scope = ? AND status IN ('queued', 'running') LIMIT 1",
+        (scope,)
+    )
+    row = cursor.fetchone()
+    active_op = db._row_to_refresh_operation(row) if row else None
+
+    if active_op:
+        if active_op.idempotency_key == idempotency_key:
+            response.status_code = status.HTTP_202_ACCEPTED
+            return active_op.model_dump()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"An active refresh operation is already running/queued in scope '{scope}'."
+            )
+
+    now = datetime.now(timezone.utc)
+    op = RefreshOperation(
+        id=f"refresh:{scope}:{now.timestamp()}",
+        scope=scope,
+        status="queued",
+        requested_at=now,
+        idempotency_key=idempotency_key,
+    )
+    db.save_refresh_operation(op)
+    
+    response.status_code = status.HTTP_202_ACCEPTED
+    return op.model_dump()
+
+
+@router.get("/runtime/operations/{operation_id}", summary="Get refresh operation status")
+def get_operation(operation_id: str, db: Database = Depends(get_db)):
+    op = db.get_refresh_operation(operation_id)
+    if not op:
+        raise HTTPException(status_code=404, detail=f"Operation '{operation_id}' not found")
+    return op.model_dump()
+
+
+@router.get("/daily/status", summary="Get status of daily signal runs")
+def get_daily_status(date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format"), db: Database = Depends(get_db)):
+    if date:
+        run = db.get_daily_signal_run_by_date(date)
+        return {"runs": [run.model_dump()] if run else []}
+    else:
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT * FROM daily_signal_runs ORDER BY runtime_date DESC LIMIT 30")
+        rows = cursor.fetchall()
+        runs = []
+        for r in rows:
+            runs.append({
+                "id": r["id"],
+                "runtime_date": r["runtime_date"],
+                "status": r["status"],
+                "started_at": r["started_at"],
+                "completed_at": r["completed_at"],
+                "new_signal_count": r["new_signal_count"],
+                "updated_signal_count": r["updated_signal_count"],
+                "carried_signal_count": r["carried_signal_count"],
+                "briefing_id": r["briefing_id"],
+                "error_summary": r["error_summary"],
+            })
+        return {"runs": runs}
+
+

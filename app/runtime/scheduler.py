@@ -21,8 +21,10 @@ from app.runtime.jobs import (
     run_morning_briefing,
     run_semantic_processing,
     run_source_ingestion,
+    run_daily_refresh,
 )
-from app.models.schemas import DailyBriefing, RuntimeJob
+
+from app.models.schemas import DailyBriefing, RuntimeJob, DailySignalRun
 from app.runtime.locks import JobLock
 from app.runtime.state import (
     finish_job_run,
@@ -38,6 +40,7 @@ logger = logging.getLogger("hermes.scheduler")
 # Canonical Topologically Ordered Execution List
 JOB_DEPENDENCIES_ORDER = [
     "health_check",
+    "daily_refresh",
     "ingestion",
     "semantic",
     "claims",
@@ -53,6 +56,7 @@ JOB_DEPENDENCIES_ORDER = [
 # Explicit Prerequisite Graph
 JOB_DEPENDENCY_GRAPH = {
     "health_check": [],
+    "daily_refresh": [],
     "ingestion": [],
     "semantic": ["ingestion"],
     "claims": ["semantic"],
@@ -77,7 +81,9 @@ JOB_RUNNERS = {
     "morning_brief": generate_scheduled_morning_briefing,
     "backup": run_daily_backup,
     "health_check": run_health_check_job,
+    "daily_refresh": run_daily_refresh,
 }
+
 
 
 def parse_time_string(t_str: str) -> dtime:
@@ -172,7 +178,38 @@ def is_job_due(
 
     job_state = cached_job if cached_job is not None else (db.get_runtime_job(job_name) if db else None)
 
-    # 1. Special Handling: Morning Briefing
+    # 1. Special Handling: Daily Refresh
+    if job_name == "daily_refresh":
+        target_time_str = j_cfg.get("time", "07:00")
+        sched_time = parse_time_string(target_time_str)
+        today_date_str = runtime_date_string(now, config)
+
+        run_state = db.get_daily_signal_run_by_date(today_date_str) if db else None
+        if not run_state:
+            if now_local.time() >= sched_time:
+                return True, f"MISSED_OR_DUE_TODAY (Scheduled: {target_time_str} {tz_name})"
+            else:
+                return False, f"SCHEDULED_AT_{target_time_str}"
+
+        if run_state.status in ("completed", "completed_empty"):
+            return False, "ALREADY_COMPLETED_TODAY"
+
+        if run_state.status == "running":
+            return False, "ALREADY_RUNNING_TODAY"
+
+        if run_state.retry_count >= 8:
+            return False, f"FAILED_MAX_RETRIES_REACHED ({run_state.retry_count} retries)"
+
+        last_attempt_time = run_state.completed_at or run_state.started_at
+        elapsed = now - last_attempt_time
+        retry_interval = timedelta(minutes=15)
+        if elapsed >= retry_interval:
+            return True, f"RETRY_DUE (Attempt {run_state.retry_count + 1}, elapsed {int(elapsed.total_seconds() / 60)}m >= 15m)"
+
+        remaining = int((retry_interval - elapsed).total_seconds() / 60)
+        return False, f"RETRY_IN_{remaining}m"
+
+    # 2. Special Handling: Morning Briefing
     if job_name == "morning_brief":
         target_time_str = j_cfg.get("time", "07:30")
         sched_time = parse_time_string(target_time_str)
@@ -186,6 +223,7 @@ def is_job_due(
                 return False, f"SCHEDULED_AT_{target_time_str}"
         else:
             return False, "ALREADY_COMPLETED_TODAY"
+
 
     # 2. Daily Time-of-day Jobs (e.g. backup)
     if "time" in j_cfg:

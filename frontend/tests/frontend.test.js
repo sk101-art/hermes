@@ -3829,9 +3829,8 @@ test('Phase 11: Project Index View renders single GET /projects request, reads p
 
     assert.ok(html.includes('data-project-id="project:local-rag-agent"'));
     assert.ok(html.includes('Local RAG Agent'));
-    assert.ok(html.includes('8 matched items'));
-    assert.ok(html.includes('Inactive'));
-    assert.ok(html.includes('Never indexed'));
+    assert.ok(html.includes('Archived'));
+    assert.ok(html.includes('Never'));
 
   } finally {
     api.getProjects = originalGetProjects;
@@ -6313,22 +6312,23 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
   const store = (await import('../src/state/store.js')).store;
   const createMockContainer = () => {
     const childMap = new Map();
+    const makeMockElement = () => ({
+      innerHTML: '',
+      textContent: '',
+      className: '',
+      style: {},
+      value: '',
+      checked: false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      querySelector: () => makeMockElement(),
+      querySelectorAll: () => [],
+    });
     const c = {
       innerHTML: '',
       querySelector: (sel) => {
         if (!childMap.has(sel)) {
-          childMap.set(sel, {
-            innerHTML: '',
-            textContent: '',
-            className: '',
-            style: {},
-            value: '',
-            checked: false,
-            addEventListener: () => {},
-            removeEventListener: () => {},
-            querySelector: () => null,
-            querySelectorAll: () => [],
-          });
+          childMap.set(sel, makeMockElement());
         }
         return childMap.get(sel);
       },

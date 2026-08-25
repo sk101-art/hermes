@@ -19,6 +19,8 @@ import {
   ensureArray,
   toTitleCase,
 } from '../utils/adapters.js';
+import { renderRefreshControl } from '../components/refresh-control.js';
+
 
 // Canonical ClaimStatus and Maturity taxonomies
 export const CANONICAL_CLAIM_STATUSES = {
@@ -445,9 +447,12 @@ export async function renderChangesView(container, store) {
           <h1>What Moved</h1>
           <p class="lead">Track verification revisions, contradiction discoveries, maturity shifts, and risk changes over time.</p>
         </div>
-        <div class="page-header-meta">
-          <strong id="changes-total-count">—</strong>
-          <span>recorded changes</span>
+        <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+          <div id="changes-refresh-container"></div>
+          <div>
+            <strong id="changes-total-count">—</strong>
+            <span>recorded changes</span>
+          </div>
         </div>
       </div>
 
@@ -575,6 +580,15 @@ export async function renderChangesView(container, store) {
   }
 
   renderViewShell();
+
+  const refreshContainer = container.querySelector('#changes-refresh-container');
+  if (refreshContainer) {
+    const cleanup = renderRefreshControl(refreshContainer, 'recheck', () => {
+      loadAndRender();
+    });
+    container._viewCleanup = cleanup;
+  }
+
   await loadAndRender();
 }
 

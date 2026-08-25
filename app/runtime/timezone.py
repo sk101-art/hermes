@@ -60,3 +60,41 @@ def runtime_date_string(now: datetime, config: Optional[Dict[str, Any]] = None) 
     Returns the YYYY-MM-DD calendar date string in the runtime configured local timezone.
     """
     return to_runtime_local(now, config).strftime("%Y-%m-%d")
+
+
+def runtime_now_utc() -> datetime:
+    """Returns the current timezone-aware UTC datetime."""
+    return datetime.now(timezone.utc)
+
+
+def runtime_local_datetime(now: datetime, config: Optional[Dict[str, Any]] = None) -> datetime:
+    """Normalizes/converts UTC datetime to local timezone."""
+    return to_runtime_local(now, config)
+
+
+def runtime_date(now: datetime, config: Optional[Dict[str, Any]] = None) -> str:
+    """Returns the YYYY-MM-DD calendar date string in the runtime configured local timezone."""
+    return runtime_date_string(now, config)
+
+
+def runtime_day_bounds_utc(date_val: Any, config: Optional[Dict[str, Any]] = None) -> Tuple[datetime, datetime]:
+    """
+    Computes start and end boundaries of a local date in UTC.
+    The returned datetimes are timezone-aware in UTC timezone.
+    """
+    from datetime import date
+    if isinstance(date_val, str):
+        date_clean = date_val.strip().replace("-", "")
+        dt_val = datetime.strptime(date_clean, "%Y%m%d").date()
+    elif isinstance(date_val, datetime):
+        dt_val = date_val.date()
+    elif isinstance(date_val, date):
+        dt_val = date_val
+    else:
+        raise ValueError(f"Unsupported date type: {type(date_val)}")
+
+    eff_tz, _, _ = get_effective_timezone(config)
+    local_start = datetime.combine(dt_val, datetime.min.time()).replace(tzinfo=eff_tz)
+    local_end = datetime.combine(dt_val, datetime.max.time()).replace(tzinfo=eff_tz)
+    return local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
+

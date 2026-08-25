@@ -18,6 +18,10 @@ from app.models.schemas import (
     TechnologyState,
 )
 from app.storage.db import Database
+from app.runtime.timezone import runtime_date_string, runtime_day_bounds_utc
+from app.runtime.state import load_runtime_config
+
+
 
 
 def load_inbox_config() -> Dict[str, Any]:
@@ -321,6 +325,9 @@ def generate_daily_inbox(
     now: Optional[datetime] = None,
     rebuild_today: bool = False,
     preview: bool = False,
+    surface_date: Optional[str] = None,
+    daily_run_id: Optional[str] = None,
+    data_cutoff_at: Optional[datetime] = None,
 ) -> Any:
     """
     Evaluates current intelligence, project matches, and changes to construct
@@ -333,6 +340,8 @@ def generate_daily_inbox(
         ttl_hours = cfg.get("ttl_hours", 24)
     if now is None:
         now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
 
     expires_at = now + timedelta(hours=ttl_hours)
     min_score = cfg.get("min_inbox_score", 0.45)
@@ -352,6 +361,10 @@ def generate_daily_inbox(
         "developer_tooling": 3,
         "watchlist": 4,
     }
+
+    runtime_config = load_runtime_config()
+    today_local_date = surface_date or runtime_date_string(now, runtime_config)
+    today_local_date_clean = today_local_date.replace("-", "")
 
     if not preview:
         if rebuild_today:
@@ -379,10 +392,14 @@ def generate_daily_inbox(
         for ev in events:
             ev_time = ev.published_at or getattr(ev, "discovered_at", None)
             if ev_time:
+                if ev_time.tzinfo is None:
+                    ev_time = ev_time.replace(tzinfo=timezone.utc)
                 if latest_event_dt is None or ev_time > latest_event_dt:
                     latest_event_dt = ev_time
         if latest_event_dt is None:
             latest_event_dt = cluster.created_at
+        if latest_event_dt.tzinfo is None:
+            latest_event_dt = latest_event_dt.replace(tzinfo=timezone.utc)
 
         age_hours = max(0.0, (now - latest_event_dt).total_seconds() / 3600.0)
         repo_id = extract_repository_identity(events)
@@ -463,24 +480,26 @@ def generate_daily_inbox(
             "existing_inbox": existing_inbox,
             "match_type": match_type_str,
             "repo_id": repo_id,
+            "latest_event_dt": latest_event_dt,
+            "user_facing_changes": user_facing_changes,
         })
 
     # Sort eligible candidates by score DESC, project impact DESC
     eligible_candidates = [c for c in candidate_records if not c["rejection_reason"]]
-    rejected_candidates = [c for c in candidate_records if c["rejection_reason"]]
     eligible_candidates.sort(key=lambda c: (c["score"], c["breakdown"]["project_impact"]), reverse=True)
 
     # Active vs Suppressed selection with section caps
     section_counts: Dict[str, int] = defaultdict(int)
     active_count = 0
     active_items: List[InboxItem] = []
-    suppressed_items: List[InboxItem] = []
 
     for c in eligible_candidates:
         sec = c["section"]
         cluster = c["cluster"]
         existing_inbox = c["existing_inbox"]
         saved_item = c["saved_item"]
+        latest_event_dt = c["latest_event_dt"]
+        user_facing_changes = c["user_facing_changes"]
 
         # Check section cap and daily cap
         cap_for_sec = section_caps.get(sec, 5)
@@ -504,8 +523,41 @@ def generate_daily_inbox(
             c["final_state"] = state
             c["rejection_reason"] = "section_cap" if section_counts[sec] >= cap_for_sec else "daily_cap"
 
-        inbox_item_id = f"inbox:{cluster.id}:{now.strftime('%Y%m%d')}"
+        inbox_item_id = f"inbox:{cluster.id}:{today_local_date_clean}"
         matched_pids = [m.project_id for m in c["matches"]]
+
+        first_seen_dt = existing_inbox.first_seen_at if (existing_inbox and existing_inbox.first_seen_at) else now
+        if first_seen_dt.tzinfo is None:
+            first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
+
+        start_utc, end_utc = runtime_day_bounds_utc(today_local_date, runtime_config)
+        is_first_seen_today = (start_utc <= first_seen_dt <= end_utc)
+
+        has_new_event_today = False
+        for ev in c["events"]:
+            ev_pub = ev.published_at or getattr(ev, "discovered_at", None)
+            if ev_pub:
+                if ev_pub.tzinfo is None:
+                    ev_pub = ev_pub.replace(tzinfo=timezone.utc)
+                if start_utc <= ev_pub <= end_utc:
+                    has_new_event_today = True
+                    break
+
+        has_change_today = False
+        for ch in user_facing_changes:
+            ch_created = ch.created_at
+            if ch_created.tzinfo is None:
+                ch_created = ch_created.replace(tzinfo=timezone.utc)
+            if start_utc <= ch_created <= end_utc:
+                has_change_today = True
+                break
+
+        if is_first_seen_today:
+            freshness_kind = "new"
+        elif has_new_event_today or has_change_today:
+            freshness_kind = "updated"
+        else:
+            freshness_kind = "carried_forward"
 
         item = InboxItem(
             id=inbox_item_id,
@@ -520,7 +572,7 @@ def generate_daily_inbox(
             state=state,
             item_type=c["item_type"],
             created_at=existing_inbox.created_at if existing_inbox and not rebuild_today else now,
-            first_seen_at=existing_inbox.first_seen_at if existing_inbox else now,
+            first_seen_at=first_seen_dt,
             last_seen_at=now,
             expires_at=expires_at,
             seen_at=existing_inbox.seen_at if existing_inbox else None,
@@ -529,13 +581,16 @@ def generate_daily_inbox(
             saved_item_id=saved_item.id if saved_item else None,
             matched_project_ids=matched_pids,
             reason_codes=c["reasons"],
+            surface_date=today_local_date,
+            latest_event_at=latest_event_dt.isoformat() if latest_event_dt else None,
+            last_materialized_at=now.isoformat(),
+            data_cutoff_at=(data_cutoff_at or now).isoformat(),
+            freshness_kind=freshness_kind,
+            daily_run_id=daily_run_id or f"daily-run:{today_local_date}",
         )
 
         c["inbox_item"] = item
-        if state in ("unseen", "seen", "opened", "starred"):
-            active_items.append(item)
-        else:
-            suppressed_items.append(item)
+        active_items.append(item)
 
         if not preview:
             db.save_inbox_item(item)
@@ -543,5 +598,6 @@ def generate_daily_inbox(
     if preview:
         return candidate_records
 
-    # Return only active items
-    return active_items
+    # Return only active items (unseen, seen, opened, starred)
+    return [it for it in active_items if it.state in ("unseen", "seen", "opened", "starred")]
+

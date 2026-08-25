@@ -8,6 +8,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from app.inbox.generator import extract_repository_identity, generate_daily_inbox, load_inbox_config
 from app.models.schemas import DailyBriefing, DailyBriefingItem, InboxItem
 from app.storage.db import Database
+from app.runtime.timezone import get_effective_timezone, runtime_date_string, to_runtime_local
+from app.runtime.state import load_runtime_config
+
 
 
 SECTION_HEADERS = {
@@ -49,6 +52,12 @@ def build_briefing_text(
     lines.append("HERMES — MORNING INTELLIGENCE BRIEFING")
     lines.append(f"Date: {briefing_date}")
     lines.append("=" * 65)
+
+    has_any = any(len(items) > 0 for items in grouped_items.values())
+    if not has_any:
+        lines.append("\nChecked today—no new qualifying signals.")
+        lines.append("HERMES completed today’s intelligence refresh, but no signals passed the configured relevance and quality thresholds.")
+
 
     # 1. Corrections / Updates
     corr_items = grouped_items.get("corrections_updates", [])
@@ -162,22 +171,33 @@ def generate_morning_briefing(
     target_date: Optional[str] = None,
     refresh: bool = False,
     now: Optional[datetime] = None,
+    daily_run_id: Optional[str] = None,
+    data_cutoff_at: Optional[datetime] = None,
 ) -> DailyBriefing:
     """
     Generates or retrieves the deterministic Daily Briefing for target_date.
     Idempotent unless refresh=True. Enforces strict section caps, score floors,
     repository diversity, and atomic persistence of immutable item snapshots.
     """
+    runtime_config = load_runtime_config()
+    eff_tz, tz_name, _ = get_effective_timezone(runtime_config)
+
     if now is None:
         now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
 
     if target_date is None:
-        target_date = now.strftime("%Y-%m-%d")
+        target_date = runtime_date_string(now, runtime_config)
 
     # 1. Check existing briefing
     existing = db.get_daily_briefing(target_date)
     if existing and not refresh:
         return existing
+
+    original_generated_at = None
+    if existing:
+        original_generated_at = existing.original_generated_at or (existing.generated_at.isoformat() if isinstance(existing.generated_at, datetime) else str(existing.generated_at))
 
     cfg = load_inbox_config()
     b_cfg = cfg.get("briefing", {})
@@ -196,10 +216,12 @@ def generate_morning_briefing(
         "watchlist": b_cfg.get("max_watch", 4),
     }
 
-    # 2. Get active inbox items
-    inbox_items = db.get_active_inbox_items(include_expired=False)
-    if not inbox_items:
-        inbox_items = generate_daily_inbox(db=db, now=now)
+    # 2. Get active inbox items matching today's surface date
+    # Include items with surface_date matching target_date, or items without a surface_date (legacy)
+    inbox_items = [
+        it for it in db.get_active_inbox_items(include_expired=False)
+        if it.surface_date is None or it.surface_date == target_date
+    ]
 
     # Filter by minimum briefing score or star
     qualifying_items = [
@@ -292,6 +314,10 @@ def generate_morning_briefing(
 
     sections_dict = {sec: [it.inbox_item_id for it in it_list] for sec, it_list in grouped_snapshot_items.items()}
 
+    import json
+    source_statuses = {cp.source: cp.health_status for cp in db.get_all_source_checkpoints()}
+    source_status_json = json.dumps(source_statuses)
+
     briefing = DailyBriefing(
         id=briefing_id,
         briefing_date=target_date,
@@ -303,8 +329,15 @@ def generate_morning_briefing(
         summary_text=summary_text,
         sections=sections_dict,
         created_at=existing.created_at if existing else now,
+        runtime_timezone=tz_name,
+        data_cutoff_at=(data_cutoff_at or now).isoformat(),
+        generation_status="completed_empty" if not briefing_items else "completed",
+        source_status_json=source_status_json,
+        daily_run_id=daily_run_id or f"daily-run:{target_date}",
+        original_generated_at=original_generated_at or now.isoformat(),
     )
 
     # 8. Atomically persist briefing header and snapshot items in a single transaction
     db.save_daily_briefing_with_items(briefing, briefing_items)
     return briefing
+

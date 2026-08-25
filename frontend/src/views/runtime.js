@@ -9,6 +9,8 @@ import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, formatTime, ensureArray, toTitleCase } from '../utils/adapters.js';
 import { focusPageHeading } from '../utils/a11y.js';
+import { renderRefreshControl } from '../components/refresh-control.js';
+
 
 function formatFiniteNumber(val, fallback = '—') {
   if (typeof val === 'number' && Number.isFinite(val)) {
@@ -128,11 +130,7 @@ export async function renderRuntimeView(container, store) {
           <h1>Runtime & Source Health</h1>
           <p class="lead">Trustworthy operational telemetry for the HERMES daemon, scheduler pipeline, and intelligence providers.</p>
         </div>
-        <div style="display:flex;align-items:center;gap:var(--space-2);">
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-runtime" aria-label="Refresh operational health">
-            Refresh
-          </button>
-        </div>
+        <div id="runtime-refresh-container" style="display:flex;align-items:center;gap:var(--space-2);"></div>
       </div>
 
       <!-- Accessible Live Region -->
@@ -437,12 +435,12 @@ export async function renderRuntimeView(container, store) {
     container.innerHTML = html;
     focusPageHeading(container);
 
-    // Attach read-only refresh button handler
-    const btnRefresh = container.querySelector('#btn-refresh-runtime');
-    if (btnRefresh) {
-      btnRefresh.addEventListener('click', () => {
+    const refreshContainer = container.querySelector('#runtime-refresh-container');
+    if (refreshContainer) {
+      const cleanup = renderRefreshControl(refreshContainer, 'health_check', () => {
         renderRuntimeView(container, store);
       });
+      container._viewCleanup = cleanup;
     }
   } catch (err) {
     if (!requestManager.isCurrent('runtime', reqGen) || (err && err.isAborted && !err.isTimeout)) {

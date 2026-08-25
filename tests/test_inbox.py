@@ -396,6 +396,7 @@ def test_briefing_idempotence_and_grounding(test_db):
     test_db.add_event_to_cluster(cluster.id, ev.id)
     test_db.save_claim(claim)
 
+    generate_daily_inbox(db=test_db, now=now, surface_date="2026-08-20")
     b1 = generate_morning_briefing(db=test_db, target_date="2026-08-20", refresh=False, now=now)
     b2 = generate_morning_briefing(db=test_db, target_date="2026-08-20", refresh=False, now=now)
 
@@ -494,6 +495,7 @@ def test_briefing_sections_routing(test_db):
     test_db.add_event_to_cluster(cl_db.id, ev_db.id)
     test_db.save_claim(cl_db_claim)
 
+    generate_daily_inbox(db=test_db, now=now, surface_date="2026-08-20")
     briefing = generate_morning_briefing(db=test_db, target_date="2026-08-20", refresh=True, now=now)
     assert "SYSTEMS / COMPILERS / ACCELERATION" in briefing.summary_text
     assert "STORAGE / DATABASES / VECTOR SEARCH" in briefing.summary_text

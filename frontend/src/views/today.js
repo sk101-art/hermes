@@ -18,6 +18,8 @@ import {
   renderInboxRankBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
+import { renderRefreshControl } from '../components/refresh-control.js';
+
 
 export const CANONICAL_INBOX_SECTIONS = [
   { key: 'must_know', label: 'Must Know' },
@@ -346,8 +348,9 @@ export async function renderTodayView(container, store) {
         <h1>What Matters Today</h1>
         <p class="lead">A calibrated view of technical developments, ordered by urgency, relevance, and recent change.</p>
       </div>
-      <div class="page-header-meta">
+      <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
         <span id="today-date-badge">${todayDateStr}</span>
+        <div id="today-refresh-container"></div>
       </div>
     </div>
 
@@ -412,6 +415,14 @@ export async function renderTodayView(container, store) {
       ${renderLoadingState('Loading daily intelligence feed…')}
     </div>
   `;
+
+  const refreshContainer = container.querySelector('#today-refresh-container');
+  if (refreshContainer) {
+    const cleanup = renderRefreshControl(refreshContainer, 'daily_refresh', () => {
+      executeFetch(getCurrentFilterState());
+    });
+    container._viewCleanup = cleanup;
+  }
 
   async function executeFetch(filterState) {
     const reqGen = requestManager.nextGeneration('today');

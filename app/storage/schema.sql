@@ -247,8 +247,16 @@ CREATE TABLE IF NOT EXISTS projects (
     context_hash TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    last_indexed_at TEXT
+    last_indexed_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    archived_at TEXT,
+    archive_reason TEXT,
+    last_scan_status TEXT,
+    last_scan_started_at TEXT,
+    last_scan_completed_at TEXT,
+    last_scan_error TEXT
 );
+
 
 CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
 CREATE INDEX IF NOT EXISTS idx_projects_is_active ON projects(is_active);
@@ -340,8 +348,15 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     is_starred INTEGER DEFAULT 0,
     saved_item_id TEXT,
     matched_project_ids_json TEXT,
-    reason_codes_json TEXT
+    reason_codes_json TEXT,
+    surface_date TEXT,
+    latest_event_at TEXT,
+    last_materialized_at TEXT,
+    data_cutoff_at TEXT,
+    freshness_kind TEXT,
+    daily_run_id TEXT
 );
+
 
 CREATE INDEX IF NOT EXISTS idx_inbox_state ON inbox_items(state);
 CREATE INDEX IF NOT EXISTS idx_inbox_expires ON inbox_items(expires_at);
@@ -398,8 +413,15 @@ CREATE TABLE IF NOT EXISTS daily_briefings (
     content_hash TEXT NOT NULL DEFAULT '',
     summary_text TEXT,
     sections_json TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    runtime_timezone TEXT,
+    data_cutoff_at TEXT,
+    generation_status TEXT,
+    source_status_json TEXT,
+    daily_run_id TEXT,
+    original_generated_at TEXT
 );
+
 
 CREATE INDEX IF NOT EXISTS idx_briefings_date ON daily_briefings(briefing_date);
 
@@ -486,3 +508,45 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
     metric_value INTEGER DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS daily_signal_runs (
+    id TEXT PRIMARY KEY,
+    runtime_date TEXT UNIQUE NOT NULL,
+    timezone_name TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    data_cutoff_at TEXT,
+    status TEXT NOT NULL,
+    new_signal_count INTEGER DEFAULT 0,
+    updated_signal_count INTEGER DEFAULT 0,
+    carried_signal_count INTEGER DEFAULT 0,
+    retry_count INTEGER DEFAULT 0,
+    briefing_id TEXT,
+    source_status_json TEXT,
+    error_summary TEXT,
+    content_hash TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date);
+
+CREATE TABLE IF NOT EXISTS refresh_operations (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    target_id TEXT,
+    requested_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    [trigger] TEXT NOT NULL DEFAULT 'user_requested',
+    job_names_json TEXT,
+    items_processed INTEGER DEFAULT 0,
+    error_summary TEXT,
+    result_json TEXT,
+    claimed_at TEXT,
+    lease_expires_at TEXT,
+    heartbeat_at TEXT,
+    worker_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_ops_status ON refresh_operations(status);
+

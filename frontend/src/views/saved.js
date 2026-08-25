@@ -343,9 +343,14 @@ export async function renderSavedView(container, store) {
             <h1>Saved Intelligence</h1>
             <p class="lead">Historical snapshots preserve baseline review states alongside live HERMES intelligence evolutions.</p>
           </div>
-          <div class="page-header-meta">
-            <strong id="saved-total-count">${filtered.length}</strong>
-            <span>item${filtered.length === 1 ? '' : 's'} displayed</span>
+          <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+            <button type="button" class="btn btn-sm btn-outline" id="btn-refresh-saved" style="display:inline-flex;align-items:center;gap:var(--space-1);">
+              <span>🔄</span> Refresh
+            </button>
+            <div>
+              <strong id="saved-total-count">${filtered.length}</strong>
+              <span>item${filtered.length === 1 ? '' : 's'} displayed</span>
+            </div>
           </div>
         </div>
 
@@ -418,6 +423,11 @@ export async function renderSavedView(container, store) {
         activeTagFilter = 'all';
         activeStatusFilter = 'all';
         renderViewContent();
+      });
+
+      const refreshBtn = container.querySelector('#btn-refresh-saved');
+      refreshBtn?.addEventListener('click', () => {
+        renderSavedView(container, store);
       });
 
       // Delegated listener for Unsave actions

@@ -1,10 +1,13 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+import json
+from pathlib import Path
 
 from app.models.schemas import Project
 from app.services.intelligence import get_recent_changes
 from app.services.schemas import ProjectIntelligence, ProjectSummary
 from app.storage.db import Database
+
 
 
 def resolve_project(project_id_or_name: str, db: Database) -> Optional[Project]:
@@ -19,15 +22,16 @@ def resolve_project(project_id_or_name: str, db: Database) -> Optional[Project]:
     )
 
 
-def list_projects(db: Optional[Database] = None) -> List[ProjectSummary]:
+def list_projects(db: Optional[Database] = None, active_only: bool = True) -> List[ProjectSummary]:
     """
-    Lists summarized technology profiles for all active projects.
+    Lists summarized technology profiles for projects.
     Strict privacy: Exposes ONLY derived technologies and metadata, NO private source code or local filesystem paths.
     """
     if db is None:
         db = Database()
 
-    projects = db.get_all_projects(active_only=True)
+    projects = db.get_all_projects(active_only=active_only)
+
     match_counts = db.get_project_match_counts()
     summaries = []
     for p in projects:
@@ -369,3 +373,186 @@ def get_project_intelligence(
         recent_changes=changes,
         intelligence_available=intel_available,
     )
+
+
+def add_project(
+    name: str,
+    path: str,
+    description: Optional[str] = None,
+    db: Optional[Database] = None,
+) -> Project:
+    """Adds a new project and triggers its initial scan/indexing."""
+    if db is None:
+        db = Database()
+
+    name_clean = name.strip()
+    project_id = f"project:{name_clean.lower().replace(' ', '_')}"
+
+    from app.context.scanner import is_path_safe_and_inside_allowed_roots
+    p_path = Path(path).resolve()
+    if not is_path_safe_and_inside_allowed_roots(p_path):
+        raise ValueError(f"Project path '{path}' is not within allowed workspace directories.")
+
+    proj = Project(
+        id=project_id,
+        name=name_clean,
+        path=str(p_path).replace("\\", "/"),
+        description=description,
+        is_active=True,
+        status="active",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db.save_project(proj)
+
+    scan_single_project(proj.id, db)
+    return db.get_project(proj.id)
+
+
+def archive_project(
+    project_id: str,
+    reason: Optional[str] = None,
+    db: Optional[Database] = None,
+) -> bool:
+    """Soft-archives a project by setting is_active = 0, status = 'archived'."""
+    if db is None:
+        db = Database()
+
+    proj = db.get_project(project_id)
+    if not proj:
+        return False
+
+    proj.is_active = False
+    proj.status = "archived"
+    proj.archived_at = datetime.now(timezone.utc)
+    proj.archive_reason = reason or "User requested archive"
+    db.save_project(proj)
+    return True
+
+
+def restore_project(
+    project_id: str,
+    db: Optional[Database] = None,
+) -> bool:
+    """Restores a soft-archived project."""
+    if db is None:
+        db = Database()
+
+    proj = db.get_project(project_id)
+    if not proj:
+        return False
+
+    proj.is_active = True
+    proj.status = "active"
+    proj.archived_at = None
+    proj.archive_reason = None
+    db.save_project(proj)
+    
+    scan_single_project(proj.id, db)
+    return True
+
+
+def scan_single_project(
+    project_id: str,
+    db: Optional[Database] = None,
+) -> Dict[str, Any]:
+    """Indexes a single project folder, updates profile, matches, and embeddings."""
+    if db is None:
+        db = Database()
+
+    proj = db.get_project(project_id)
+    if not proj:
+        raise ValueError(f"Project '{project_id}' not found.")
+
+    if proj.status == "archived":
+        raise ValueError(f"Project '{project_id}' is archived and cannot be scanned.")
+
+    from app.context.scanner import scan_project_files, compute_project_context_hash
+    from app.context.profiler import build_project_technology_profile
+    from app.context.embeddings import get_or_create_project_embedding, unload_embedder
+    from app.context.matcher import match_project_with_cluster
+    import numpy as np
+
+    p_dir = Path(proj.path)
+    if not p_dir.exists():
+        proj.last_scan_status = "scan_failed"
+        proj.last_scan_error = "Directory does not exist"
+        db.save_project(proj)
+        return {"status": "failed", "error": "Directory does not exist"}
+
+    now = datetime.now(timezone.utc)
+    proj.last_scan_started_at = now
+    db.save_project(proj)
+
+    try:
+        # Exclude other active project paths to prevent overlap
+        other_active_projects = [p for p in db.get_all_projects(active_only=True) if p.id != proj.id]
+        exclude_paths = [Path(p.path) for p in other_active_projects]
+
+        files, stats = scan_project_files(proj.id, p_dir, exclude_paths=exclude_paths)
+        context_hash = compute_project_context_hash(files)
+
+        # Clear old files for this project
+        db.conn.execute("DELETE FROM project_files WHERE project_id = ?", (proj.id,))
+        for pf in files:
+            db.save_project_file(pf)
+
+        profile, meta = build_project_technology_profile(proj.id, proj.name, files)
+        
+        # Save project fields
+        proj.languages = list(meta.get("languages", []))
+        proj.frameworks = list(meta.get("frameworks", []))
+        proj.libraries = list(meta.get("libraries", []))
+        proj.databases = list(meta.get("databases", []))
+        proj.infrastructure = list(meta.get("infrastructure", []))
+        proj.models = list(meta.get("models", []))
+        proj.tools = list(meta.get("tools", []))
+        proj.topics = list(meta.get("topics", []))
+        proj.keywords = list(meta.get("keywords", []))
+        proj.context_hash = context_hash
+        proj.last_indexed_at = now
+        proj.last_scan_status = "completed"
+        proj.last_scan_completed_at = now
+        proj.last_scan_error = None
+        db.save_project(proj)
+        db.save_project_profile(profile)
+
+        # Update embeddings and matches
+        get_or_create_project_embedding(proj.id, profile.profile_text, profile.profile_hash, db)
+        p_emb = db.get_project_embedding(proj.id, "sentence-transformers/all-MiniLM-L6-v2")
+        
+        # Rescan matches for this project
+        db.clear_project_matches(proj.id)
+        active_clusters = db.get_all_clusters()
+        for cl in active_clusters:
+            events = db.get_cluster_events(cl.id)
+            claims = db.get_claims_by_cluster(cl.id)
+            assessment = db.get_technology_assessment(cl.id)
+            tech_state = db.get_technology_state(cl.id)
+
+            match = match_project_with_cluster(
+                project=proj,
+                profile=profile,
+                project_embedding=p_emb,
+                cluster=cl,
+                cluster_events=events,
+                cluster_claims=claims,
+                assessment=assessment,
+                tech_state=tech_state,
+                db=db,
+            )
+            if match:
+                db.save_project_match(match)
+
+        unload_embedder()
+        return {
+            "status": "completed",
+            "files_scanned": len(files),
+            "stats": stats,
+        }
+    except Exception as e:
+        proj.last_scan_status = "scan_failed"
+        proj.last_scan_error = str(e)
+        db.save_project(proj)
+        return {"status": "failed", "error": str(e)}
+

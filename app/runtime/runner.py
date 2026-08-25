@@ -17,6 +17,19 @@ from app.runtime.state import (
     write_heartbeat,
 )
 from app.storage.db import Database
+from app.runtime.jobs import (
+    run_daily_refresh,
+    run_inbox_generation,
+    generate_scheduled_morning_briefing,
+    run_health_check_job,
+    run_longitudinal_recheck,
+    run_context_scan,
+    run_context_match,
+    run_source_ingestion,
+    run_semantic_processing,
+    run_claims_processing,
+)
+
 
 try:
     if hasattr(sys.stdout, "reconfigure"):
@@ -142,10 +155,76 @@ def run_daemon(
             return
 
         # 6. Continuous Daemon Loop
+        # A. Startup briefing catch-up check
+        try:
+            from app.runtime.timezone import runtime_date_string
+            now_utc = datetime.now(timezone.utc)
+            today_str = runtime_date_string(now_utc, config)
+            logger.info(f"Checking startup catch-up for morning briefing on {today_str}...")
+            existing_briefing = db.get_daily_briefing(today_str)
+            if not existing_briefing:
+                logger.info(f"Morning Briefing for {today_str} is missing. Running daily refresh catch-up...")
+                run_daily_refresh(db, now=now_utc, surface_date=today_str)
+                logger.info("Startup briefing catch-up completed successfully.")
+            else:
+                logger.info(f"Morning Briefing for {today_str} already exists. Startup catch-up skipped.")
+        except Exception as e:
+            logger.error(f"Startup briefing catch-up check failed: {e}")
+
         logger.info("HERMES daemon started successfully. Entering scheduler loop.")
         while not _stop_requested:
             now = datetime.now(timezone.utc)
             run_all_due_jobs(db, now=now, config=config)
+            
+            # B. Poll and execute queued background operations
+            try:
+                db.recover_stale_refresh_operations(now)
+                op = db.get_next_queued_operation()
+                if op:
+                    from datetime import timedelta
+                    worker_id = f"worker-{os.getpid()}"
+                    lease_expires = now + timedelta(minutes=5)
+                    if db.claim_refresh_operation(op.id, worker_id, now, lease_expires):
+                        logger.info(f"Claimed queued refresh operation: {op.id} [scope={op.scope}]")
+                        try:
+                            if op.scope == "daily_refresh":
+                                run_daily_refresh(db, now=now)
+                            elif op.scope == "inbox_refresh":
+                                run_inbox_generation(db, now=now)
+                            elif op.scope == "morning_brief":
+                                generate_scheduled_morning_briefing(db, now=now)
+                            elif op.scope == "health_check":
+                                run_health_check_job(db, now=now)
+                            elif op.scope == "recheck":
+                                run_longitudinal_recheck(db, now=now)
+                            elif op.scope == "project_scan":
+                                run_context_scan(db, now=now)
+                                run_context_match(db, now=now)
+                            elif op.scope == "search_refresh":
+                                run_source_ingestion(db, now=now)
+                                run_semantic_processing(db, now=now)
+                                run_claims_processing(db, now=now)
+                            elif op.scope == "story_recheck":
+                                run_longitudinal_recheck(db, now=now)
+                            else:
+                                logger.warning(f"Unknown operation scope: {op.scope}")
+
+                            db.conn.execute(
+                                "UPDATE refresh_operations SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?",
+                                (datetime.now(timezone.utc).isoformat(), op.id)
+                            )
+                            db.conn.commit()
+                            logger.info(f"Completed refresh operation: {op.id}")
+                        except Exception as e:
+                            logger.exception(f"Failed refresh operation {op.id}: {e}")
+                            db.conn.execute(
+                                "UPDATE refresh_operations SET status = 'failed', error_summary = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ?",
+                                (str(e), datetime.now(timezone.utc).isoformat(), op.id)
+                            )
+                            db.conn.commit()
+            except Exception as ex:
+                logger.error(f"Error checking refresh operations: {ex}")
+
             write_heartbeat(status="running")
 
             # Sleep in short increments to respond quickly to shutdown signals

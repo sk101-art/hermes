@@ -12,6 +12,8 @@ import {
   renderProjectRelevanceBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
+import { renderRefreshControl } from '../components/refresh-control.js';
+
 
 /**
  * Format match type into human-readable label.
@@ -101,12 +103,15 @@ async function renderProjectIndexView(container, store) {
   container.innerHTML = renderLoadingState('Loading local engineering projects…');
 
   try {
-    const response = await api.getProjects({ generation: reqGen });
+    const response = await api.getProjects({ params: { active_only: false }, generation: reqGen });
     if (!requestManager.isCurrent('projects', reqGen)) return;
 
     const projects = ensureArray(response.projects || response);
     store.setViewData('projects', projects);
     store.setConnection('healthy');
+
+    const activeProjects = projects.filter(p => p.is_active);
+    const archivedProjects = projects.filter(p => !p.is_active);
 
     let html = `
       <div class="page-header-container">
@@ -115,9 +120,12 @@ async function renderProjectIndexView(container, store) {
           <h1>My Projects</h1>
           <p class="lead">HERMES processes local repository source code, configuration, manifests, and documentation to build technology profiles and relevant engineering context.</p>
         </div>
-        <div class="page-header-meta">
-          <strong>${projects.length}</strong>
-          <span>indexed project${projects.length === 1 ? '' : 's'}</span>
+        <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+          <div id="projects-refresh-container"></div>
+          <div>
+            <strong>${activeProjects.length}</strong>
+            <span>active project${activeProjects.length === 1 ? '' : 's'}</span>
+          </div>
         </div>
       </div>
 
@@ -126,9 +134,31 @@ async function renderProjectIndexView(container, store) {
           <strong>Local Workspace Processing:</strong> HERMES processes supported local source files, configurations, manifests, and documentation, storing extracted text, relative paths, content hashes, derived technology profiles, and local embeddings in your local SQLite database. Sensitive filename patterns (such as <code>.env*</code> and keys) and detected binaries are skipped.
         </p>
       </div>
+
+      <details class="panel" style="margin-bottom:var(--space-5);padding:var(--space-4);" id="add-project-panel">
+        <summary style="font-weight:bold;cursor:pointer;user-select:none;">+ Add Local Project</summary>
+        <form id="add-project-form" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);max-width:560px;">
+          <div>
+            <label for="proj-name" style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Project Name</label>
+            <input type="text" id="proj-name" required placeholder="e.g. My Awesome Web App" class="form-input" style="width:100%;padding:var(--space-2);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);" />
+          </div>
+          <div>
+            <label for="proj-path" style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Absolute Path on Filesystem</label>
+            <input type="text" id="proj-path" required placeholder="e.g. C:/Users/sujay/Downloads/hermes" class="form-input" style="width:100%;padding:var(--space-2);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);" />
+          </div>
+          <div>
+            <label for="proj-desc" style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Description</label>
+            <textarea id="proj-desc" placeholder="e.g. Node/Express backend service" class="form-input" style="width:100%;padding:var(--space-2);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);min-height:60px;"></textarea>
+          </div>
+          <div id="add-project-error" class="text-sm text-danger" style="display:none;color:var(--danger-color, #dc2626);margin-bottom:var(--space-2);"></div>
+          <div>
+            <button type="submit" class="btn btn-sm btn-primary">Add & Index Project</button>
+          </div>
+        </form>
+      </details>
     `;
 
-    if (!projects.length) {
+    if (!activeProjects.length) {
       html += renderEmptyState(
         'No Projects Configured',
         'HERMES has not indexed any local repository profiles yet. Add project definitions in your workspace to enable automatic relevance matching.'
@@ -137,7 +167,7 @@ async function renderProjectIndexView(container, store) {
       html += `
         <h2 class="sr-only">Indexed Projects</h2>
         <div class="grid-3 project-cards-grid">
-          ${projects.map((p) => {
+          ${activeProjects.map((p) => {
             const canonicalId = p.project_id || p.id || '';
             const langs = ensureArray(p.languages);
             const frameworks = ensureArray(p.frameworks);
@@ -151,9 +181,9 @@ async function renderProjectIndexView(container, store) {
 
             return `
               <article class="project-card-item" data-project-id="${escapeHtml(canonicalId)}" aria-labelledby="project-title-${escapeHtml(canonicalId)}">
-                <div class="project-card-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2);">
+                <div class="project-card-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:var(--space-2);">
                   <span class="mono text-xs text-muted">${escapeHtml(canonicalId)}</span>
-                  <span class="badge ${p.is_active ? 'badge-neutral' : 'badge-subtle'}">${p.is_active ? 'Active' : 'Inactive'}</span>
+                  <span class="badge badge-neutral">Active</span>
                 </div>
 
                 <h3 id="project-title-${escapeHtml(canonicalId)}" class="project-card-title" style="margin-top:var(--space-2);font-size:var(--text-md);">
@@ -171,7 +201,7 @@ async function renderProjectIndexView(container, store) {
                   ${allChips.length === 0 ? '<span class="text-xs text-faint">No technologies detected</span>' : ''}
                 </div>
 
-                <div class="project-card-footer" style="margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;">
+                <div class="project-card-footer" style="margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:var(--space-2);">
                   <span class="mono text-xs text-muted">${matchCount} matched item${matchCount === 1 ? '' : 's'}</span>
                   <span class="mono text-xs text-faint">${p.last_indexed_at ? `Indexed · ${formatDate(p.last_indexed_at)}` : 'Never indexed'}</span>
                 </div>
@@ -182,10 +212,90 @@ async function renderProjectIndexView(container, store) {
       `;
     }
 
+    if (archivedProjects.length > 0) {
+      html += `
+        <section class="archived-projects-section" style="margin-top:var(--space-8);padding-top:var(--space-6);border-top:1px solid var(--border-subtle);">
+          <h2 style="font-size:var(--text-lg);margin-bottom:var(--space-3);">Archived Projects</h2>
+          <p class="text-sm text-muted" style="margin-bottom:var(--space-4);">
+            These projects are archived and excluded from active security/maturity matching.
+          </p>
+          <div class="grid-3 project-cards-grid">
+            ${archivedProjects.map((p) => {
+              const canonicalId = p.project_id || p.id || '';
+              return `
+                <article class="project-card-item archived-card" data-project-id="${escapeHtml(canonicalId)}" aria-labelledby="project-title-${escapeHtml(canonicalId)}" style="opacity: 0.65; cursor: default;">
+                  <div class="project-card-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:var(--space-2);">
+                    <span class="mono text-xs text-muted">${escapeHtml(canonicalId)}</span>
+                    <span class="badge badge-subtle">Archived</span>
+                  </div>
+
+                  <h3 id="project-title-${escapeHtml(canonicalId)}" class="project-card-title" style="margin-top:var(--space-2);font-size:var(--text-md);">
+                    ${escapeHtml(p.name)}
+                  </h3>
+
+                  <p class="text-sm text-muted" style="margin-top:var(--space-1);min-height:38px;">
+                    ${escapeHtml(p.description || 'Archived project profile')}
+                  </p>
+
+                  <div class="project-card-footer" style="margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:var(--space-2);">
+                    <button type="button" class="btn btn-xs btn-outline btn-restore-project" data-project-id="${escapeHtml(canonicalId)}" style="color:var(--success-color, #16a34a);">
+                      Restore
+                    </button>
+                    <span class="mono text-xs text-faint">${p.last_indexed_at ? `Indexed · ${formatDate(p.last_indexed_at)}` : 'Never'}</span>
+                  </div>
+                </article>
+              `;
+            }).join('')}
+          </div>
+        </section>
+      `;
+    }
+
     container.innerHTML = html;
 
-    // Make project cards keyboard and click operable
-    container.querySelectorAll('.project-card-item').forEach((card) => {
+    // Bind refresh control
+    const refreshContainer = container.querySelector('#projects-refresh-container');
+    if (refreshContainer) {
+      const cleanup = renderRefreshControl(refreshContainer, 'project_scan', () => {
+        renderProjectIndexView(container, store);
+      });
+      container._viewCleanup = cleanup;
+    }
+
+    // Bind add project form submit
+    const addForm = container.querySelector('#add-project-form');
+    if (addForm) {
+      addForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const name = container.querySelector('#proj-name').value.trim();
+        const path = container.querySelector('#proj-path').value.trim();
+        const description = container.querySelector('#proj-desc').value.trim();
+        const errorEl = container.querySelector('#add-project-error');
+
+        if (errorEl) errorEl.style.display = 'none';
+
+        try {
+          const submitBtn = addForm.querySelector('button[type="submit"]');
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Adding & Scanning...';
+
+          await api.addProject({ name, path, description });
+          renderProjectIndexView(container, store);
+        } catch (err) {
+          console.error("Failed to add project:", err);
+          if (errorEl) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = `Error: ${err.message || String(err)}`;
+          }
+          const submitBtn = addForm.querySelector('button[type="submit"]');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Add & Index Project';
+        }
+      });
+    }
+
+    // Make active project cards keyboard and click operable
+    container.querySelectorAll('.project-card-item:not(.archived-card)').forEach((card) => {
       const pId = card.getAttribute('data-project-id');
       if (!pId) return;
 
@@ -194,7 +304,7 @@ async function renderProjectIndexView(container, store) {
       };
 
       card.addEventListener('click', (e) => {
-        if (e.target.closest('a')) return;
+        if (e.target.closest('a') || e.target.closest('button')) return;
         navigateToProject();
       });
 
@@ -202,6 +312,30 @@ async function renderProjectIndexView(container, store) {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           navigateToProject();
+        }
+      });
+    });
+
+    // Bind restore button click delegation
+    container.querySelectorAll('.btn-restore-project').forEach((restoreBtn) => {
+      restoreBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const pId = restoreBtn.dataset.projectId;
+        if (!pId) return;
+
+        restoreBtn.disabled = true;
+        restoreBtn.textContent = 'Restoring...';
+
+        try {
+          await api.restoreProject(pId);
+          renderProjectIndexView(container, store);
+        } catch (err) {
+          console.error("Failed to restore project:", err);
+          alert(`Failed to restore project: ${err.message || String(err)}`);
+          restoreBtn.disabled = false;
+          restoreBtn.textContent = 'Restore';
         }
       });
     });
@@ -298,7 +432,7 @@ async function renderProjectDetailView(container, store, projectId) {
         </div>
 
         <!-- Cross-Surface Quick Navigation Bar -->
-        <div class="project-cross-nav" style="margin-top:var(--space-4);display:flex;flex-wrap:wrap;gap:var(--space-2);">
+        <div class="project-cross-nav" style="margin-top:var(--space-4);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;">
           <a href="#/today?project=${encodeURIComponent(canonicalId)}" class="btn btn-sm btn-secondary">
             Open in Today Inbox →
           </a>
@@ -308,6 +442,20 @@ async function renderProjectDetailView(container, store, projectId) {
           <a href="#/changes?project=${encodeURIComponent(canonicalId)}" class="btn btn-sm btn-secondary">
             View Project Changes →
           </a>
+
+          <!-- Scan Button -->
+          ${isActive ? `
+            <button type="button" class="btn btn-sm btn-outline btn-scan-project" data-project-id="${escapeHtml(canonicalId)}">
+              Rescan Project
+            </button>
+            <button type="button" class="btn btn-sm btn-ghost btn-archive-project" data-project-id="${escapeHtml(canonicalId)}" style="color:var(--danger-color, #dc2626);">
+              Archive Project
+            </button>
+          ` : `
+            <button type="button" class="btn btn-sm btn-ghost btn-restore-project" data-project-id="${escapeHtml(canonicalId)}" style="color:var(--success-color, #16a34a);">
+              Restore Project
+            </button>
+          `}
         </div>
       </header>
 
@@ -338,7 +486,7 @@ async function renderProjectDetailView(container, store, projectId) {
 
       <!-- Potential Engineering Concerns -->
       <section class="project-section" style="margin-bottom:var(--space-6);">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--space-2);">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
           <h2 style="font-size:var(--text-lg);margin:0;">Potential Engineering Concerns</h2>
           <span class="mono text-xs text-muted">${risks.length} detected</span>
         </div>
@@ -403,7 +551,7 @@ async function renderProjectDetailView(container, store, projectId) {
 
       <!-- Relevant Intelligence Story Matches -->
       <section class="project-section" style="margin-bottom:var(--space-6);">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--space-2);">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
           <h2 style="font-size:var(--text-lg);margin:0;">Relevant Intelligence Matches</h2>
           <span class="mono text-xs text-muted">${topMatches.length} matches</span>
         </div>
@@ -457,7 +605,7 @@ async function renderProjectDetailView(container, store, projectId) {
 
       <!-- Recent Project Changes -->
       <section class="project-section" style="margin-bottom:var(--space-6);">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--space-2);">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
           <h2 style="font-size:var(--text-lg);margin:0;">Recent Project Changes</h2>
           <span class="mono text-xs text-muted">${changes.length} past 7d</span>
         </div>
@@ -526,6 +674,70 @@ async function renderProjectDetailView(container, store, projectId) {
     `;
 
     container.innerHTML = html;
+
+    const scanBtn = container.querySelector('.btn-scan-project');
+    const archiveBtn = container.querySelector('.btn-archive-project');
+    const restoreBtn = container.querySelector('.btn-restore-project');
+
+    if (scanBtn) {
+      scanBtn.addEventListener('click', async () => {
+        const pId = scanBtn.dataset.projectId;
+        if (!pId) return;
+
+        scanBtn.disabled = true;
+        scanBtn.textContent = 'Scanning...';
+        try {
+          await api.scanProject(pId);
+          renderProjectDetailView(container, store, pId);
+        } catch (err) {
+          console.error("Failed to scan project:", err);
+          alert(`Failed to scan project: ${err.message || String(err)}`);
+          scanBtn.disabled = false;
+          scanBtn.textContent = 'Rescan Project';
+        }
+      });
+    }
+
+    if (archiveBtn) {
+      archiveBtn.addEventListener('click', async () => {
+        const pId = archiveBtn.dataset.projectId;
+        if (!pId) return;
+
+        const confirmed = window.confirm("Are you sure you want to soft-archive this project? It will be excluded from active scans and matches.");
+        if (!confirmed) return;
+
+        archiveBtn.disabled = true;
+        archiveBtn.textContent = 'Archiving...';
+        try {
+          await api.archiveProject(pId);
+          renderProjectDetailView(container, store, pId);
+        } catch (err) {
+          console.error("Failed to archive project:", err);
+          alert(`Failed to archive project: ${err.message || String(err)}`);
+          archiveBtn.disabled = false;
+          archiveBtn.textContent = 'Archive Project';
+        }
+      });
+    }
+
+    if (restoreBtn) {
+      restoreBtn.addEventListener('click', async () => {
+        const pId = restoreBtn.dataset.projectId;
+        if (!pId) return;
+
+        restoreBtn.disabled = true;
+        restoreBtn.textContent = 'Restoring...';
+        try {
+          await api.restoreProject(pId);
+          renderProjectDetailView(container, store, pId);
+        } catch (err) {
+          console.error("Failed to restore project:", err);
+          alert(`Failed to restore project: ${err.message || String(err)}`);
+          restoreBtn.disabled = false;
+          restoreBtn.textContent = 'Restore Project';
+        }
+      });
+    }
 
   } catch (err) {
     if (!requestManager.isCurrent('projects', reqGen) || (err && err.isAborted && !err.isTimeout)) return;

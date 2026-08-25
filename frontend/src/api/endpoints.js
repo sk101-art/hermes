@@ -109,6 +109,62 @@ export const api = {
       ...options,
     });
   },
+
+  // Refresh Operations
+  enqueueRefresh: (scope, idempotencyKey = null, options = {}) => {
+    return requestManager.request('/runtime/refresh', {
+      method: 'POST',
+      body: { scope, idempotency_key: idempotencyKey },
+      viewKey: options.viewKey || 'runtime',
+      ...options,
+    });
+  },
+  getOperation: (operationId, options = {}) => {
+    return requestManager.request(`/runtime/operations/${encodeURIComponent(operationId)}`, {
+      viewKey: options.viewKey || 'runtime',
+      ...options,
+    });
+  },
+  getDailyStatus: (params = {}, options = {}) => {
+    return requestManager.request('/daily/status', {
+      params,
+      viewKey: options.viewKey || 'runtime',
+      ...options,
+    });
+  },
+
+  // Project Management
+  addProject: (data, options = {}) => {
+    return requestManager.request('/projects', {
+      method: 'POST',
+      body: data,
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+  archiveProject: (projectId, reason = null, options = {}) => {
+    const params = reason ? { reason } : {};
+    return requestManager.request(`/projects/${encodeURIComponent(projectId)}/archive`, {
+      method: 'POST',
+      params,
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+  restoreProject: (projectId, options = {}) => {
+    return requestManager.request(`/projects/${encodeURIComponent(projectId)}/restore`, {
+      method: 'POST',
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+  scanProject: (projectId, options = {}) => {
+    return requestManager.request(`/projects/${encodeURIComponent(projectId)}/scan`, {
+      method: 'POST',
+      viewKey: 'projects',
+      ...options,
+    });
+  },
 };
 
 export default api;

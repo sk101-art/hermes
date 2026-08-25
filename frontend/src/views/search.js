@@ -21,6 +21,8 @@ import {
 } from '../components/badges.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, ensureArray, formatDate } from '../utils/adapters.js';
+import { renderRefreshControl } from '../components/refresh-control.js';
+
 
 // Cached dynamic sources and projects
 let cachedSourcesList = null;
@@ -46,6 +48,9 @@ export async function renderSearchView(container, store, routeParams = {}) {
         <span class="eyebrow">Corpus Discovery</span>
         <h1>Search with Epistemic Context</h1>
         <p class="lead">Search score reflects query relevance and context ranking, not truth validity. Verification, maturity, and risk remain explicit.</p>
+      </div>
+      <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+        <div id="search-refresh-container"></div>
       </div>
     </div>
 
@@ -167,6 +172,16 @@ export async function renderSearchView(container, store, routeParams = {}) {
   `;
 
   container.innerHTML = initialHtml;
+
+  const refreshContainer = container.querySelector('#search-refresh-container');
+  if (refreshContainer) {
+    const cleanup = renderRefreshControl(refreshContainer, 'search_refresh', () => {
+      if (isSearched) {
+        executeSearch();
+      }
+    });
+    container._viewCleanup = cleanup;
+  }
 
   // DOM Elements
   const inputEl = container.querySelector('#search-input-field');

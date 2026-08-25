@@ -886,6 +886,12 @@ def get_today_inbox(
             "story_available": is_avail,
             "expires_at": it.expires_at.isoformat() if it.expires_at else None,
             "created_at": it.created_at.isoformat() if it.created_at else None,
+            "surface_date": it.surface_date,
+            "latest_event_at": it.latest_event_at,
+            "last_materialized_at": it.last_materialized_at,
+            "data_cutoff_at": it.data_cutoff_at,
+            "freshness_kind": it.freshness_kind,
+            "daily_run_id": it.daily_run_id,
         })
     return out
 
@@ -960,7 +966,7 @@ def get_morning_brief(
     return {
         "id": briefing.id,
         "briefing_date": briefing.briefing_date,
-        "generated_at": briefing.generated_at.isoformat(),
+        "generated_at": briefing.generated_at.isoformat() if isinstance(briefing.generated_at, datetime) else str(briefing.generated_at),
         "total_items": briefing.total_items,
         "high_priority_count": briefing.high_priority_count,
         "project_relevant_count": briefing.project_relevant_count,
@@ -968,4 +974,10 @@ def get_morning_brief(
         "summary_text": briefing.summary_text,
         "sections": final_sections,
         "ordered_sections": ordered_sections,
+        "runtime_timezone": briefing.runtime_timezone,
+        "data_cutoff_at": briefing.data_cutoff_at,
+        "generation_status": briefing.generation_status,
+        "source_status_json": briefing.source_status_json,
+        "daily_run_id": briefing.daily_run_id,
+        "original_generated_at": briefing.original_generated_at,
     }

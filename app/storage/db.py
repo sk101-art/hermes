@@ -31,7 +31,10 @@ from app.models.schemas import (
     SourceCheckpoint,
     RuntimeJob,
     RuntimeJobRun,
+    DailySignalRun,
+    RefreshOperation,
 )
+
 
 
 class DatabaseMigrationError(Exception):
@@ -80,14 +83,20 @@ class Database:
         """Ensure columns added across all sessions exist in previously created tables with strict atomicity and error discipline."""
         try:
             self.conn.execute("PRAGMA foreign_keys=OFF")
-            all_tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        except Exception:
+            pass
+
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN TRANSACTION")
+        try:
+            all_tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
             def _safe_add_column(table: str, col_name: str, col_def: str, existing_cols: set):
                 if table not in all_tables:
                     return
                 if col_name not in existing_cols:
                     try:
-                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
                     except sqlite3.OperationalError as e:
                         err_str = str(e).lower()
                         if "duplicate column name" not in err_str:
@@ -96,7 +105,7 @@ class Database:
 
             # 1. Claims columns
             if "claims" in all_tables:
-                claim_info = self.conn.execute("PRAGMA table_info(claims)").fetchall()
+                claim_info = cursor.execute("PRAGMA table_info(claims)").fetchall()
                 existing_claim_cols = {r["name"] for r in claim_info}
                 for col_name, col_def in [
                     ("assertion_level", "TEXT NOT NULL DEFAULT 'artifact_fact'"),
@@ -111,7 +120,7 @@ class Database:
 
             # 2. Evidence columns
             if "evidence" in all_tables:
-                ev_info = self.conn.execute("PRAGMA table_info(evidence)").fetchall()
+                ev_info = cursor.execute("PRAGMA table_info(evidence)").fetchall()
                 existing_ev_cols = {r["name"] for r in ev_info}
                 for col_name, col_def in [
                     ("source", "TEXT NOT NULL DEFAULT 'unknown'"),
@@ -131,13 +140,13 @@ class Database:
 
             # 3. Intelligence Changes columns
             if "intelligence_changes" in all_tables:
-                ic_info = self.conn.execute("PRAGMA table_info(intelligence_changes)").fetchall()
+                ic_info = cursor.execute("PRAGMA table_info(intelligence_changes)").fetchall()
                 existing_ic_cols = {r["name"] for r in ic_info}
                 _safe_add_column("intelligence_changes", "origin", "TEXT NOT NULL DEFAULT 'live_update'", existing_ic_cols)
 
             # 4. Technology Assessments columns
             if "technology_assessments" in all_tables:
-                ta_info = self.conn.execute("PRAGMA table_info(technology_assessments)").fetchall()
+                ta_info = cursor.execute("PRAGMA table_info(technology_assessments)").fetchall()
                 existing_ta_cols = {r["name"] for r in ta_info}
                 for col_name, col_def in [
                     ("research_score", "REAL DEFAULT 0.0"),
@@ -151,11 +160,11 @@ class Database:
 
             # 5. Check claim_revisions.new_verification_score nullability
             if "claim_revisions" in all_tables:
-                cr_info = self.conn.execute("PRAGMA table_info(claim_revisions)").fetchall()
+                cr_info = cursor.execute("PRAGMA table_info(claim_revisions)").fetchall()
                 for col in cr_info:
                     if col["name"] == "new_verification_score" and col["notnull"] == 1:
                         try:
-                            self.conn.execute("""
+                            cursor.execute("""
                                 CREATE TABLE IF NOT EXISTS claim_revisions_mig_tmp (
                                     id TEXT PRIMARY KEY,
                                     claim_id TEXT NOT NULL,
@@ -169,7 +178,7 @@ class Database:
                                     created_at TEXT NOT NULL
                                 )
                             """)
-                            self.conn.execute("""
+                            cursor.execute("""
                                 INSERT INTO claim_revisions_mig_tmp (
                                     id, claim_id, previous_status, new_status,
                                     previous_verification_score, new_verification_score,
@@ -181,23 +190,23 @@ class Database:
                                     reason, trigger_event_id, trigger_evidence_id, created_at
                                 FROM claim_revisions
                             """)
-                            self.conn.execute("DROP TABLE claim_revisions")
-                            self.conn.execute("ALTER TABLE claim_revisions_mig_tmp RENAME TO claim_revisions")
-                            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_claim_id ON claim_revisions(claim_id)")
-                            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_created_at ON claim_revisions(created_at DESC)")
+                            cursor.execute("DROP TABLE claim_revisions")
+                            cursor.execute("ALTER TABLE claim_revisions_mig_tmp RENAME TO claim_revisions")
+                            cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_claim_id ON claim_revisions(claim_id)")
+                            cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_rev_created_at ON claim_revisions(created_at DESC)")
                         except Exception as err:
-                            self.conn.execute("DROP TABLE IF EXISTS claim_revisions_mig_tmp")
+                            cursor.execute("DROP TABLE IF EXISTS claim_revisions_mig_tmp")
                             sanitized = str(err).split("\n")[0]
                             raise DatabaseMigrationError(f"Failed migrating claim_revisions: {sanitized}") from err
                         break
 
-            # 5. Check technology_assessment_revisions.new_score nullability
+            # 6. Check technology_assessment_revisions.new_score nullability
             if "technology_assessment_revisions" in all_tables:
-                tar_info = self.conn.execute("PRAGMA table_info(technology_assessment_revisions)").fetchall()
+                tar_info = cursor.execute("PRAGMA table_info(technology_assessment_revisions)").fetchall()
                 for col in tar_info:
                     if col["name"] == "new_score" and col["notnull"] == 1:
                         try:
-                            self.conn.execute("""
+                            cursor.execute("""
                                 CREATE TABLE IF NOT EXISTS technology_assessment_revisions_mig_tmp (
                                     id TEXT PRIMARY KEY,
                                     cluster_id TEXT NOT NULL,
@@ -209,7 +218,7 @@ class Database:
                                     created_at TEXT NOT NULL
                                 )
                             """)
-                            self.conn.execute("""
+                            cursor.execute("""
                                 INSERT INTO technology_assessment_revisions_mig_tmp (
                                     id, cluster_id, previous_stage, new_stage,
                                     previous_score, new_score, reason, created_at
@@ -219,18 +228,18 @@ class Database:
                                     previous_score, new_score, reason, created_at
                                 FROM technology_assessment_revisions
                             """)
-                            self.conn.execute("DROP TABLE technology_assessment_revisions")
-                            self.conn.execute("ALTER TABLE technology_assessment_revisions_mig_tmp RENAME TO technology_assessment_revisions")
-                            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tech_rev_cluster_id ON technology_assessment_revisions(cluster_id)")
+                            cursor.execute("DROP TABLE technology_assessment_revisions")
+                            cursor.execute("ALTER TABLE technology_assessment_revisions_mig_tmp RENAME TO technology_assessment_revisions")
+                            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tech_rev_cluster_id ON technology_assessment_revisions(cluster_id)")
                         except Exception as err:
-                            self.conn.execute("DROP TABLE IF EXISTS technology_assessment_revisions_mig_tmp")
+                            cursor.execute("DROP TABLE IF EXISTS technology_assessment_revisions_mig_tmp")
                             sanitized = str(err).split("\n")[0]
                             raise DatabaseMigrationError(f"Failed migrating technology_assessment_revisions: {sanitized}") from err
                         break
 
-            # 6. Projects and Project Matches columns
+            # 7. Projects and Project Matches columns
             if "projects" in all_tables:
-                p_info = self.conn.execute("PRAGMA table_info(projects)").fetchall()
+                p_info = cursor.execute("PRAGMA table_info(projects)").fetchall()
                 existing_p_cols = {r["name"] for r in p_info}
                 for col_name, col_def in [
                     ("languages_json", "TEXT"),
@@ -247,11 +256,18 @@ class Database:
                     ("last_indexed_at", "TEXT"),
                     ("tags_json", "TEXT"),
                     ("description", "TEXT"),
+                    ("status", "TEXT NOT NULL DEFAULT 'active'"),
+                    ("archived_at", "TEXT"),
+                    ("archive_reason", "TEXT"),
+                    ("last_scan_status", "TEXT"),
+                    ("last_scan_started_at", "TEXT"),
+                    ("last_scan_completed_at", "TEXT"),
+                    ("last_scan_error", "TEXT"),
                 ]:
                     _safe_add_column("projects", col_name, col_def, existing_p_cols)
 
             if "project_matches" in all_tables:
-                pm_info = self.conn.execute("PRAGMA table_info(project_matches)").fetchall()
+                pm_info = cursor.execute("PRAGMA table_info(project_matches)").fetchall()
                 existing_pm_cols = {r["name"] for r in pm_info}
                 for col_name, col_def in [
                     ("entity_type", "TEXT NOT NULL DEFAULT 'cluster'"),
@@ -263,13 +279,13 @@ class Database:
                     _safe_add_column("project_matches", col_name, col_def, existing_pm_cols)
                 if "cluster_id" in existing_pm_cols and "entity_id" in existing_pm_cols:
                     try:
-                        self.conn.execute("UPDATE project_matches SET entity_id = cluster_id WHERE (entity_id IS NULL OR entity_id = '') AND cluster_id IS NOT NULL")
+                        cursor.execute("UPDATE project_matches SET entity_id = cluster_id WHERE (entity_id IS NULL OR entity_id = '') AND cluster_id IS NOT NULL")
                     except Exception:
                         pass
 
-            # 7. Saved items columns
+            # 8. Saved items columns
             if "saved_items" in all_tables:
-                saved_info = self.conn.execute("PRAGMA table_info(saved_items)").fetchall()
+                saved_info = cursor.execute("PRAGMA table_info(saved_items)").fetchall()
                 existing_saved_cols = {r["name"] for r in saved_info}
                 for col_name, col_def in [
                     ("is_active", "INTEGER DEFAULT 1"),
@@ -289,9 +305,9 @@ class Database:
                 ]:
                     _safe_add_column("saved_items", col_name, col_def, existing_saved_cols)
 
-            # 8. Daily briefing items columns
+            # 9. Daily briefing items columns
             if "daily_briefing_items" in all_tables:
-                dbi_info = self.conn.execute("PRAGMA table_info(daily_briefing_items)").fetchall()
+                dbi_info = cursor.execute("PRAGMA table_info(daily_briefing_items)").fetchall()
                 existing_dbi_cols = {r["name"] for r in dbi_info}
                 for col_name, col_def in [
                     ("title", "TEXT"),
@@ -307,9 +323,9 @@ class Database:
                 ]:
                     _safe_add_column("daily_briefing_items", col_name, col_def, existing_dbi_cols)
 
-            # 8. Runtime error categories, threshold state, evaluation status, and blocked reasons
+            # 10. Source Checkpoints columns
             if "source_checkpoints" in all_tables:
-                scp_info = self.conn.execute("PRAGMA table_info(source_checkpoints)").fetchall()
+                scp_info = cursor.execute("PRAGMA table_info(source_checkpoints)").fetchall()
                 existing_scp_cols = {r["name"] for r in scp_info}
                 for col_name, col_def in [
                     ("last_error_category", "TEXT"),
@@ -318,8 +334,9 @@ class Database:
                 ]:
                     _safe_add_column("source_checkpoints", col_name, col_def, existing_scp_cols)
 
+            # 11. Runtime Jobs columns
             if "runtime_jobs" in all_tables:
-                rj_info = self.conn.execute("PRAGMA table_info(runtime_jobs)").fetchall()
+                rj_info = cursor.execute("PRAGMA table_info(runtime_jobs)").fetchall()
                 existing_rj_cols = {r["name"] for r in rj_info}
                 for col_name, col_def in [
                     ("last_error_category", "TEXT"),
@@ -331,23 +348,140 @@ class Database:
                 ]:
                     _safe_add_column("runtime_jobs", col_name, col_def, existing_rj_cols)
 
+            # 12. Runtime Job Runs columns
             if "runtime_job_runs" in all_tables:
-                rjr_info = self.conn.execute("PRAGMA table_info(runtime_job_runs)").fetchall()
+                rjr_info = cursor.execute("PRAGMA table_info(runtime_job_runs)").fetchall()
                 existing_rjr_cols = {r["name"] for r in rjr_info}
                 _safe_add_column("runtime_job_runs", "error_category", "TEXT", existing_rjr_cols)
 
-            if "runtime_jobs" in all_tables:
+            # 13. Inbox Items new columns
+            if "inbox_items" in all_tables:
+                inb_info = cursor.execute("PRAGMA table_info(inbox_items)").fetchall()
+                existing_inb_cols = {r["name"] for r in inb_info}
+                for col_name, col_def in [
+                    ("surface_date", "TEXT"),
+                    ("latest_event_at", "TEXT"),
+                    ("last_materialized_at", "TEXT"),
+                    ("data_cutoff_at", "TEXT"),
+                    ("freshness_kind", "TEXT"),
+                    ("daily_run_id", "TEXT"),
+                ]:
+                    _safe_add_column("inbox_items", col_name, col_def, existing_inb_cols)
+
+            # 14. Daily Briefings new columns
+            if "daily_briefings" in all_tables:
+                db_info = cursor.execute("PRAGMA table_info(daily_briefings)").fetchall()
+                existing_db_cols = {r["name"] for r in db_info}
+                for col_name, col_def in [
+                    ("runtime_timezone", "TEXT"),
+                    ("data_cutoff_at", "TEXT"),
+                    ("generation_status", "TEXT"),
+                    ("source_status_json", "TEXT"),
+                    ("daily_run_id", "TEXT"),
+                    ("original_generated_at", "TEXT"),
+                ]:
+                    _safe_add_column("daily_briefings", col_name, col_def, existing_db_cols)
+
+            # 15. daily_signal_runs table
+            if "daily_signal_runs" not in all_tables:
                 try:
-                    self.conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status)")
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS daily_signal_runs (
+                            id TEXT PRIMARY KEY,
+                            runtime_date TEXT UNIQUE NOT NULL,
+                            timezone_name TEXT NOT NULL,
+                            started_at TEXT NOT NULL,
+                            completed_at TEXT,
+                            data_cutoff_at TEXT,
+                            status TEXT NOT NULL,
+                            new_signal_count INTEGER DEFAULT 0,
+                            updated_signal_count INTEGER DEFAULT 0,
+                            carried_signal_count INTEGER DEFAULT 0,
+                            retry_count INTEGER DEFAULT 0,
+                            briefing_id TEXT,
+                            source_status_json TEXT,
+                            error_summary TEXT,
+                            content_hash TEXT NOT NULL DEFAULT ''
+                        )
+                    """)
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date)")
                 except Exception as e:
+                    sanitized = str(e).split("\n")[0]
+                    raise DatabaseMigrationError(f"Failed creating daily_signal_runs table: {sanitized}") from e
+
+            # 16. refresh_operations table
+            if "refresh_operations" in all_tables:
+                try:
+                    ro_info = cursor.execute("PRAGMA table_info(refresh_operations)").fetchall()
+                    existing_ro_cols = {r["name"] for r in ro_info}
+                    _safe_add_column("refresh_operations", "idempotency_key", "TEXT", existing_ro_cols)
+                except Exception:
                     pass
 
-            self.conn.commit()
+            if "refresh_operations" not in all_tables:
+                try:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS refresh_operations (
+                            id TEXT PRIMARY KEY,
+                            scope TEXT NOT NULL,
+                            target_id TEXT,
+                            requested_at TEXT NOT NULL,
+                            started_at TEXT,
+                            completed_at TEXT,
+                            status TEXT NOT NULL,
+                            [trigger] TEXT NOT NULL DEFAULT 'user_requested',
+                            job_names_json TEXT,
+                            items_processed INTEGER DEFAULT 0,
+                            error_summary TEXT,
+                            result_json TEXT,
+                            claimed_at TEXT,
+                            lease_expires_at TEXT,
+                            heartbeat_at TEXT,
+                            worker_id TEXT,
+                            idempotency_key TEXT
+                        )
+                    """)
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_refresh_ops_status ON refresh_operations(status)")
+                except Exception as e:
+                    sanitized = str(e).split("\n")[0]
+                    raise DatabaseMigrationError(f"Failed creating refresh_operations table: {sanitized}") from e
+
+            if "runtime_jobs" in all_tables:
+                try:
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status)")
+                except Exception:
+                    pass
+
+            cursor.execute("COMMIT")
+        except Exception as e:
+            try:
+                cursor.execute("ROLLBACK")
+            except Exception:
+                pass
+            try:
+                cursor.execute("DROP TABLE IF EXISTS claim_revisions_mig_tmp")
+                cursor.execute("DROP TABLE IF EXISTS technology_assessment_revisions_mig_tmp")
+            except Exception:
+                pass
+            raise DatabaseMigrationError(f"Migration transaction failed: {e}") from e
         finally:
             try:
                 self.conn.execute("PRAGMA foreign_keys=ON")
             except Exception:
                 pass
+            # Verification checks
+            try:
+                qc = self.conn.execute("PRAGMA quick_check").fetchone()[0]
+                if qc != "ok":
+                    raise DatabaseMigrationError(f"PRAGMA quick_check failed: {qc}")
+                fk_violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+                if fk_violations:
+                    raise DatabaseMigrationError(f"PRAGMA foreign_key_check found violations: {fk_violations}")
+            except Exception as check_err:
+                if not isinstance(check_err, DatabaseMigrationError):
+                    raise DatabaseMigrationError(f"Integrity check failed: {check_err}") from check_err
+                raise
+
 
     # --- Event Methods ---
 
@@ -1719,8 +1853,10 @@ class Database:
             id, name, path, description, languages_json, frameworks_json,
             libraries_json, databases_json, infrastructure_json, models_json,
             tools_json, topics_json, keywords_json, is_active, context_hash,
-            created_at, updated_at, last_indexed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, last_indexed_at, status, archived_at,
+            archive_reason, last_scan_status, last_scan_started_at,
+            last_scan_completed_at, last_scan_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -1743,6 +1879,13 @@ class Database:
                 project.created_at.isoformat(),
                 project.updated_at.isoformat(),
                 project.last_indexed_at.isoformat() if project.last_indexed_at else None,
+                project.status,
+                project.archived_at.isoformat() if project.archived_at else None,
+                project.archive_reason,
+                project.last_scan_status,
+                project.last_scan_started_at.isoformat() if project.last_scan_started_at else None,
+                project.last_scan_completed_at.isoformat() if project.last_scan_completed_at else None,
+                project.last_scan_error,
             ),
         )
         self.conn.commit()
@@ -1750,6 +1893,11 @@ class Database:
 
     def _row_to_project(self, r: sqlite3.Row) -> Project:
         d = dict(r)
+        
+        def parse_dt(k):
+            val = d.get(k)
+            return datetime.fromisoformat(val) if val else None
+
         return Project(
             id=d["id"],
             name=d["name"],
@@ -1768,8 +1916,16 @@ class Database:
             context_hash=d.get("context_hash") or "",
             created_at=datetime.fromisoformat(d["created_at"]),
             updated_at=datetime.fromisoformat(d["updated_at"]),
-            last_indexed_at=datetime.fromisoformat(d["last_indexed_at"]) if d.get("last_indexed_at") else None,
+            last_indexed_at=parse_dt("last_indexed_at"),
+            status=d.get("status") or "active",
+            archived_at=parse_dt("archived_at"),
+            archive_reason=d.get("archive_reason"),
+            last_scan_status=d.get("last_scan_status"),
+            last_scan_started_at=parse_dt("last_scan_started_at"),
+            last_scan_completed_at=parse_dt("last_scan_completed_at"),
+            last_scan_error=d.get("last_scan_error"),
         )
+
 
     def get_project(self, project_id: str) -> Optional[Project]:
         cursor = self.conn.cursor()
@@ -2102,28 +2258,35 @@ class Database:
     # --- Session 8: Inbox, Saved Items, User Feedback, and Daily Briefings ---
 
     def _row_to_inbox_item(self, r: sqlite3.Row) -> InboxItem:
+        d = dict(r)
         return InboxItem(
-            id=r["id"],
-            entity_type=r["entity_type"],
-            entity_id=r["entity_id"],
-            story_cluster_id=r["story_cluster_id"],
-            title=r["title"],
-            section=r["section"],
-            inbox_score=r["inbox_score"] if r["inbox_score"] is not None else None,
-            rank_score=r["rank_score"] if r["rank_score"] is not None else None,
-            project_impact_score=r["project_impact_score"] if r["project_impact_score"] is not None else None,
-            state=r["state"],
-            item_type=r["item_type"],
-            created_at=datetime.fromisoformat(r["created_at"]),
-            first_seen_at=datetime.fromisoformat(r["first_seen_at"]) if r["first_seen_at"] else None,
-            last_seen_at=datetime.fromisoformat(r["last_seen_at"]) if r["last_seen_at"] else None,
-            expires_at=datetime.fromisoformat(r["expires_at"]),
-            seen_at=datetime.fromisoformat(r["seen_at"]) if r["seen_at"] else None,
-            opened_at=datetime.fromisoformat(r["opened_at"]) if r["opened_at"] else None,
-            is_starred=bool(r["is_starred"]),
-            saved_item_id=r["saved_item_id"],
-            matched_project_ids=json.loads(r["matched_project_ids_json"]) if r["matched_project_ids_json"] else [],
-            reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
+            id=d["id"],
+            entity_type=d["entity_type"],
+            entity_id=d["entity_id"],
+            story_cluster_id=d["story_cluster_id"],
+            title=d["title"],
+            section=d["section"],
+            inbox_score=d["inbox_score"] if d["inbox_score"] is not None else None,
+            rank_score=d["rank_score"] if d["rank_score"] is not None else None,
+            project_impact_score=d["project_impact_score"] if d["project_impact_score"] is not None else None,
+            state=d["state"],
+            item_type=d["item_type"],
+            created_at=datetime.fromisoformat(d["created_at"]),
+            first_seen_at=datetime.fromisoformat(d["first_seen_at"]) if d.get("first_seen_at") else None,
+            last_seen_at=datetime.fromisoformat(d["last_seen_at"]) if d.get("last_seen_at") else None,
+            expires_at=datetime.fromisoformat(d["expires_at"]),
+            seen_at=datetime.fromisoformat(d["seen_at"]) if d.get("seen_at") else None,
+            opened_at=datetime.fromisoformat(d["opened_at"]) if d.get("opened_at") else None,
+            is_starred=bool(d["is_starred"]),
+            saved_item_id=d.get("saved_item_id"),
+            matched_project_ids=json.loads(d["matched_project_ids_json"]) if d.get("matched_project_ids_json") else [],
+            reason_codes=json.loads(d["reason_codes_json"]) if d.get("reason_codes_json") else [],
+            surface_date=d.get("surface_date"),
+            latest_event_at=d.get("latest_event_at"),
+            last_materialized_at=d.get("last_materialized_at"),
+            data_cutoff_at=d.get("data_cutoff_at"),
+            freshness_kind=d.get("freshness_kind"),
+            daily_run_id=d.get("daily_run_id"),
         )
 
     def save_inbox_item(self, item: InboxItem) -> bool:
@@ -2133,8 +2296,9 @@ class Database:
             inbox_score, rank_score, project_impact_score, state, item_type,
             created_at, first_seen_at, last_seen_at, expires_at, seen_at,
             opened_at, is_starred, saved_item_id, matched_project_ids_json,
-            reason_codes_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            reason_codes_json, surface_date, latest_event_at, last_materialized_at,
+            data_cutoff_at, freshness_kind, daily_run_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -2160,10 +2324,17 @@ class Database:
                 item.saved_item_id,
                 json.dumps(item.matched_project_ids),
                 json.dumps(item.reason_codes),
+                item.surface_date,
+                item.latest_event_at,
+                item.last_materialized_at,
+                item.data_cutoff_at,
+                item.freshness_kind,
+                item.daily_run_id,
             ),
         )
         self.conn.commit()
         return True
+
 
     def get_inbox_item(self, inbox_id: str) -> Optional[InboxItem]:
         cursor = self.conn.cursor()
@@ -2431,8 +2602,10 @@ class Database:
         sql = """
         INSERT OR REPLACE INTO daily_briefings (
             id, briefing_date, generated_at, total_items, high_priority_count,
-            project_relevant_count, content_hash, summary_text, sections_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            project_relevant_count, content_hash, summary_text, sections_json, created_at,
+            runtime_timezone, data_cutoff_at, generation_status, source_status_json,
+            daily_run_id, original_generated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -2447,10 +2620,37 @@ class Database:
                 briefing.summary_text,
                 json.dumps(briefing.sections),
                 briefing.created_at.isoformat(),
+                briefing.runtime_timezone,
+                briefing.data_cutoff_at,
+                briefing.generation_status,
+                briefing.source_status_json,
+                briefing.daily_run_id,
+                briefing.original_generated_at,
             ),
         )
         self.conn.commit()
         return True
+
+    def _row_to_daily_briefing(self, row: sqlite3.Row) -> DailyBriefing:
+        d = dict(row)
+        return DailyBriefing(
+            id=d["id"],
+            briefing_date=d["briefing_date"],
+            generated_at=datetime.fromisoformat(d["generated_at"]),
+            total_items=d["total_items"],
+            high_priority_count=d["high_priority_count"],
+            project_relevant_count=d["project_relevant_count"],
+            content_hash=d["content_hash"],
+            summary_text=d["summary_text"],
+            sections=json.loads(d["sections_json"]) if d["sections_json"] else {},
+            created_at=datetime.fromisoformat(d["created_at"]),
+            runtime_timezone=d.get("runtime_timezone"),
+            data_cutoff_at=d.get("data_cutoff_at"),
+            generation_status=d.get("generation_status"),
+            source_status_json=d.get("source_status_json"),
+            daily_run_id=d.get("daily_run_id"),
+            original_generated_at=d.get("original_generated_at"),
+        )
 
     def get_daily_briefing(self, briefing_date: str) -> Optional[DailyBriefing]:
         cursor = self.conn.cursor()
@@ -2458,18 +2658,7 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return None
-        return DailyBriefing(
-            id=row["id"],
-            briefing_date=row["briefing_date"],
-            generated_at=datetime.fromisoformat(row["generated_at"]),
-            total_items=row["total_items"],
-            high_priority_count=row["high_priority_count"],
-            project_relevant_count=row["project_relevant_count"],
-            content_hash=row["content_hash"],
-            summary_text=row["summary_text"],
-            sections=json.loads(row["sections_json"]) if row["sections_json"] else {},
-            created_at=datetime.fromisoformat(row["created_at"]),
-        )
+        return self._row_to_daily_briefing(row)
 
     def get_latest_daily_briefing(self) -> Optional[DailyBriefing]:
         cursor = self.conn.cursor()
@@ -2477,18 +2666,7 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return None
-        return DailyBriefing(
-            id=row["id"],
-            briefing_date=row["briefing_date"],
-            generated_at=datetime.fromisoformat(row["generated_at"]),
-            total_items=row["total_items"],
-            high_priority_count=row["high_priority_count"],
-            project_relevant_count=row["project_relevant_count"],
-            content_hash=row["content_hash"],
-            summary_text=row["summary_text"],
-            sections=json.loads(row["sections_json"]) if row["sections_json"] else {},
-            created_at=datetime.fromisoformat(row["created_at"]),
-        )
+        return self._row_to_daily_briefing(row)
 
     def save_daily_briefing_with_items(self, briefing: DailyBriefing, items: List[DailyBriefingItem]) -> bool:
         """Atomically saves daily briefing header and its item snapshots in a single transaction."""
@@ -2498,8 +2676,10 @@ class Database:
             sql_briefing = """
             INSERT OR REPLACE INTO daily_briefings (
                 id, briefing_date, generated_at, total_items, high_priority_count,
-                project_relevant_count, content_hash, summary_text, sections_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                project_relevant_count, content_hash, summary_text, sections_json, created_at,
+                runtime_timezone, data_cutoff_at, generation_status, source_status_json,
+                daily_run_id, original_generated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             cursor.execute(
                 sql_briefing,
@@ -2514,6 +2694,12 @@ class Database:
                     briefing.summary_text,
                     json.dumps(briefing.sections),
                     briefing.created_at.isoformat(),
+                    briefing.runtime_timezone,
+                    briefing.data_cutoff_at,
+                    briefing.generation_status,
+                    briefing.source_status_json,
+                    briefing.daily_run_id,
+                    briefing.original_generated_at,
                 ),
             )
             cursor.execute("DELETE FROM daily_briefing_items WHERE briefing_id = ?", (briefing.id,))
@@ -2550,6 +2736,7 @@ class Database:
         except Exception:
             self.conn.rollback()
             raise
+
 
     def save_daily_briefing_items(self, items: List[DailyBriefingItem]) -> bool:
         if not items:
@@ -2855,6 +3042,177 @@ class Database:
         backup_conn.close()
         return True
 
+    def save_daily_signal_run(self, run: DailySignalRun) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO daily_signal_runs (
+            id, runtime_date, timezone_name, started_at, completed_at, data_cutoff_at,
+            status, new_signal_count, updated_signal_count, carried_signal_count,
+            retry_count, briefing_id, source_status_json, error_summary, content_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                run.id,
+                run.runtime_date,
+                run.timezone_name,
+                run.started_at.isoformat(),
+                run.completed_at.isoformat() if run.completed_at else None,
+                run.data_cutoff_at.isoformat() if run.data_cutoff_at else None,
+                run.status,
+                run.new_signal_count,
+                run.updated_signal_count,
+                run.carried_signal_count,
+                run.retry_count,
+                run.briefing_id,
+                run.source_status_json,
+                run.error_summary,
+                run.content_hash,
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def _row_to_daily_signal_run(self, r: sqlite3.Row) -> DailySignalRun:
+        d = dict(r)
+        return DailySignalRun(
+            id=d["id"],
+            runtime_date=d["runtime_date"],
+            timezone_name=d["timezone_name"],
+            started_at=datetime.fromisoformat(d["started_at"]),
+            completed_at=datetime.fromisoformat(d["completed_at"]) if d.get("completed_at") else None,
+            data_cutoff_at=datetime.fromisoformat(d["data_cutoff_at"]) if d.get("data_cutoff_at") else None,
+            status=d["status"],
+            new_signal_count=d.get("new_signal_count", 0),
+            updated_signal_count=d.get("updated_signal_count", 0),
+            carried_signal_count=d.get("carried_signal_count", 0),
+            retry_count=d.get("retry_count", 0),
+            briefing_id=d.get("briefing_id"),
+            source_status_json=d.get("source_status_json"),
+            error_summary=d.get("error_summary"),
+            content_hash=d.get("content_hash", ""),
+        )
+
+    def get_daily_signal_run(self, run_id: str) -> Optional[DailySignalRun]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM daily_signal_runs WHERE id = ?", (run_id,))
+        row = cursor.fetchone()
+        return self._row_to_daily_signal_run(row) if row else None
+
+    def get_daily_signal_run_by_date(self, date_str: str) -> Optional[DailySignalRun]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM daily_signal_runs WHERE runtime_date = ?", (date_str,))
+        row = cursor.fetchone()
+        return self._row_to_daily_signal_run(row) if row else None
+
+    def save_refresh_operation(self, op: RefreshOperation) -> bool:
+        sql = """
+        INSERT OR REPLACE INTO refresh_operations (
+            id, scope, target_id, requested_at, started_at, completed_at,
+            status, [trigger], job_names_json, items_processed, error_summary, result_json,
+            claimed_at, lease_expires_at, heartbeat_at, worker_id, idempotency_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.conn.execute(
+            sql,
+            (
+                op.id,
+                op.scope,
+                op.target_id,
+                op.requested_at.isoformat(),
+                op.started_at.isoformat() if op.started_at else None,
+                op.completed_at.isoformat() if op.completed_at else None,
+                op.status,
+                op.trigger,
+                op.job_names_json,
+                op.items_processed,
+                op.error_summary,
+                op.result_json,
+                op.claimed_at.isoformat() if op.claimed_at else None,
+                op.lease_expires_at.isoformat() if op.lease_expires_at else None,
+                op.heartbeat_at.isoformat() if op.heartbeat_at else None,
+                op.worker_id,
+                op.idempotency_key,
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def _row_to_refresh_operation(self, r: sqlite3.Row) -> RefreshOperation:
+        d = dict(r)
+        return RefreshOperation(
+            id=d["id"],
+            scope=d["scope"],
+            target_id=d.get("target_id"),
+            requested_at=datetime.fromisoformat(d["requested_at"]),
+            started_at=datetime.fromisoformat(d["started_at"]) if d.get("started_at") else None,
+            completed_at=datetime.fromisoformat(d["completed_at"]) if d.get("completed_at") else None,
+            status=d["status"],
+            trigger=d.get("trigger") or "user_requested",
+            job_names_json=d.get("job_names_json"),
+            items_processed=d.get("items_processed", 0),
+            error_summary=d.get("error_summary"),
+            result_json=d.get("result_json"),
+            claimed_at=datetime.fromisoformat(d["claimed_at"]) if d.get("claimed_at") else None,
+            lease_expires_at=datetime.fromisoformat(d["lease_expires_at"]) if d.get("lease_expires_at") else None,
+            heartbeat_at=datetime.fromisoformat(d["heartbeat_at"]) if d.get("heartbeat_at") else None,
+            worker_id=d.get("worker_id"),
+            idempotency_key=d.get("idempotency_key"),
+        )
+
+    def get_refresh_operation(self, op_id: str) -> Optional[RefreshOperation]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM refresh_operations WHERE id = ?", (op_id,))
+        row = cursor.fetchone()
+        return self._row_to_refresh_operation(row) if row else None
+
+    def get_next_queued_operation(self) -> Optional[RefreshOperation]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM refresh_operations WHERE status = 'queued' ORDER BY requested_at ASC LIMIT 1")
+        row = cursor.fetchone()
+        return self._row_to_refresh_operation(row) if row else None
+
+    def claim_refresh_operation(self, op_id: str, worker_id: str, claimed_at: datetime, lease_expires_at: datetime) -> bool:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE refresh_operations
+            SET status = 'running', worker_id = ?, claimed_at = ?, lease_expires_at = ?, heartbeat_at = ?
+            WHERE id = ? AND status = 'queued'
+            """,
+            (worker_id, claimed_at.isoformat(), lease_expires_at.isoformat(), claimed_at.isoformat(), op_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def recover_stale_refresh_operations(self, now: datetime) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE refresh_operations
+            SET status = 'failed', error_summary = 'Abandoned by worker: lease expired without heartbeat updates'
+            WHERE status = 'running' AND lease_expires_at < ?
+            """,
+            (now.isoformat(),),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    def has_active_operation_in_scope(self, scope: str, target_id: Optional[str] = None) -> bool:
+        cursor = self.conn.cursor()
+        if target_id is not None:
+            cursor.execute(
+                "SELECT 1 FROM refresh_operations WHERE scope = ? AND target_id = ? AND status IN ('queued', 'running') LIMIT 1",
+                (scope, target_id),
+            )
+        else:
+            cursor.execute(
+                "SELECT 1 FROM refresh_operations WHERE scope = ? AND status IN ('queued', 'running') LIMIT 1",
+                (scope,),
+            )
+        return cursor.fetchone() is not None
+
     def close(self) -> None:
         self.conn.close()
+
 

@@ -695,3 +695,115 @@ def run_health_check_job(
     if health["status"] != "HEALTHY":
         logger.warning(f"Health check status: {health['status']} | Issues: {health['issues']} | Warnings: {health['warnings']}")
     return {"status": "completed", "health": health}
+
+
+def run_daily_refresh(
+    db: Database,
+    dry_run: bool = False,
+    now: Optional[datetime] = None,
+    surface_date: Optional[str] = None,
+    daily_run_id: Optional[str] = None,
+    data_cutoff_at: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Executes the comprehensive Daily Refresh job pipeline sequentially:
+    Ingestion -> Semantic Processing -> Claims Processing -> Longitudinal Recheck ->
+    Context Scan -> Context Match -> Inbox Generation -> Morning Briefing.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    if surface_date is None:
+        runtime_config = load_runtime_config()
+        surface_date = runtime_date_string(now, runtime_config)
+
+    if daily_run_id is None:
+        daily_run_id = f"daily-run:{surface_date}"
+
+    if data_cutoff_at is None:
+        data_cutoff_at = now
+
+    if dry_run:
+        return {"status": "dry_run", "surface_date": surface_date}
+
+    logger.info(f"Starting Daily Refresh pipeline for {surface_date} (run: {daily_run_id})")
+
+    try:
+        # 1. Ingestion
+        ingest_res = run_source_ingestion(db, dry_run=False, now=now)
+        # 2. Semantic
+        semantic_res = run_semantic_processing(db, dry_run=False, now=now)
+        # 3. Claims
+        claims_res = run_claims_processing(db, dry_run=False, now=now)
+        # 4. Recheck
+        recheck_res = run_longitudinal_recheck(db, dry_run=False, now=now)
+        # 5. Context Scan
+        scan_res = run_context_scan(db, dry_run=False, now=now)
+        # 6. Context Match
+        match_res = run_context_match(db, dry_run=False, now=now)
+        # 7. Inbox (Today)
+        inbox_res = generate_daily_inbox(
+            db=db,
+            now=now,
+            surface_date=surface_date,
+            daily_run_id=daily_run_id,
+            data_cutoff_at=data_cutoff_at,
+        )
+        # 8. Briefing
+        briefing = generate_morning_briefing(
+            db=db,
+            target_date=surface_date,
+            refresh=True,
+            now=now,
+            daily_run_id=daily_run_id,
+            data_cutoff_at=data_cutoff_at,
+        )
+
+        logger.info(f"Completed Daily Refresh pipeline for {surface_date} (run: {daily_run_id})")
+        
+        # Save the daily signal run to DB to prevent duplicate runs
+        from app.models.schemas import DailySignalRun
+        run_record = DailySignalRun(
+            id=daily_run_id,
+            run_date=surface_date,
+            status="completed",
+            started_at=now,
+            completed_at=datetime.now(timezone.utc),
+            total_signals_ingested=ingest_res.get("events_inserted", 0) or ingest_res.get("events_processed", 0) or 0,
+            total_clusters_processed=semantic_res.get("events_processed", 0),
+            total_claims_extracted=claims_res.get("claims_processed", 0) or 0,
+            total_inbox_items=len(inbox_res),
+            generation_status=briefing.generation_status,
+            error_summary=None,
+        )
+        db.save_daily_signal_run(run_record)
+
+        return {
+            "status": "completed",
+            "surface_date": surface_date,
+            "daily_run_id": daily_run_id,
+            "briefing_id": briefing.id,
+            "inbox_items_count": len(inbox_res),
+            "signals_run": run_record.model_dump(),
+        }
+    except Exception as e:
+        logger.exception(f"Daily Refresh pipeline failed for {surface_date} (run: {daily_run_id}): {e}")
+        from app.models.schemas import DailySignalRun
+        run_record = DailySignalRun(
+            id=daily_run_id,
+            run_date=surface_date,
+            status="failed",
+            started_at=now,
+            completed_at=datetime.now(timezone.utc),
+            total_signals_ingested=0,
+            total_clusters_processed=0,
+            total_claims_extracted=0,
+            total_inbox_items=0,
+            generation_status="failed",
+            error_summary=str(e),
+        )
+        db.save_daily_signal_run(run_record)
+        raise e
+

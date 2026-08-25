@@ -383,6 +383,14 @@ class Project(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_indexed_at: Optional[datetime] = None
+    status: str = "active"  # active, pending_scan, scan_failed, archived
+    archived_at: Optional[datetime] = None
+    archive_reason: Optional[str] = None
+    last_scan_status: Optional[str] = None
+    last_scan_started_at: Optional[datetime] = None
+    last_scan_completed_at: Optional[datetime] = None
+    last_scan_error: Optional[str] = None
+
 
 
 class ProjectFile(BaseModel):
@@ -456,6 +464,13 @@ class InboxItem(BaseModel):
     saved_item_id: Optional[str] = None
     matched_project_ids: List[str] = Field(default_factory=list)
     reason_codes: List[str] = Field(default_factory=list)
+    surface_date: Optional[str] = None
+    latest_event_at: Optional[str] = None
+    last_materialized_at: Optional[str] = None
+    data_cutoff_at: Optional[str] = None
+    freshness_kind: Optional[str] = None
+    daily_run_id: Optional[str] = None
+
 
 
 class SavedItem(BaseModel):
@@ -500,6 +515,13 @@ class DailyBriefing(BaseModel):
     summary_text: Optional[str] = None
     sections: Dict[str, List[str]] = Field(default_factory=dict)  # section_name -> list of inbox_item_ids
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    runtime_timezone: Optional[str] = None
+    data_cutoff_at: Optional[str] = None
+    generation_status: Optional[str] = None
+    source_status_json: Optional[str] = None
+    daily_run_id: Optional[str] = None
+    original_generated_at: Optional[str] = None
+
 
 
 class DailyBriefingItem(BaseModel):
@@ -563,3 +585,42 @@ class RuntimeJobRun(BaseModel):
     error_summary: Optional[str] = None
     error_category: Optional[str] = None
     duration_seconds: Optional[float] = None
+
+
+class DailySignalRun(BaseModel):
+    id: str  # daily-run:YYYY-MM-DD
+    runtime_date: str  # YYYY-MM-DD
+    timezone_name: str
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    data_cutoff_at: Optional[datetime] = None
+    status: str  # running, completed, completed_empty, partial_sources, failed
+    new_signal_count: int = 0
+    updated_signal_count: int = 0
+    carried_signal_count: int = 0
+    retry_count: int = 0
+    briefing_id: Optional[str] = None
+    source_status_json: Optional[str] = None  # JSON string
+    error_summary: Optional[str] = None
+    content_hash: str = ""
+
+
+class RefreshOperation(BaseModel):
+    id: str  # op:uuid
+    scope: str
+    target_id: Optional[str] = None
+    requested_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    status: str  # queued, running, completed, partial, failed, conflict
+    trigger: str = "user_requested"
+    job_names_json: Optional[str] = None  # JSON string of list of jobs
+    items_processed: int = 0
+    error_summary: Optional[str] = None
+    result_json: Optional[str] = None  # JSON string of result dict
+    claimed_at: Optional[datetime] = None
+    lease_expires_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
+    worker_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+

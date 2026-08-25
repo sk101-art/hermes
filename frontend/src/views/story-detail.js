@@ -36,6 +36,8 @@ import {
   ensureArray,
   formatScorePercentage,
 } from '../utils/adapters.js';
+import { renderRefreshControl } from '../components/refresh-control.js';
+
 
 // In-memory session cache for progressive ClaimDetail objects
 const dossierClaimCache = new Map();
@@ -342,6 +344,7 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
             </div>
 
             <div style="display:flex;gap:var(--space-2);align-items:center;">
+              <div id="story-refresh-container"></div>
               <button type="button" class="btn btn-secondary btn-sm" id="btn-save-dossier" aria-label="Save this story to research library">
                 ${getIcon('star')} Save to Library
               </button>
@@ -558,6 +561,14 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
     }
 
     container.innerHTML = renderDossierHtml();
+
+    const refreshContainer = container.querySelector('#story-refresh-container');
+    if (refreshContainer) {
+      const cleanup = renderRefreshControl(refreshContainer, 'story_recheck', () => {
+        renderStoryDetailView(container, store, routeParams);
+      });
+      container._viewCleanup = cleanup;
+    }
 
     // Attach interactive event listeners
     attachDossierListeners();

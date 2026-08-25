@@ -1061,20 +1061,23 @@ def test_playwright_zoom_and_text_spacing(test_servers):
                 assert no_h_overflow, f"{scale_label}: Page-level horizontal overflow detected on {url}"
 
                 # Assert no overlapping interactive controls
-                no_overlap = page.evaluate("""() => {
+                overlap_info = page.evaluate("""() => {
                     const controls = Array.from(document.querySelectorAll('button, a[href], input, select, textarea'));
-                    const rects = controls.map(el => el.getBoundingClientRect()).filter(r => r.width > 0 && r.height > 0);
+                    const rects = controls.filter(el => {
+                        const details = el.closest('details');
+                        return !details || details.open || el === details.querySelector('summary') || el.closest('summary');
+                    }).map(el => ({el: el, r: el.getBoundingClientRect()})).filter(o => o.r.width > 0 && o.r.height > 0);
                     for (let i = 0; i < rects.length; i++) {
                         for (let j = i + 1; j < rects.length; j++) {
-                            const a = rects[i], b = rects[j];
+                            const a = rects[i].r, b = rects[j].r;
                             if (!(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top)) {
-                                return false;
+                                return `Overlap between <${rects[i].el.tagName} id="${rects[i].el.id}" placeholder="${rects[i].el.placeholder}" class="${rects[i].el.className}"> and <${rects[j].el.tagName} id="${rects[j].el.id}" text="${rects[j].el.textContent.trim().substring(0, 20)}" class="${rects[j].el.className}">`;
                             }
                         }
                     }
-                    return true;
+                    return 'no_overlap';
                 }""")
-                assert no_overlap, f"{scale_label}: Overlapping interactive controls detected on {url}"
+                assert overlap_info == 'no_overlap', f"{scale_label}: Overlapping interactive controls detected on {url}. Details: {overlap_info}"
 
             context.close()
 
