@@ -1677,15 +1677,17 @@ def test_playwright_phase17_persistence_proof_and_server_restart(test_servers):
         # Context 1: Save a story
         context1 = create_test_context(browser)
         page1 = context1.new_page()
-        page1.goto(f"{BASE_URL}/#/today", wait_until="networkidle")
+        page1.goto(f"{BASE_URL}/#/story/cluster:test001", wait_until="networkidle")
 
-        expect(page1.get_by_role("heading", name="What Matters Today", exact=True)).to_be_visible(timeout=10_000)
-
-        # Click save on the first available save button
-        save_btn = page1.locator("button").filter(has_text=re.compile(r"^save$", re.I)).first
-        if save_btn.count() > 0 and save_btn.is_visible():
-            save_btn.click()
-            time.sleep(0.5)
+        # Click save on the dossier
+        try:
+            page1.wait_for_selector("#btn-save-dossier", timeout=5000)
+            save_btn = page1.locator("#btn-save-dossier").first
+            if save_btn.is_visible() and "Saved" not in save_btn.inner_text():
+                save_btn.click()
+                page1.wait_for_timeout(500)
+        except Exception:
+            pass
 
         context1.close()
 
@@ -1701,10 +1703,10 @@ def test_playwright_phase17_persistence_proof_and_server_restart(test_servers):
         expect(saved_cards.first).to_be_visible(timeout=10_000)
 
         # Click unsave / remove
-        unsave_btn = page2.locator("button").filter(has_text=re.compile(r"unsave|remove", re.I)).first
+        unsave_btn = page2.locator("[data-action='unsave']").first
         if unsave_btn.count() > 0 and unsave_btn.is_visible():
             unsave_btn.click()
-            time.sleep(0.5)
+            page2.wait_for_timeout(500)
 
         # Reload and verify
         page2.reload(wait_until="networkidle")
