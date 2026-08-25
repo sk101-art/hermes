@@ -97,9 +97,44 @@ def get_briefing(
         target_date = runtime_date_string(datetime.now(timezone.utc), config)
 
     briefing = intel_service.get_morning_brief(date_str=target_date, db=db)
-    if not briefing:
-        raise HTTPException(status_code=404, detail=f"No briefing found for date '{target_date}'")
-    return briefing
+    
+    # 1. Check if we have it
+    if briefing:
+        # Check generation_status from the briefing if we updated it, or fallback
+        b_status = getattr(briefing, "generation_status", None) or "completed"
+        return {
+            "status": b_status,
+            "briefing": briefing
+        }
+        
+    # 2. Check if a run failed or is marked empty
+    run = db.get_daily_signal_run_by_date(target_date)
+    if run:
+        if run.status in ["failed", "completed_empty", "partial"]:
+            return {
+                "status": run.status,
+                "briefing": None
+            }
+            
+    # 3. Check if an operation is queued or running
+    cursor = db.conn.cursor()
+    cursor.execute(
+        "SELECT status FROM refresh_operations WHERE scope = 'daily_refresh' ORDER BY requested_at DESC LIMIT 1"
+    )
+    op_row = cursor.fetchone()
+    if op_row:
+        op_status = op_row[0]
+        if op_status in ["queued", "running"]:
+            return {
+                "status": op_status,
+                "briefing": None
+            }
+            
+    # 4. Otherwise missing
+    return {
+        "status": "missing",
+        "briefing": None
+    }
 
 
 @router.get("/stories", summary="Top technology intelligence stories")

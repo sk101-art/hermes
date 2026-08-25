@@ -62,7 +62,12 @@ def is_pid_alive(pid: int) -> bool:
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.OpenProcess(0x1000, False, pid)
             if handle:
+                exit_code = ctypes.c_ulong()
+                success = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
                 kernel32.CloseHandle(handle)
+                if success:
+                    # 259 is STILL_ACTIVE
+                    return exit_code.value == 259
                 return True
             err = kernel32.GetLastError()
             if err == 5:  # Access Denied means process is alive
@@ -79,39 +84,55 @@ def is_pid_alive(pid: int) -> bool:
         return True
 
 
+
 def connect_db(db_path: str, timeout: float = 10.0, read_only: bool = False, journal_mode: Optional[str] = None, **kwargs) -> sqlite3.Connection:
-    if read_only:
-        abs_path = os.path.abspath(db_path)
-        uri_str = f"file:{abs_path}?mode=ro&immutable=1"
-        conn = sqlite3.connect(uri_str, timeout=timeout, uri=True, **kwargs)
-    else:
-        conn = sqlite3.connect(db_path, timeout=timeout, **kwargs)
-        
-    conn.row_factory = sqlite3.Row
-    
+    conn = None
     try:
+        if read_only:
+            path_uri = Path(os.path.abspath(db_path)).as_uri()
+            uri_str = f"{path_uri}?mode=ro&immutable=1"
+            conn = sqlite3.connect(uri_str, timeout=timeout, uri=True, **kwargs)
+        else:
+            conn = sqlite3.connect(db_path, timeout=timeout, **kwargs)
+            
+        conn.row_factory = sqlite3.Row
+        
+        # 1. Verify busy_timeout
         conn.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
-    except Exception:
-        pass
-        
-    if journal_mode:
-        try:
-            conn.execute(f"PRAGMA journal_mode={journal_mode}")
-        except Exception:
-            pass
+        bt = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        if int(bt) != int(timeout * 1000):
+            raise DatabaseInitializationError(f"Failed to verify busy_timeout (got {bt})")
             
-    try:
+        # 2. Verify journal_mode
+        if journal_mode and not read_only:
+            actual_jm = conn.execute(f"PRAGMA journal_mode={journal_mode}").fetchone()[0]
+            if actual_jm.upper() != journal_mode.upper():
+                raise DatabaseInitializationError(f"Failed to verify journal_mode {journal_mode} (got {actual_jm})")
+                
+        # 3. Verify foreign_keys
         conn.execute("PRAGMA foreign_keys=ON")
-    except Exception:
-        pass
-        
-    if read_only:
-        try:
-            conn.execute("PRAGMA query_only=ON")
-        except Exception:
-            pass
+        fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        if int(fk) != 1:
+            raise DatabaseInitializationError("Failed to enable foreign_keys pragma.")
             
-    return conn
+        # 4. Verify query_only
+        if read_only:
+            conn.execute("PRAGMA query_only=ON")
+            qo = conn.execute("PRAGMA query_only").fetchone()[0]
+            if int(qo) != 1:
+                raise DatabaseInitializationError("Failed to verify query_only for read-only database.")
+                
+        return conn
+    except Exception as e:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if isinstance(e, DatabaseInitializationError):
+            raise
+        raise DatabaseInitializationError(f"Failed to configure database connection: {e}") from e
+
 
 
 class InterprocessLock:
@@ -150,12 +171,14 @@ class InterprocessLock:
                         age = 0
                     
                     is_stale = False
+                    stale_token = None
                     if age > 2.0:  # 2.0-second grace period
                         try:
                             with open(self.lock_path, "r", encoding="utf-8") as f:
                                 data = json.load(f)
                             pid = data.get("pid")
                             hostname = data.get("hostname")
+                            stale_token = data.get("token")
                             if hostname == socket.gethostname():
                                 if pid and not is_pid_alive(pid):
                                     is_stale = True
@@ -164,9 +187,24 @@ class InterprocessLock:
                             
                     if is_stale:
                         try:
-                            os.unlink(self.lock_path)
-                        except OSError:
-                            pass
+                            # Re-open and re-read immediately before deletion to prevent race condition
+                            with open(self.lock_path, "r", encoding="utf-8") as f:
+                                re_read_data = json.load(f)
+                            if re_read_data.get("token") == stale_token:
+                                os.unlink(self.lock_path)
+                        except (json.JSONDecodeError, ValueError, KeyError, OSError) as cleanup_err:
+                            if stale_token is None:
+                                try:
+                                    os.unlink(self.lock_path)
+                                except OSError as unlink_err:
+                                    import sys
+                                    print(f"[LOCK] Nonfatal lock cleanup failure for {self.lock_path}: {unlink_err}", file=sys.stderr)
+                            else:
+                                import sys
+                                print(f"[LOCK] Stale lock token changed before deletion: {cleanup_err}", file=sys.stderr)
+                        except Exception as cleanup_err:
+                            import sys
+                            print(f"[LOCK] Nonfatal lock cleanup failure for {self.lock_path}: {cleanup_err}", file=sys.stderr)
                             
                 if time.monotonic() - start > self.timeout:
                     raise DatabaseInitializationError(f"Lock acquisition timed out for {self.lock_path}")
@@ -185,21 +223,43 @@ class InterprocessLock:
                         data = json.load(f)
                     if data.get("token") == self.token:
                         os.unlink(self.lock_path)
-            except Exception:
-                pass
+            except Exception as cleanup_err:
+                import sys
+                print(f"[LOCK] Failed to release lock {self.lock_path}: {cleanup_err}", file=sys.stderr)
+
+
+
+def resolve_db_path(db_path: Optional[str] = None, _default_runtime_file: Optional[Path] = None) -> str:
+    env_path = os.environ.get("HERMES_DB_PATH")
+    if env_path:
+        return os.path.abspath(env_path)
+    if db_path is not None:
+        return os.path.abspath(db_path)
+    if _default_runtime_file is not None:
+        return os.path.abspath(str(_default_runtime_file))
+    repo_root = Path(__file__).resolve().parents[2]
+    return os.path.abspath(str(repo_root / "data" / "runtime" / "tech_intel.db"))
 
 
 class Database:
     """SQLite storage layer for events, embeddings, clusters, relationships, claims, evidence, revisions, and longitudinal state."""
 
-    def __init__(self, db_path: str = "data/tech_intel.db"):
-        self.db_path = os.path.abspath(db_path)
+    def __init__(self, db_path: Optional[str] = None, timeout: float = 10.0, _baseline_file: Optional[Path] = None, _default_runtime_file: Optional[Path] = None):
+        self.db_path = resolve_db_path(db_path, _default_runtime_file)
         self.has_fts5 = False
         
         # Determine canonical baseline path
         repo_root = Path(__file__).resolve().parents[2]
-        baseline_file = (repo_root / "data" / "tech_intel.db").resolve()
-        
+        if _baseline_file is not None:
+            baseline_file = _baseline_file.resolve()
+        else:
+            baseline_file = (repo_root / "data" / "tech_intel.db").resolve()
+            
+        if _default_runtime_file is not None:
+            default_runtime_file = _default_runtime_file.resolve()
+        else:
+            default_runtime_file = (repo_root / "data" / "runtime" / "tech_intel.db").resolve()
+            
         # Check identity using samefile or casing comparison
         is_baseline = False
         if os.path.exists(self.db_path) and baseline_file.exists():
@@ -216,46 +276,22 @@ class Database:
         
         if self.is_baseline:
             # Baseline is read-only
-            self.conn = connect_db(self.db_path, timeout=10.0, read_only=True)
+            self.conn = connect_db(self.db_path, timeout=timeout, read_only=True)
             try:
                 cursor = self.conn.cursor()
                 tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
                 self.has_fts5 = "events_fts" in tables
-            except Exception:
-                pass
-                
-            # Audited mutating method list to wrap
-            mutating_methods = [
-                "insert_event", "save_event", "save_embedding", "create_cluster", "update_cluster",
-                "save_cluster", "add_event_to_cluster", "clear_clusters_and_relationships",
-                "save_relationship", "save_claim", "save_evidence", "save_technology_assessment",
-                "insert_claim_revision", "insert_technology_assessment_revision", "save_technology_state",
-                "insert_recheck_queue_item", "update_recheck_item_status", "clear_recheck_queue",
-                "insert_intelligence_change", "save_intelligence_change", "save_project",
-                "save_project_file", "delete_project_file", "delete_project_files", "save_project_profile",
-                "save_project_embedding", "save_project_match", "clear_project_matches",
-                "clear_claims_and_evidence", "save_inbox_item", "update_inbox_item_state",
-                "clear_inbox_items", "save_saved_item", "update_saved_item_note", "add_saved_item_tag",
-                "clear_saved_items", "save_user_feedback", "save_daily_briefing",
-                "save_daily_briefing_with_items", "save_daily_briefing_items", "save_source_checkpoint",
-                "save_runtime_job", "save_runtime_job_run", "save_daily_signal_run",
-                "save_refresh_operation", "claim_refresh_operation", "recover_stale_refresh_operations",
-                "create_briefing_revision", "archive_project", "restore_project", "enqueue_refresh_operation",
-                "complete_refresh_operation", "fail_refresh_operation", "mark_job_completed", "set_job_status",
-                "record_metric", "upsert_project_match"
-            ]
-            for method_name in mutating_methods:
-                if hasattr(self, method_name):
-                    def make_forbidden(name):
-                        def forbidden(*args, **kwargs):
-                            raise PermissionError(f"Mutation operation '{name}' is disabled on the read-only baseline database.")
-                        return forbidden
-                    setattr(self, method_name, make_forbidden(method_name))
+            except Exception as e:
+                if hasattr(self, "conn") and self.conn:
+                    try:
+                        self.conn.close()
+                    except Exception:
+                        pass
+                self.conn = None
+                raise DatabaseInitializationError(f"Failed to inspect read-only baseline database: {e}") from e
             return
 
         # Writable databases:
-        # Check for default runtime path: data/runtime/tech_intel.db
-        default_runtime_file = (repo_root / "data" / "runtime" / "tech_intel.db").resolve()
         is_default_runtime = False
         if os.path.exists(self.db_path) and default_runtime_file.exists():
             try:
@@ -273,9 +309,8 @@ class Database:
             raise DatabaseInitializationError(f"Database parent directory {parent_dir} is not valid.")
             
         # Serialize initialization sequence
-        lock = InterprocessLock(self.db_path, timeout=10.0)
+        lock = InterprocessLock(self.db_path, timeout=timeout)
         with lock:
-            # Recheck if another process created it
             db_exists = os.path.exists(self.db_path)
             
             if not db_exists:
@@ -284,6 +319,8 @@ class Database:
                     import tempfile
                     temp_fd, temp_db_path = tempfile.mkstemp(suffix=".db", dir=parent_dir)
                     os.close(temp_fd)
+                    
+                    self.conn = None
                     try:
                         # Copy baseline
                         shutil.copy2(str(baseline_file), temp_db_path)
@@ -297,9 +334,10 @@ class Database:
                             raise DatabaseInitializationError("Copied baseline SHA-256 mismatch.")
                             
                         # Open and migrate the copy using DELETE journal mode (no WAL)
-                        self.conn = connect_db(temp_db_path, timeout=10.0, journal_mode="DELETE")
+                        self.conn = connect_db(temp_db_path, timeout=timeout, journal_mode="DELETE")
                         self.init_db()
                         self.conn.close()
+                        self.conn = None
                         
                         # Assert no -wal / -shm exists
                         for ext in ["-wal", "-shm"]:
@@ -310,20 +348,33 @@ class Database:
                         # Publish atomically
                         os.replace(temp_db_path, self.db_path)
                     except Exception as e:
-                        try:
-                            os.unlink(temp_db_path)
-                        except OSError:
-                            pass
+                        if self.conn:
+                            try:
+                                self.conn.close()
+                            except Exception:
+                                pass
+                            self.conn = None
+                        for suffix in ["", "-wal", "-shm", "-journal"]:
+                            p = temp_db_path + suffix
+                            if os.path.exists(p):
+                                try:
+                                    os.unlink(p)
+                                except OSError as cleanup_err:
+                                    import sys
+                                    print(f"[DB] Nonfatal cleanup failure for {p}: {cleanup_err}", file=sys.stderr)
                         raise DatabaseInitializationError(f"Failed to bootstrap default runtime database: {e}") from e
                 else:
                     # Isolated test database fresh initialization
                     import tempfile
                     temp_fd, temp_db_path = tempfile.mkstemp(suffix=".db", dir=parent_dir)
                     os.close(temp_fd)
+                    
+                    self.conn = None
                     try:
-                        self.conn = connect_db(temp_db_path, timeout=10.0, journal_mode="DELETE")
+                        self.conn = connect_db(temp_db_path, timeout=timeout, journal_mode="DELETE")
                         self.init_db()
                         self.conn.close()
+                        self.conn = None
                         
                         for ext in ["-wal", "-shm"]:
                             sidecar = temp_db_path + ext
@@ -332,17 +383,38 @@ class Database:
                                 
                         os.replace(temp_db_path, self.db_path)
                     except Exception as e:
-                        try:
-                            os.unlink(temp_db_path)
-                        except OSError:
-                            pass
+                        if self.conn:
+                            try:
+                                self.conn.close()
+                            except Exception:
+                                pass
+                            self.conn = None
+                        for suffix in ["", "-wal", "-shm", "-journal"]:
+                            p = temp_db_path + suffix
+                            if os.path.exists(p):
+                                try:
+                                    os.unlink(p)
+                                except OSError as cleanup_err:
+                                    import sys
+                                    print(f"[DB] Nonfatal cleanup failure for {p}: {cleanup_err}", file=sys.stderr)
                         raise DatabaseInitializationError(f"Failed to initialize isolated test database: {e}") from e
             
             # Open final connection normally and enable WAL
-            self.conn = connect_db(self.db_path, timeout=10.0, journal_mode="WAL")
+            self.conn = connect_db(self.db_path, timeout=timeout, journal_mode="WAL")
             if db_exists:
                 # If database existed, run init_db to run any migrations and validation
-                self.init_db()
+                self.conn = connect_db(self.db_path, timeout=timeout, journal_mode="WAL")
+                try:
+                    self.init_db()
+                except Exception as e:
+                    if self.conn:
+                        try:
+                            self.conn.close()
+                        except Exception:
+                            pass
+                        self.conn = None
+                    raise e
+
 
     def _require_writable(self, operation_name: str) -> None:
         if not getattr(self, "is_writable", True):
@@ -373,66 +445,115 @@ class Database:
             raise e
 
     def init_db(self) -> None:
-        # Check and set PRAGMAs (on temp copy or final DB)
-        try:
-            # WAL mode is set via connect_db. If connected with DELETE, it uses DELETE.
-            # So do not override journal_mode here unless we are not in read-only.
-            if getattr(self, "is_writable", True):
-                pass
-        except Exception:
-            pass
-
-        self._migrate_columns()
-
-        schema_path = Path(__file__).parent / "schema.sql"
-        if schema_path.exists():
-            with open(schema_path, "r", encoding="utf-8") as f:
-                schema_sql = f.read()
-            try:
-                # executescript executes commits. Running outside transaction is safe because we hold interprocess lock.
-                self.conn.executescript(schema_sql)
-            except Exception as e:
-                raise DatabaseMigrationError(f"Failed executing schema.sql: {e}") from e
-
-        self._migrate_columns()
-
-        # Check and initialize FTS5 if supported
-        try:
-            self.conn.execute("BEGIN IMMEDIATE")
-            self.conn.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(id UNINDEXED, title, text)"
-            )
-            self.has_fts5 = True
-            self.conn.commit()
-        except sqlite3.OperationalError as e:
-            try:
-                self.conn.rollback()
-            except Exception:
-                pass
-            if "locked" in str(e).lower():
-                raise DatabaseMigrationError(f"Database write lock timeout exceeded during FTS5 creation: {e}") from e
-            self.has_fts5 = False
-        except Exception:
-            try:
-                self.conn.rollback()
-            except Exception:
-                pass
-            self.has_fts5 = False
-
-    def _migrate_columns(self) -> None:
-        """Ensure columns added across all sessions exist in previously created tables with strict atomicity and error discipline."""
-        try:
-            self.conn.execute("PRAGMA foreign_keys=OFF")
-        except Exception:
-            pass
+        if not getattr(self, "is_writable", True):
+            return
 
         cursor = self.conn.cursor()
+        
+        # Check if schema is already initialized
         try:
-            cursor.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower():
-                raise DatabaseMigrationError(f"Database write lock timeout exceeded during migration: {e}") from e
-            raise DatabaseMigrationError(f"Failed to acquire database write lock: {e}") from e
+            cursor.execute("SELECT 1 FROM daily_briefings LIMIT 1")
+            schema_exists = True
+        except sqlite3.OperationalError:
+            schema_exists = False
+
+        if not schema_exists:
+            schema_path = Path(__file__).parent / "schema.sql"
+            schema_sql = ""
+            if schema_path.exists():
+                with open(schema_path, "r", encoding="utf-8") as f:
+                    schema_sql = f.read()
+                    
+            # Assert schema_sql contains no transaction-control statements (case-insensitive)
+            for keyword in ["BEGIN", "COMMIT", "ROLLBACK"]:
+                import re
+                if re.search(r"\b" + keyword + r"\b", schema_sql, re.IGNORECASE):
+                    raise DatabaseMigrationError(f"schema.sql contains forbidden transaction control statement: {keyword}")
+
+            # 1. Disable foreign keys when required
+            try:
+                self.conn.execute("PRAGMA foreign_keys=OFF")
+                fk_state = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                if int(fk_state) != 0:
+                    raise DatabaseMigrationError("Failed to disable foreign keys before migration.")
+            except Exception as e:
+                if isinstance(e, DatabaseMigrationError):
+                    raise
+                raise DatabaseMigrationError(f"Failed to disable foreign keys: {e}") from e
+
+            try:
+                # 2. Acquire one BEGIN IMMEDIATE transaction and load schema.sql
+                self.conn.executescript("BEGIN IMMEDIATE;\n" + schema_sql)
+                
+                cursor = self.conn.cursor()
+                
+                # 3. Run column migrations
+                self._migrate_columns_internal(cursor)
+                
+                # 4. Set up FTS inside the same transaction
+                try:
+                    cursor.execute(
+                        "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(id UNINDEXED, title, text)"
+                    )
+                    self.has_fts5 = True
+                except sqlite3.OperationalError as fts_err:
+                    if "no such module: fts5" in str(fts_err).lower():
+                        self.has_fts5 = False
+                    else:
+                        raise fts_err
+                        
+                # 5. Commit once
+                self.conn.commit()
+            except Exception as e:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+                raise DatabaseMigrationError(f"Database schema initialization and migration transaction failed: {e}") from e
+            finally:
+                # 6. Restore foreign keys
+                try:
+                    self.conn.execute("PRAGMA foreign_keys=ON")
+                    fk_state = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                    if int(fk_state) != 1:
+                        raise DatabaseMigrationError("Failed to re-enable foreign keys after migration.")
+                except Exception as e:
+                    if isinstance(e, DatabaseMigrationError):
+                        raise
+                    raise DatabaseMigrationError(f"Failed to restore foreign keys: {e}") from e
+        else:
+            # Schema exists, check if migration is needed
+            try:
+                cursor.execute("SELECT runtime_timezone FROM daily_briefing_revisions LIMIT 1")
+                migration_needed = False
+            except sqlite3.OperationalError:
+                migration_needed = True
+
+            if migration_needed:
+                self._migrate_columns()
+
+            # Set has_fts5 flag
+            try:
+                cursor.execute("SELECT 1 FROM events_fts LIMIT 1")
+                self.has_fts5 = True
+            except sqlite3.OperationalError:
+                self.has_fts5 = False
+
+        # Run integrity checks
+        try:
+            qc = self.conn.execute("PRAGMA quick_check").fetchone()[0]
+            if qc != "ok":
+                raise DatabaseMigrationError(f"PRAGMA quick_check failed: {qc}")
+            fk_violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_violations:
+                raise DatabaseMigrationError(f"PRAGMA foreign_key_check found violations: {fk_violations}")
+        except Exception as check_err:
+            if not isinstance(check_err, DatabaseMigrationError):
+                raise DatabaseMigrationError(f"Integrity check failed: {check_err}") from check_err
+            raise
+
+    def _migrate_columns_internal(self, cursor) -> None:
+        """Internal helper to apply migrations on the given cursor inside an active transaction."""
         try:
             all_tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -796,8 +917,57 @@ class Database:
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status)")
                 except Exception:
                     pass
+        except Exception as e:
+            if isinstance(e, DatabaseMigrationError):
+                raise
+            raise DatabaseMigrationError(f"Migration internal step failed: {e}") from e
 
+        # 17. daily_briefing_revisions new columns
+        if "daily_briefing_revisions" in all_tables:
+            dbr_info = cursor.execute("PRAGMA table_info(daily_briefing_revisions)").fetchall()
+            existing_dbr_cols = {r["name"] for r in dbr_info}
+            _safe_add_column("daily_briefing_revisions", "runtime_timezone", "TEXT", existing_dbr_cols)
+            _safe_add_column("daily_briefing_revisions", "created_at", "TEXT", existing_dbr_cols)
+            
+        # 18. daily_briefing_items new columns
+        if "daily_briefing_items" in all_tables:
+            dbi_info = cursor.execute("PRAGMA table_info(daily_briefing_items)").fetchall()
+            existing_dbi_cols = {r["name"] for r in dbi_info}
+            _safe_add_column("daily_briefing_items", "content_hash", "TEXT", existing_dbi_cols)
+            _safe_add_column("daily_briefing_items", "source_name", "TEXT", existing_dbi_cols)
+            
+        # 19. daily_briefing_revision_items new columns
+        if "daily_briefing_revision_items" in all_tables:
+            dbri_info = cursor.execute("PRAGMA table_info(daily_briefing_revision_items)").fetchall()
+            existing_dbri_cols = {r["name"] for r in dbri_info}
+            _safe_add_column("daily_briefing_revision_items", "content_hash", "TEXT", existing_dbri_cols)
+            _safe_add_column("daily_briefing_revision_items", "source_name", "TEXT", existing_dbri_cols)
+
+    def _migrate_columns(self) -> None:
+        """Ensure columns added across all sessions exist in previously created tables with strict atomicity and error discipline."""
+        try:
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            fk_state = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+            if int(fk_state) != 0:
+                raise DatabaseMigrationError("Failed to disable foreign keys before migration.")
+        except Exception as e:
+            if isinstance(e, DatabaseMigrationError):
+                raise
+            raise DatabaseMigrationError(f"Failed to disable foreign keys: {e}") from e
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            self._migrate_columns_internal(cursor)
             self.conn.commit()
+        except sqlite3.OperationalError as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if "locked" in str(e).lower():
+                raise DatabaseMigrationError(f"Database write lock timeout exceeded during migration: {e}") from e
+            raise DatabaseMigrationError(f"Failed to acquire database write lock: {e}") from e
         except Exception as e:
             try:
                 self.conn.rollback()
@@ -812,8 +982,13 @@ class Database:
         finally:
             try:
                 self.conn.execute("PRAGMA foreign_keys=ON")
-            except Exception:
-                pass
+                fk_state = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                if int(fk_state) != 1:
+                    raise DatabaseMigrationError("Failed to re-enable foreign keys after migration.")
+            except Exception as e:
+                if isinstance(e, DatabaseMigrationError):
+                    raise
+                raise DatabaseMigrationError(f"Failed to restore foreign keys: {e}") from e
             
         # Post-transaction validation checks (Run quick_check and foreign_key_check)
         try:
@@ -3050,8 +3225,9 @@ class Database:
             sql_rev = """
             INSERT INTO daily_briefing_revisions (
                 id, briefing_id, revision_number, generated_at, data_cutoff_at,
-                source_status_json, content_hash, generation_status, item_count, daily_run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_status_json, content_hash, generation_status, item_count,
+                daily_run_id, runtime_timezone, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             cursor.execute(sql_rev, (
                 rev_id,
@@ -3064,6 +3240,8 @@ class Database:
                 b_dict["generation_status"],
                 b_dict["total_items"],
                 b_dict["daily_run_id"],
+                b_dict.get("runtime_timezone"),
+                b_dict.get("created_at"),
             ))
 
             # 5. Copy items
@@ -3078,8 +3256,9 @@ class Database:
                     rank_score, project_impact_score, matched_project_ids_json,
                     snapshot_version, source_published_at, source_updated_at,
                     first_seen_at, last_changed_at, last_evaluated_at, surfaced_at,
-                    snapshot_date, daily_run_id, freshness_kind, freshness_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    snapshot_date, daily_run_id, freshness_kind, freshness_reason,
+                    content_hash, source_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 for it_row in items:
                     it = dict(it_row)
@@ -3107,7 +3286,9 @@ class Database:
                         it.get("snapshot_date"),
                         it.get("daily_run_id"),
                         it.get("freshness_kind"),
-                        it.get("freshness_reason")
+                        it.get("freshness_reason"),
+                        it.get("content_hash"),
+                        it.get("source_name")
                     ))
             return rev_id
 
@@ -3115,9 +3296,8 @@ class Database:
 
     def save_daily_briefing_with_items(self, briefing: DailyBriefing, items: List[DailyBriefingItem]) -> bool:
         """Atomically saves daily briefing header and its item snapshots in a single transaction."""
-        cursor = self.conn.cursor()
-        cursor.execute("BEGIN TRANSACTION")
-        try:
+        self._require_writable("save_daily_briefing_with_items")
+        def _operation(cursor):
             sql_briefing = """
             INSERT OR REPLACE INTO daily_briefings (
                 id, briefing_date, generated_at, total_items, high_priority_count,
@@ -3131,14 +3311,14 @@ class Database:
                 (
                     briefing.id,
                     briefing.briefing_date,
-                    briefing.generated_at.isoformat(),
+                    briefing.generated_at.isoformat() if hasattr(briefing.generated_at, "isoformat") else briefing.generated_at,
                     briefing.total_items,
                     briefing.high_priority_count,
                     briefing.project_relevant_count,
                     briefing.content_hash,
                     briefing.summary_text,
                     json.dumps(briefing.sections),
-                    briefing.created_at.isoformat(),
+                    briefing.created_at.isoformat() if hasattr(briefing.created_at, "isoformat") else briefing.created_at,
                     briefing.runtime_timezone,
                     briefing.data_cutoff_at,
                     briefing.generation_status,
@@ -3153,8 +3333,11 @@ class Database:
                 briefing_id, inbox_item_id, position, section,
                 title, summary, story_cluster_id, item_type,
                 reason_codes_json, inbox_score, rank_score,
-                project_impact_score, matched_project_ids_json, snapshot_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                project_impact_score, matched_project_ids_json, snapshot_version,
+                source_published_at, source_updated_at, first_seen_at, last_changed_at,
+                last_evaluated_at, surfaced_at, snapshot_date, daily_run_id,
+                freshness_kind, freshness_reason, content_hash, source_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             for it in items:
                 cursor.execute(
@@ -3174,30 +3357,41 @@ class Database:
                         it.project_impact_score,
                         json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
                         getattr(it, "snapshot_version", None),
+                        it.source_published_at.isoformat() if hasattr(it.source_published_at, "isoformat") else it.source_published_at,
+                        it.source_updated_at.isoformat() if hasattr(it.source_updated_at, "isoformat") else it.source_updated_at,
+                        it.first_seen_at.isoformat() if hasattr(it.first_seen_at, "isoformat") else it.first_seen_at,
+                        it.last_changed_at.isoformat() if hasattr(it.last_changed_at, "isoformat") else it.last_changed_at,
+                        it.last_evaluated_at.isoformat() if hasattr(it.last_evaluated_at, "isoformat") else it.last_evaluated_at,
+                        it.surfaced_at.isoformat() if hasattr(it.surfaced_at, "isoformat") else it.surfaced_at,
+                        it.snapshot_date,
+                        it.daily_run_id,
+                        it.freshness_kind,
+                        it.freshness_reason,
+                        it.content_hash,
+                        it.source_name,
                     ),
                 )
-            self.conn.commit()
             return True
-        except Exception:
-            self.conn.rollback()
-            raise
 
+        return self._execute_in_write_transaction(_operation, operation_name="save_daily_briefing_with_items")
 
     def save_daily_briefing_items(self, items: List[DailyBriefingItem]) -> bool:
         if not items:
             return True
+        self._require_writable("save_daily_briefing_items")
         briefing_id = items[0].briefing_id
-        cursor = self.conn.cursor()
-        cursor.execute("BEGIN TRANSACTION")
-        try:
+        def _operation(cursor):
             cursor.execute("DELETE FROM daily_briefing_items WHERE briefing_id = ?", (briefing_id,))
             sql_item = """
             INSERT OR REPLACE INTO daily_briefing_items (
                 briefing_id, inbox_item_id, position, section,
                 title, summary, story_cluster_id, item_type,
                 reason_codes_json, inbox_score, rank_score,
-                project_impact_score, matched_project_ids_json, snapshot_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                project_impact_score, matched_project_ids_json, snapshot_version,
+                source_published_at, source_updated_at, first_seen_at, last_changed_at,
+                last_evaluated_at, surfaced_at, snapshot_date, daily_run_id,
+                freshness_kind, freshness_reason, content_hash, source_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             for it in items:
                 cursor.execute(
@@ -3217,13 +3411,23 @@ class Database:
                         it.project_impact_score,
                         json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
                         getattr(it, "snapshot_version", None),
+                        it.source_published_at.isoformat() if hasattr(it.source_published_at, "isoformat") else it.source_published_at,
+                        it.source_updated_at.isoformat() if hasattr(it.source_updated_at, "isoformat") else it.source_updated_at,
+                        it.first_seen_at.isoformat() if hasattr(it.first_seen_at, "isoformat") else it.first_seen_at,
+                        it.last_changed_at.isoformat() if hasattr(it.last_changed_at, "isoformat") else it.last_changed_at,
+                        it.last_evaluated_at.isoformat() if hasattr(it.last_evaluated_at, "isoformat") else it.last_evaluated_at,
+                        it.surfaced_at.isoformat() if hasattr(it.surfaced_at, "isoformat") else it.surfaced_at,
+                        it.snapshot_date,
+                        it.daily_run_id,
+                        it.freshness_kind,
+                        it.freshness_reason,
+                        it.content_hash,
+                        it.source_name,
                     ),
                 )
-            self.conn.commit()
             return True
-        except Exception:
-            self.conn.rollback()
-            raise
+
+        return self._execute_in_write_transaction(_operation, operation_name="save_daily_briefing_items")
 
     def get_daily_briefing_items(self, briefing_id: str) -> List[DailyBriefingItem]:
         cursor = self.conn.cursor()
@@ -3233,6 +3437,15 @@ class Database:
             keys = r.keys()
             rc = json.loads(r["reason_codes_json"]) if "reason_codes_json" in keys and r["reason_codes_json"] else []
             mp = json.loads(r["matched_project_ids_json"]) if "matched_project_ids_json" in keys and r["matched_project_ids_json"] else []
+            
+            def to_dt(val):
+                if not val:
+                    return None
+                try:
+                    return datetime.fromisoformat(val)
+                except Exception:
+                    return None
+                    
             items.append(
                 DailyBriefingItem(
                     briefing_id=r["briefing_id"],
@@ -3249,6 +3462,18 @@ class Database:
                     project_impact_score=r["project_impact_score"] if "project_impact_score" in keys else None,
                     matched_project_ids=mp,
                     snapshot_version=r["snapshot_version"] if "snapshot_version" in keys else None,
+                    source_published_at=to_dt(r.get("source_published_at")),
+                    source_updated_at=to_dt(r.get("source_updated_at")),
+                    first_seen_at=to_dt(r.get("first_seen_at")),
+                    last_changed_at=to_dt(r.get("last_changed_at")),
+                    last_evaluated_at=to_dt(r.get("last_evaluated_at")),
+                    surfaced_at=to_dt(r.get("surfaced_at")),
+                    snapshot_date=r.get("snapshot_date"),
+                    daily_run_id=r.get("daily_run_id"),
+                    freshness_kind=r.get("freshness_kind"),
+                    freshness_reason=r.get("freshness_reason"),
+                    content_hash=r.get("content_hash"),
+                    source_name=r.get("source_name")
                 )
             )
         return items

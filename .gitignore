@@ -28,3 +28,4 @@ reference/*
 *.zip
 reports/
 
+data/runtime/

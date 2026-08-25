@@ -354,7 +354,14 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     last_materialized_at TEXT,
     data_cutoff_at TEXT,
     freshness_kind TEXT,
-    daily_run_id TEXT
+    daily_run_id TEXT,
+    source_published_at TEXT,
+    source_updated_at TEXT,
+    last_changed_at TEXT,
+    last_evaluated_at TEXT,
+    surfaced_at TEXT,
+    snapshot_date TEXT,
+    freshness_reason TEXT
 );
 
 
@@ -419,7 +426,10 @@ CREATE TABLE IF NOT EXISTS daily_briefings (
     generation_status TEXT,
     source_status_json TEXT,
     daily_run_id TEXT,
-    original_generated_at TEXT
+    original_generated_at TEXT,
+    current_revision_id TEXT,
+    latest_generated_at TEXT,
+    latest_data_cutoff_at TEXT
 );
 
 
@@ -440,6 +450,18 @@ CREATE TABLE IF NOT EXISTS daily_briefing_items (
     project_impact_score REAL,
     matched_project_ids_json TEXT,
     snapshot_version TEXT,
+    source_published_at TEXT,
+    source_updated_at TEXT,
+    first_seen_at TEXT,
+    last_changed_at TEXT,
+    last_evaluated_at TEXT,
+    surfaced_at TEXT,
+    snapshot_date TEXT,
+    daily_run_id TEXT,
+    freshness_kind TEXT,
+    freshness_reason TEXT,
+    content_hash TEXT,
+    source_name TEXT,
     PRIMARY KEY (briefing_id, inbox_item_id)
 );
 
@@ -511,8 +533,9 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
 
 CREATE TABLE IF NOT EXISTS daily_signal_runs (
     id TEXT PRIMARY KEY,
-    runtime_date TEXT UNIQUE NOT NULL,
+    runtime_date TEXT NOT NULL,
     timezone_name TEXT NOT NULL,
+    run_kind TEXT NOT NULL DEFAULT 'daily_refresh',
     started_at TEXT NOT NULL,
     completed_at TEXT,
     data_cutoff_at TEXT,
@@ -524,10 +547,57 @@ CREATE TABLE IF NOT EXISTS daily_signal_runs (
     briefing_id TEXT,
     source_status_json TEXT,
     error_summary TEXT,
-    content_hash TEXT NOT NULL DEFAULT ''
+    content_hash TEXT NOT NULL DEFAULT '',
+    UNIQUE(runtime_date, timezone_name, run_kind)
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date);
+
+CREATE TABLE IF NOT EXISTS daily_briefing_revisions (
+    id TEXT PRIMARY KEY,
+    briefing_id TEXT NOT NULL,
+    revision_number INTEGER NOT NULL,
+    generated_at TEXT NOT NULL,
+    data_cutoff_at TEXT,
+    source_status_json TEXT,
+    content_hash TEXT NOT NULL,
+    generation_status TEXT NOT NULL,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    daily_run_id TEXT,
+    runtime_timezone TEXT,
+    created_at TEXT,
+    UNIQUE(briefing_id, revision_number)
+);
+
+CREATE TABLE IF NOT EXISTS daily_briefing_revision_items (
+    revision_id TEXT NOT NULL,
+    inbox_item_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    section TEXT NOT NULL,
+    title TEXT,
+    summary TEXT,
+    story_cluster_id TEXT,
+    item_type TEXT,
+    reason_codes_json TEXT,
+    inbox_score REAL,
+    rank_score REAL,
+    project_impact_score REAL,
+    matched_project_ids_json TEXT,
+    snapshot_version TEXT,
+    source_published_at TEXT,
+    source_updated_at TEXT,
+    first_seen_at TEXT,
+    last_changed_at TEXT,
+    last_evaluated_at TEXT,
+    surfaced_at TEXT,
+    snapshot_date TEXT,
+    daily_run_id TEXT,
+    freshness_kind TEXT,
+    freshness_reason TEXT,
+    content_hash TEXT,
+    source_name TEXT,
+    PRIMARY KEY (revision_id, inbox_item_id)
+);
 
 CREATE TABLE IF NOT EXISTS refresh_operations (
     id TEXT PRIMARY KEY,

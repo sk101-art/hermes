@@ -419,23 +419,19 @@ def cleanup_test_servers(spawned_processes):
     # Terminate processes in reverse order (frontend first, then backend)
     for name, p in reversed(spawned_processes):
         try:
-            if sys.platform == "win32":
-                # On Windows, use taskkill to kill the process tree
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], 
-                             capture_output=True, timeout=5)
-            else:
-                # On Unix, send SIGTERM to process group
-                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-                p.wait(timeout=5)
-        except Exception:
+            p.terminate()
+            p.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            # Fallback to force kill if it didn't shut down gracefully
             try:
                 if sys.platform == "win32":
-                    subprocess.run(["taskkill", "/F", "/PID", str(p.pid)], 
-                                 capture_output=True, timeout=2)
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True, timeout=5)
                 else:
                     os.killpg(os.getpgid(p.pid), signal.SIGKILL)
             except Exception:
                 pass
+        except Exception:
+            pass
     
     # Clean up test database
     if TEST_DB_DIR and os.path.exists(TEST_DB_DIR):

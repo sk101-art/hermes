@@ -7,6 +7,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from unittest.mock import patch
+
+@pytest.fixture(autouse=True)
+def mock_embedding_dep():
+    with patch('importlib.util.find_spec', return_value=True):
+        yield
 
 from app.models.schemas import (
     DailyBriefing,
@@ -553,7 +559,8 @@ def test_probe_isolation_socket_timeout_does_not_fail_database(temp_db):
     now = datetime(2026, 8, 22, 10, 0, 0, tzinfo=timezone.utc)
 
     # Force network probe offline
-    with patch("app.runtime.health.check_network_connectivity", return_value=False):
+    with patch("app.runtime.health.check_network_connectivity", return_value=False), \
+         patch("importlib.util.find_spec", return_value=True):
         h = check_system_health(temp_db, now=now, use_cache=False)
         assert h["network"] == "offline"
         assert h["database"] == "ok"

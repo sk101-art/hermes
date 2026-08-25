@@ -196,8 +196,10 @@ def generate_morning_briefing(
         return existing
 
     original_generated_at = None
+    rev_id = None
     if existing:
         original_generated_at = existing.original_generated_at or (existing.generated_at.isoformat() if isinstance(existing.generated_at, datetime) else str(existing.generated_at))
+        rev_id = db.create_briefing_revision(existing.id)
 
     cfg = load_inbox_config()
     b_cfg = cfg.get("briefing", {})
@@ -335,6 +337,9 @@ def generate_morning_briefing(
         source_status_json=source_status_json,
         daily_run_id=daily_run_id or f"daily-run:{target_date}",
         original_generated_at=original_generated_at or now.isoformat(),
+        current_revision_id=rev_id,
+        latest_generated_at=now,
+        latest_data_cutoff_at=(data_cutoff_at or now),
     )
 
     # 8. Atomically persist briefing header and snapshot items in a single transaction

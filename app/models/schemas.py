@@ -470,6 +470,13 @@ class InboxItem(BaseModel):
     data_cutoff_at: Optional[str] = None
     freshness_kind: Optional[str] = None
     daily_run_id: Optional[str] = None
+    source_published_at: Optional[datetime] = None
+    source_updated_at: Optional[datetime] = None
+    last_changed_at: Optional[datetime] = None
+    last_evaluated_at: Optional[datetime] = None
+    surfaced_at: Optional[datetime] = None
+    snapshot_date: Optional[str] = None
+    freshness_reason: Optional[str] = None
 
 
 
@@ -521,7 +528,9 @@ class DailyBriefing(BaseModel):
     source_status_json: Optional[str] = None
     daily_run_id: Optional[str] = None
     original_generated_at: Optional[str] = None
-
+    current_revision_id: Optional[str] = None
+    latest_generated_at: Optional[datetime] = None
+    latest_data_cutoff_at: Optional[datetime] = None
 
 
 class DailyBriefingItem(BaseModel):
@@ -539,6 +548,18 @@ class DailyBriefingItem(BaseModel):
     project_impact_score: Optional[float] = None
     matched_project_ids: List[str] = Field(default_factory=list)
     snapshot_version: Optional[str] = None
+    source_published_at: Optional[datetime] = None
+    source_updated_at: Optional[datetime] = None
+    first_seen_at: Optional[datetime] = None
+    last_changed_at: Optional[datetime] = None
+    last_evaluated_at: Optional[datetime] = None
+    surfaced_at: Optional[datetime] = None
+    snapshot_date: Optional[str] = None
+    daily_run_id: Optional[str] = None
+    freshness_kind: Optional[str] = None
+    freshness_reason: Optional[str] = None
+    content_hash: Optional[str] = None
+    source_name: Optional[str] = None
 
 
 class SourceCheckpoint(BaseModel):
@@ -591,6 +612,7 @@ class DailySignalRun(BaseModel):
     id: str  # daily-run:YYYY-MM-DD
     runtime_date: str  # YYYY-MM-DD
     timezone_name: str
+    run_kind: str = "daily_refresh"
     started_at: datetime
     completed_at: Optional[datetime] = None
     data_cutoff_at: Optional[datetime] = None
@@ -605,9 +627,21 @@ class DailySignalRun(BaseModel):
     content_hash: str = ""
 
 
+class OperationScope(str, Enum):
+    daily_refresh = "daily_refresh"
+    morning_brief = "morning_brief"
+    inbox_refresh = "inbox_refresh"
+    health_check = "health_check"
+    recheck = "recheck"
+    project_scan = "project_scan"
+    project_refresh = "project_refresh"
+    saved_hydration = "saved_hydration"
+    search_refresh = "search_refresh"
+    story_recheck = "story_recheck"
+
 class RefreshOperation(BaseModel):
     id: str  # op:uuid
-    scope: str
+    scope: OperationScope
     target_id: Optional[str] = None
     requested_at: datetime
     started_at: Optional[datetime] = None
