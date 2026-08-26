@@ -173,8 +173,15 @@ def test_concurrent_readers_and_writers_sqlite(client_with_db):
     client, db = client_with_db
     stop_flag = False
     errors = []
+    # Resolve the DB file path on the main thread; each worker creates its own
+    # connection because SQLite connections are thread-bound.
+    main_cursor = db.conn.cursor()
+    db_file_path = main_cursor.execute("PRAGMA database_list").fetchone()[2]
 
     def writer_loop():
+        # SQLite connections are thread-bound: create a dedicated connection
+        # for this thread instead of sharing the fixture's connection.
+        writer_db = Database(db_path=db_file_path)
         i = 0
         while not stop_flag and i < 20:
             try:
@@ -187,11 +194,13 @@ def test_concurrent_readers_and_writers_sqlite(client_with_db):
                     url=f"https://github.com/test/{i}",
                     discovered_at=datetime.now(timezone.utc),
                 )
-                db.save_event(ev)
+                writer_db.save_event(ev)
                 time.sleep(0.01)
-                i += 1
             except Exception as e:
                 errors.append(f"Writer error: {e}")
+            finally:
+                i += 1  # always advance so the loop is bounded even on errors
+        writer_db.close()
 
     def reader_loop():
         for _ in range(20):
@@ -202,15 +211,23 @@ def test_concurrent_readers_and_writers_sqlite(client_with_db):
             except Exception as e:
                 errors.append(f"Reader error: {e}")
 
-    t_writer = threading.Thread(target=writer_loop)
-    t_reader = threading.Thread(target=reader_loop)
+    t_writer = threading.Thread(target=writer_loop, daemon=True)
+    t_reader = threading.Thread(target=reader_loop, daemon=True)
 
     t_writer.start()
     t_reader.start()
 
-    t_writer.join()
+    # Bounded joins: never hang forever on lock contention
+    t_writer.join(timeout=30.0)
     stop_flag = True
-    t_reader.join()
+    t_reader.join(timeout=30.0)
+
+    survivors = []
+    if t_writer.is_alive():
+        survivors.append("writer")
+    if t_reader.is_alive():
+        survivors.append("reader")
+    assert not survivors, f"Threads did not finish within timeout: {survivors}"
 
     assert len(errors) == 0, f"Concurrency errors occurred: {errors}"
 

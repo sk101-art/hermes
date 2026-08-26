@@ -62,8 +62,17 @@ def temp_db():
     yield db
     db.close()
     invalidate_health_cache(path)
-    if os.path.exists(path):
-        os.remove(path)
+    # Best-effort cleanup: on Windows, WAL sidecar handles can briefly keep
+    # the file locked after close(); never fail the test over deletion.
+    import gc
+    gc.collect()
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            p = path + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        except PermissionError:
+            pass
 
 
 # =========================================================================

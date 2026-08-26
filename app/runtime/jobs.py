@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -239,10 +240,10 @@ def run_source_ingestion(
                     items_rejected += 1
                     continue
 
-                # 7. Score & Persist
+                # 7. Score & Persist (insert_event also indexes into events_fts
+                # when FTS5 is available)
                 scored_event = score_event(event, interests_cfg)
                 if db.insert_event(scored_event):
-                    db.add_event_to_fts(scored_event)
                     new_events_count += 1
 
             # Determine per-source outcome
@@ -765,18 +766,34 @@ def run_daily_refresh(
         
         # Save the daily signal run to DB to prevent duplicate runs
         from app.models.schemas import DailySignalRun
+        from app.runtime.timezone import get_effective_timezone
+        _, tz_name, _ = get_effective_timezone()
+        completed_at = datetime.now(timezone.utc)
+        source_status = {
+            "sources_polled": ingest_res.get("sources_polled", []),
+            "sources_skipped": ingest_res.get("sources_skipped", []),
+            "sources_failed": ingest_res.get("sources_failed", []),
+        }
+        new_signals = ingest_res.get("events_ingested", 0) or 0
+        updated_signals = semantic_res.get("events_processed", 0)
+        carried_signals = len(inbox_res)
         run_record = DailySignalRun(
             id=daily_run_id,
-            run_date=surface_date,
-            status="completed",
+            runtime_date=surface_date,
+            runtime_timezone=tz_name,
+            run_kind="daily_refresh",
             started_at=now,
-            completed_at=datetime.now(timezone.utc),
-            total_signals_ingested=ingest_res.get("events_inserted", 0) or ingest_res.get("events_processed", 0) or 0,
-            total_clusters_processed=semantic_res.get("events_processed", 0),
-            total_claims_extracted=claims_res.get("claims_processed", 0) or 0,
-            total_inbox_items=len(inbox_res),
-            generation_status=briefing.generation_status,
+            completed_at=completed_at,
+            data_cutoff_at=data_cutoff_at,
+            status="completed" if not ingest_res.get("sources_failed") else "partial_sources",
+            new_signal_count=new_signals,
+            updated_signal_count=updated_signals,
+            carried_signal_count=carried_signals,
+            retry_count=0,
+            briefing_id=briefing.id,
+            source_status_json=json.dumps(source_status),
             error_summary=None,
+            content_hash=f"{daily_run_id}:{briefing.content_hash}" if getattr(briefing, "content_hash", None) else f"{daily_run_id}:{completed_at.isoformat()}",
         )
         db.save_daily_signal_run(run_record)
 
@@ -791,18 +808,26 @@ def run_daily_refresh(
     except Exception as e:
         logger.exception(f"Daily Refresh pipeline failed for {surface_date} (run: {daily_run_id}): {e}")
         from app.models.schemas import DailySignalRun
+        from app.runtime.timezone import get_effective_timezone
+        _, tz_name, _ = get_effective_timezone()
+        failed_at = datetime.now(timezone.utc)
         run_record = DailySignalRun(
             id=daily_run_id,
-            run_date=surface_date,
-            status="failed",
+            runtime_date=surface_date,
+            runtime_timezone=tz_name,
+            run_kind="daily_refresh",
             started_at=now,
-            completed_at=datetime.now(timezone.utc),
-            total_signals_ingested=0,
-            total_clusters_processed=0,
-            total_claims_extracted=0,
-            total_inbox_items=0,
-            generation_status="failed",
+            completed_at=failed_at,
+            data_cutoff_at=data_cutoff_at,
+            status="failed",
+            new_signal_count=0,
+            updated_signal_count=0,
+            carried_signal_count=0,
+            retry_count=0,
+            briefing_id=None,
+            source_status_json=None,
             error_summary=str(e),
+            content_hash=f"{daily_run_id}:failed:{failed_at.isoformat()}",
         )
         db.save_daily_signal_run(run_record)
         raise e

@@ -609,7 +609,7 @@ class DailySignalRun(BaseModel):
     id: str  # daily-run:YYYY-MM-DD
     runtime_date: str  # YYYY-MM-DD
     runtime_timezone: str
-    run_kind: str = "daily"
+    run_kind: str = "daily_refresh"
     started_at: datetime
     completed_at: Optional[datetime] = None
     data_cutoff_at: Optional[datetime] = None

@@ -26,6 +26,7 @@ from app.runtime.jobs import (
 
 from app.models.schemas import DailyBriefing, RuntimeJob, DailySignalRun
 from app.runtime.locks import JobLock
+from app.runtime.sanitization import sanitize_error
 from app.runtime.state import (
     finish_job_run,
     load_runtime_config,

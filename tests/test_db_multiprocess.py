@@ -28,17 +28,19 @@ def get_sha256(filepath):
 
 # 1. Pure Path Precedence Resolution Test
 def test_resolve_db_path(monkeypatch, tmp_path):
-    # A. HERMES_DB_PATH precedence
+    # A. Explicit argument takes precedence over HERMES_DB_PATH (test isolation)
     temp_env_db = str(tmp_path / "env_db.db")
     monkeypatch.setenv("HERMES_DB_PATH", temp_env_db)
-    assert resolve_db_path("explicit.db") == os.path.abspath(temp_env_db)
+    assert resolve_db_path("explicit.db") == os.path.abspath("explicit.db")
+
+    # B. HERMES_DB_PATH is used when no explicit path is given
     assert resolve_db_path() == os.path.abspath(temp_env_db)
 
-    # B. Explicit path precedence when HERMES_DB_PATH is not set
+    # C. Explicit path precedence when HERMES_DB_PATH is not set
     monkeypatch.delenv("HERMES_DB_PATH", raising=False)
     assert resolve_db_path("explicit.db") == os.path.abspath("explicit.db")
 
-    # C. Default runtime path precedence when neither is set
+    # D. Default runtime path precedence when neither is set
     mock_runtime = tmp_path / "runtime" / "tech_intel.db"
     assert resolve_db_path(None, mock_runtime) == os.path.abspath(str(mock_runtime))
 
@@ -216,17 +218,25 @@ def test_multiprocess_initialization_existing(monkeypatch, tmp_path):
     queue = Queue()
     
     processes = []
-    for _ in range(num_processes):
-        p = Process(target=run_init_process, args=(db_file, barrier, queue))
-        p.start()
-        processes.append(p)
-        
-    for p in processes:
-        p.join(timeout=5.0)
-        
-    results = [queue.get() for _ in range(num_processes)]
-    for r in results:
-        assert r == "SUCCESS", f"Concurrent initialization failed: {r}"
+    try:
+        for _ in range(num_processes):
+            p = Process(target=run_init_process, args=(db_file, barrier, queue))
+            p.start()
+            processes.append(p)
+
+        for p in processes:
+            p.join(timeout=10.0)
+
+        results = [queue.get(timeout=5.0) for _ in range(num_processes)]
+        for r in results:
+            assert r == "SUCCESS", f"Concurrent initialization failed: {r}"
+        for p in processes:
+            assert p.exitcode == 0, f"Init process exited with {p.exitcode}"
+    finally:
+        for p in processes:
+            if p.is_alive():
+                p.terminate()
+                p.join(timeout=2.0)
 
 
 # 7. Concurrent Bootstraps on Missing Database
@@ -239,60 +249,207 @@ def test_multiprocess_bootstrap_missing(monkeypatch, tmp_path):
     queue = Queue()
     
     processes = []
-    for _ in range(num_processes):
-        p = Process(target=run_init_process, args=(db_file, barrier, queue))
-        p.start()
-        processes.append(p)
-        
-    for p in processes:
-        p.join(timeout=5.0)
-        
-    results = [queue.get() for _ in range(num_processes)]
-    for r in results:
-        assert r == "SUCCESS", f"Concurrent bootstrap failed: {r}"
-        
+    try:
+        for _ in range(num_processes):
+            p = Process(target=run_init_process, args=(db_file, barrier, queue))
+            p.start()
+            processes.append(p)
+
+        for p in processes:
+            p.join(timeout=10.0)
+
+        results = [queue.get(timeout=5.0) for _ in range(num_processes)]
+        for r in results:
+            assert r == "SUCCESS", f"Concurrent bootstrap failed: {r}"
+        for p in processes:
+            assert p.exitcode == 0, f"Bootstrap process exited with {p.exitcode}"
+    finally:
+        for p in processes:
+            if p.is_alive():
+                p.terminate()
+                p.join(timeout=2.0)
+
     db = Database(db_path=db_file)
     db.close()
 
 
-# 8. Injected Mid-Migration Failure Rollback
-def test_migration_rollback_on_failure(monkeypatch, tmp_path):
-    db_file = str(tmp_path / "rollback_test.db")
+# 8a. Real Production Migration Rollback — full legacy database where daily_briefings already exists
+def test_real_migration_legacy_full_db(monkeypatch, tmp_path):
+    """Legacy DB (timezone_name, no runtime_timezone/run_kind) plus existing daily_briefings
+    migrates through the real production Database() path."""
+    db_file = str(tmp_path / "legacy_full.db")
     monkeypatch.setenv("HERMES_DB_PATH", db_file)
-    
-    # 1. Create a database file with just test_table (so daily_briefings does not exist)
+
+    # Build a legacy database: daily_briefings exists AND legacy daily_signal_runs
     conn = connect_db(db_file)
-    conn.execute("CREATE TABLE test_table (id TEXT PRIMARY KEY, val TEXT)")
-    conn.execute("INSERT INTO test_table VALUES ('1', 'hello')")
+    conn.execute("""
+        CREATE TABLE daily_briefings (
+            id TEXT PRIMARY KEY,
+            briefing_date TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            total_items INTEGER DEFAULT 0,
+            high_priority_count INTEGER DEFAULT 0,
+            project_relevant_count INTEGER DEFAULT 0,
+            content_hash TEXT NOT NULL,
+            summary_text TEXT,
+            sections_json TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("INSERT INTO daily_briefings VALUES ('b1', '2026-08-25', '2026-08-25T08:00:00Z', 0, 0, 0, 'h', 's', '[]', '2026-08-25T08:00:00Z')")
+    conn.execute("""
+        CREATE TABLE daily_signal_runs (
+            id TEXT PRIMARY KEY,
+            runtime_date TEXT UNIQUE NOT NULL,
+            timezone_name TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            data_cutoff_at TEXT,
+            status TEXT NOT NULL,
+            new_signal_count INTEGER DEFAULT 0,
+            updated_signal_count INTEGER DEFAULT 0,
+            carried_signal_count INTEGER DEFAULT 0,
+            retry_count INTEGER DEFAULT 0,
+            briefing_id TEXT,
+            source_status_json TEXT,
+            error_summary TEXT,
+            content_hash TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("INSERT INTO daily_signal_runs (id, runtime_date, timezone_name, started_at, status, content_hash) VALUES ('run1', '2026-08-25', 'Asia/Kolkata', '2026-08-25T08:00:00Z', 'completed', 'hash1')")
     conn.commit()
     conn.close()
-    
-    # 2. Instantiate FailingDatabase.
-    class FailingDatabase(Database):
-        def _migrate_columns_internal(self, cursor):
-            cursor.execute("CREATE TABLE test_mig_table (id TEXT PRIMARY KEY)")
-            cursor.execute("ALTER TABLE test_table ADD COLUMN new_val TEXT")
-            raise sqlite3.OperationalError("Simulated write error during migration")
-            
-    with pytest.raises(DatabaseMigrationError):
-        FailingDatabase(db_path=db_file)
-        
-    # 3. Open normally and verify that test_mig_table and new_val do not exist (rolled back),
-    # but test_table STILL exists and contains 'hello'!
+
     db = Database(db_path=db_file)
     cursor = db.conn.cursor()
+
+    cols = {r["name"] for r in cursor.execute("PRAGMA table_info(daily_signal_runs)").fetchall()}
+    assert "runtime_timezone" in cols and "run_kind" in cols and "timezone_name" not in cols
+
+    row = cursor.execute("SELECT * FROM daily_signal_runs WHERE id='run1'").fetchone()
+    assert row is not None
+    assert row["runtime_timezone"] == "Asia/Kolkata"
+    assert row["run_kind"] == "daily_refresh"
+
+    # Pre-existing data preserved
+    assert cursor.execute("SELECT COUNT(*) FROM daily_briefings").fetchone()[0] == 1
+
     tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert "test_mig_table" not in tables
-    assert "test_table" in tables
-    
-    info = cursor.execute("PRAGMA table_info(test_table)").fetchall()
-    cols = {r["name"] for r in info}
-    assert "new_val" not in cols
-    
-    row = cursor.execute("SELECT * FROM test_table").fetchone()
-    assert row["id"] == "1"
-    assert row["val"] == "hello"
+    assert "daily_signal_runs_mig_tmp" not in tables
     db.close()
+
+
+# 8b. Real Production Migration — partially migrated table (runtime_timezone present, no run_kind)
+def test_real_migration_partial_table(monkeypatch, tmp_path):
+    """Table already has runtime_timezone but lacks run_kind; rebuild must not reference
+    timezone_name (which does not exist) and must preserve rows."""
+    db_file = str(tmp_path / "partial_migration.db")
+    monkeypatch.setenv("HERMES_DB_PATH", db_file)
+
+    conn = connect_db(db_file)
+    conn.execute("""
+        CREATE TABLE daily_briefings (
+            id TEXT PRIMARY KEY, briefing_date TEXT NOT NULL, generated_at TEXT NOT NULL,
+            total_items INTEGER DEFAULT 0, high_priority_count INTEGER DEFAULT 0,
+            project_relevant_count INTEGER DEFAULT 0, content_hash TEXT NOT NULL,
+            summary_text TEXT, sections_json TEXT, created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE daily_signal_runs (
+            id TEXT PRIMARY KEY,
+            runtime_date TEXT NOT NULL,
+            runtime_timezone TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            data_cutoff_at TEXT,
+            status TEXT NOT NULL,
+            new_signal_count INTEGER DEFAULT 0,
+            updated_signal_count INTEGER DEFAULT 0,
+            carried_signal_count INTEGER DEFAULT 0,
+            retry_count INTEGER DEFAULT 0,
+            briefing_id TEXT,
+            source_status_json TEXT,
+            error_summary TEXT,
+            content_hash TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("INSERT INTO daily_signal_runs (id, runtime_date, runtime_timezone, started_at, status, content_hash) VALUES ('run1', '2026-08-25', 'UTC', '2026-08-25T08:00:00Z', 'completed', 'hash1')")
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path=db_file)
+    cursor = db.conn.cursor()
+
+    cols = {r["name"] for r in cursor.execute("PRAGMA table_info(daily_signal_runs)").fetchall()}
+    assert "run_kind" in cols and "timezone_name" not in cols
+
+    row = cursor.execute("SELECT * FROM daily_signal_runs WHERE id='run1'").fetchone()
+    assert row is not None
+    assert row["runtime_timezone"] == "UTC"
+    assert row["run_kind"] == "daily_refresh"
+    db.close()
+
+
+# 8c. Real Production Migration — composite-index failure proves original schema and rows survive rollback
+def test_real_migration_index_failure_rollback(monkeypatch, tmp_path):
+    """Duplicate composite keys force the composite unique index creation to fail inside the
+    single transaction; the entire migration rolls back leaving original schema + rows intact."""
+    db_file = str(tmp_path / "index_failure.db")
+    monkeypatch.setenv("HERMES_DB_PATH", db_file)
+
+    conn = connect_db(db_file)
+    conn.execute("""
+        CREATE TABLE daily_briefings (
+            id TEXT PRIMARY KEY, briefing_date TEXT NOT NULL, generated_at TEXT NOT NULL,
+            total_items INTEGER DEFAULT 0, high_priority_count INTEGER DEFAULT 0,
+            project_relevant_count INTEGER DEFAULT 0, content_hash TEXT NOT NULL,
+            summary_text TEXT, sections_json TEXT, created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("INSERT INTO daily_briefings VALUES ('b1', '2026-08-25', '2026-08-25T08:00:00Z', 0, 0, 0, 'h', 's', '[]', '2026-08-25T08:00:00Z')")
+    # Legacy table WITHOUT a UNIQUE constraint on runtime_date so two rows share a date.
+    # After rebuild, the composite unique index (runtime_date, runtime_timezone, run_kind)
+    # cannot be created because both rows collapse to identical composite keys.
+    conn.execute("""
+        CREATE TABLE daily_signal_runs (
+            id TEXT PRIMARY KEY,
+            runtime_date TEXT NOT NULL,
+            timezone_name TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            data_cutoff_at TEXT,
+            status TEXT NOT NULL,
+            new_signal_count INTEGER DEFAULT 0,
+            updated_signal_count INTEGER DEFAULT 0,
+            carried_signal_count INTEGER DEFAULT 0,
+            retry_count INTEGER DEFAULT 0,
+            briefing_id TEXT,
+            source_status_json TEXT,
+            error_summary TEXT,
+            content_hash TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("INSERT INTO daily_signal_runs (id, runtime_date, timezone_name, started_at, status, content_hash) VALUES ('run1', '2026-08-25', 'Asia/Kolkata', '2026-08-25T08:00:00Z', 'completed', 'hash1')")
+    conn.execute("INSERT INTO daily_signal_runs (id, runtime_date, timezone_name, started_at, status, content_hash) VALUES ('run2', '2026-08-25', 'Asia/Kolkata', '2026-08-26T08:00:00Z', 'completed', 'hash2')")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(DatabaseMigrationError):
+        Database(db_path=db_file)
+
+    # Original schema and rows must survive the rolled-back rebuild
+    check = connect_db(db_file)
+    cols = {r["name"] for r in check.execute("PRAGMA table_info(daily_signal_runs)").fetchall()}
+    assert "timezone_name" in cols
+    assert "runtime_timezone" not in cols
+    assert "run_kind" not in cols
+    count = check.execute("SELECT COUNT(*) FROM daily_signal_runs").fetchone()[0]
+    assert count == 2
+    assert check.execute("SELECT COUNT(*) FROM daily_briefings").fetchone()[0] == 1
+    tables = {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "daily_signal_runs_mig_tmp" not in tables
+    check.close()
 
 
 # 9. Briefing Revision Snapshots Integrity Test
@@ -494,20 +651,28 @@ def test_concurrent_revision_creation(monkeypatch, tmp_path):
     queue = Queue()
     
     processes = []
-    for _ in range(num_processes):
-        p = Process(target=run_revision_process, args=(db_file, barrier, queue))
-        p.start()
-        processes.append(p)
-        
-    for p in processes:
-        p.join(timeout=5.0)
-        
-    results = [queue.get() for _ in range(num_processes)]
-    
-    success_revs = []
-    for status, val in results:
-        assert status == "SUCCESS", f"Revision process failed: {val}"
-        success_revs.append(val)
+    try:
+        for _ in range(num_processes):
+            p = Process(target=run_revision_process, args=(db_file, barrier, queue))
+            p.start()
+            processes.append(p)
+
+        for p in processes:
+            p.join(timeout=10.0)
+
+        results = [queue.get(timeout=5.0) for _ in range(num_processes)]
+
+        success_revs = []
+        for status, val in results:
+            assert status == "SUCCESS", f"Revision process failed: {val}"
+            success_revs.append(val)
+        for p in processes:
+            assert p.exitcode == 0, f"Revision process exited with {p.exitcode}"
+    finally:
+        for p in processes:
+            if p.is_alive():
+                p.terminate()
+                p.join(timeout=2.0)
         
     # Check that all revision numbers 1, 2, 3 were created uniquely
     db = Database(db_path=db_file)
