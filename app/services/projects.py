@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import json
 from pathlib import Path
 
-from app.models.schemas import Project
+from app.models.schemas import Project, RefreshOperation
 from app.services.intelligence import get_recent_changes
 from app.services.schemas import ProjectIntelligence, ProjectSummary
 from app.storage.db import Database
@@ -381,7 +381,12 @@ def add_project(
     description: Optional[str] = None,
     db: Optional[Database] = None,
 ) -> Project:
-    """Adds a new project and triggers its initial scan/indexing."""
+    """Adds a new project and enqueues an asynchronous initial scan.
+
+    The scan runs as a background 'project_scan' refresh operation so the API
+    call returns promptly; last_scan_status tracks progress ('pending' until
+    the worker picks it up).
+    """
     if db is None:
         db = Database()
 
@@ -402,10 +407,21 @@ def add_project(
         status="active",
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
+        last_scan_status="pending",
     )
     db.save_project(proj)
 
-    scan_single_project(proj.id, db)
+    # Enqueue asynchronous initial scan instead of blocking the caller.
+    now = datetime.now(timezone.utc)
+    op_id = f"refresh:project_scan:{now.timestamp()}"
+    db.save_refresh_operation(RefreshOperation(
+        id=op_id,
+        scope="project_scan",
+        target_id=proj.id,
+        status="queued",
+        requested_at=now,
+        trigger="user_requested",
+    ))
     return db.get_project(proj.id)
 
 
@@ -433,23 +449,40 @@ def archive_project(
 def restore_project(
     project_id: str,
     db: Optional[Database] = None,
-) -> bool:
-    """Restores a soft-archived project."""
+) -> Optional[RefreshOperation]:
+    """Restores a soft-archived project and enqueues an asynchronous re-scan.
+
+    Mirrors add_project: the scan runs as a background 'project_scan' refresh
+    operation so the API call returns promptly. Returns the queued refresh
+    operation, or None if the project was not found.
+    """
     if db is None:
         db = Database()
 
     proj = db.get_project(project_id)
     if not proj:
-        return False
+        return None
 
     proj.is_active = True
     proj.status = "active"
     proj.archived_at = None
     proj.archive_reason = None
+    proj.last_scan_status = "pending"
     db.save_project(proj)
-    
-    scan_single_project(proj.id, db)
-    return True
+
+    # Enqueue asynchronous re-scan instead of blocking the caller.
+    now = datetime.now(timezone.utc)
+    op_id = f"refresh:project_scan:{now.timestamp()}"
+    op = RefreshOperation(
+        id=op_id,
+        scope="project_scan",
+        target_id=proj.id,
+        status="queued",
+        requested_at=now,
+        trigger="user_requested",
+    )
+    db.save_refresh_operation(op)
+    return op
 
 
 def scan_single_project(

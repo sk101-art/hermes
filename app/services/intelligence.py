@@ -400,6 +400,7 @@ def get_top_developments(
 
     # Read active inbox items
     inbox_items = db.get_active_inbox_items()
+    skip_cluster_fallback = False
 
     if section:
         s_lower = section.lower().strip()
@@ -408,7 +409,12 @@ def get_top_developments(
     if project:
         p_clean = project.strip()
         target_project = db.get_project(p_clean) or db.get_project(f"project:{p_clean.lower()}") or db.get_project_by_name(p_clean)
-        if target_project:
+        # Archived projects must not surface in top-stories results: treat an
+        # archived project like an unknown one and return no items.
+        if target_project and not target_project.is_active:
+            inbox_items = []
+            skip_cluster_fallback = True
+        elif target_project:
             inbox_items = [it for it in inbox_items if target_project.id in it.matched_project_ids]
 
     results = []
@@ -473,7 +479,7 @@ def get_top_developments(
         )
         results.append(res)
 
-    if not results:
+    if not results and not skip_cluster_fallback:
         # Fallback to top clusters
         top_cl = db.get_top_clusters(limit=limit)
         top_cids = [cl.id for cl in top_cl]
@@ -491,6 +497,18 @@ def get_top_developments(
             claim_scores = [c.verification_score for c in claims]
             verif_score = float(np.mean(claim_scores)) if claim_scores else None
             maturity = assessment.maturity_stage if assessment else None
+
+            # Provenance: published_at must reflect the newest SOURCE event time
+            # (published_at or discovered_at), never an internal bookkeeping
+            # timestamp like cluster.updated_at.
+            source_dt = None
+            for ev in events:
+                ev_time = ev.published_at or getattr(ev, "discovered_at", None)
+                if ev_time is not None:
+                    if source_dt is None or ev_time > source_dt:
+                        source_dt = ev_time
+            if source_dt is None:
+                source_dt = cl.created_at
 
             if tech_state:
                 if not claims and not events:
@@ -521,7 +539,7 @@ def get_top_developments(
                 summary=summary_text,
                 score=round(cl.cluster_score, 4),
                 sources=list(cl.sources),
-                published_at=cl.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(cl.updated_at, datetime) else str(cl.updated_at),
+                published_at=source_dt.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(source_dt, datetime) else str(source_dt),
                 verification_score=round(verif_score, 4) if verif_score is not None else None,
                 maturity=maturity,
                 risk=risk,
@@ -838,6 +856,9 @@ def get_today_inbox(
     if project:
         p_clean = project.strip()
         proj = db.get_project(p_clean) or db.get_project(f"project:{p_clean.lower()}") or db.get_project_by_name(p_clean)
+        # Archived projects must not surface in inbox results.
+        if proj and not proj.is_active:
+            proj = None
         if proj:
             items = [it for it in items if proj.id in it.matched_project_ids]
         else:

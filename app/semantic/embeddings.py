@@ -1,8 +1,40 @@
+import hashlib
+import os
 import re
 from typing import List, Optional
 import numpy as np
 
 from app.models.schemas import Event
+
+OFFLINE_ENV_VAR = "HERMES_EMBEDDINGS_OFFLINE"
+OFFLINE_DIM = 384
+
+
+def _offline_vector(text: str, dim: int = OFFLINE_DIM) -> np.ndarray:
+    """Deterministic offline embedding: SHA-256 seeded pseudo-random unit vector.
+
+    Stable across processes and platforms for identical input text, enabling
+    reproducible tests and fully offline operation without model downloads.
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    # Expand digest to fill dim bytes deterministically
+    seed_bytes = b""
+    counter = 0
+    while len(seed_bytes) < dim:
+        seed_bytes += hashlib.sha256(digest + counter.to_bytes(4, "big")).digest()
+        counter += 1
+    raw = np.frombuffer(seed_bytes[:dim], dtype=np.uint8).astype(np.float32)
+    raw = (raw / 255.0) - 0.5  # center around 0
+    norm = np.linalg.norm(raw)
+    if norm == 0:
+        raw[0] = 1.0
+        norm = 1.0
+    return (raw / norm).astype(np.float32)
+
+
+def offline_mode_enabled() -> bool:
+    """Returns True when HERMES_EMBEDDINGS_OFFLINE is set to a truthy value."""
+    return os.environ.get(OFFLINE_ENV_VAR, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def prepare_event_text(event: Event, max_chars: int = 2500) -> str:
@@ -35,6 +67,8 @@ class EmbeddingService:
         self._model = None
 
     def _load_model(self):
+        if offline_mode_enabled():
+            return None  # Offline mode: no model needed
         cache_key = (self.model_name, self.device)
         if cache_key not in EmbeddingService._cached_models:
             try:
@@ -57,6 +91,8 @@ class EmbeddingService:
 
     def embed(self, text: str) -> np.ndarray:
         """Generate normalized float32 embedding for a single text."""
+        if offline_mode_enabled():
+            return _offline_vector(text)
         model = self._load_model()
         vec = model.encode(text, normalize_embeddings=True, show_progress_bar=False)
         return np.asarray(vec, dtype=np.float32)
@@ -64,7 +100,9 @@ class EmbeddingService:
     def embed_batch(self, texts: List[str]) -> np.ndarray:
         """Generate normalized float32 embeddings for a batch of texts."""
         if not texts:
-            return np.empty((0, 384), dtype=np.float32)
+            return np.empty((0, OFFLINE_DIM), dtype=np.float32)
+        if offline_mode_enabled():
+            return np.stack([_offline_vector(t) for t in texts]).astype(np.float32)
         model = self._load_model()
         vecs = model.encode(
             texts,

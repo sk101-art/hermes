@@ -150,8 +150,11 @@ def test_runtime_job_success_and_failure_records(tmp_path, monkeypatch):
     assert saved.completed_at is not None
     db.close()
 
-    # Failure path
+    # Failure path — use a fresh, isolated DB. HERMES_DB_PATH takes precedence
+    # over the explicit constructor path, so re-point it to the failure DB to
+    # avoid reusing the completed run recorded above.
     db2_file = str(tmp_path / "jobs_fail.db")
+    monkeypatch.setenv("HERMES_DB_PATH", db2_file)
     db2 = Database(db_path=db2_file)
 
     def _boom(*a, **k):

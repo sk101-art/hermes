@@ -297,6 +297,19 @@ def generate_morning_briefing(
                 project_impact_score=it.project_impact_score,
                 matched_project_ids=list(it.matched_project_ids) if it.matched_project_ids else [],
                 snapshot_version="v1",
+                # Provenance: carry the source timestamps forward from the inbox
+                # item so briefing consumers never mistake internal bookkeeping
+                # times for publication times.
+                source_published_at=it.source_published_at,
+                source_updated_at=it.source_updated_at,
+                first_seen_at=it.first_seen_at,
+                last_changed_at=it.last_changed_at,
+                last_evaluated_at=it.last_evaluated_at,
+                surfaced_at=it.surfaced_at,
+                snapshot_date=it.snapshot_date,
+                daily_run_id=it.daily_run_id,
+                freshness_kind=it.freshness_kind,
+                freshness_reason=it.freshness_reason,
             )
             briefing_items.append(dbi)
             grouped_snapshot_items[sec].append(dbi)

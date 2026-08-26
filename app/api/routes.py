@@ -11,11 +11,78 @@ from app.services import intelligence as intel_service
 from app.services import projects as projects_service
 from app.services import runtime as runtime_service
 from app.services import saved as saved_service
-from app.services.schemas import SaveItemRequest
+from app.services.schemas import (
+    ClaimDetail,
+    ProjectIntelligence,
+    ProjectSummary,
+    RecentJobFailureRecord,
+    RuntimeOverviewResponse,
+    SaveItemRequest,
+    SearchResult,
+    SourceOperationalRecord,
+    StoryDetail,
+)
 from app.storage.db import Database
-from app.models.schemas import RefreshOperation
+from app.models.schemas import DailySignalRun, Project, RefreshOperation
 
 router = APIRouter()
+
+
+# --- Response envelope models -------------------------------------------------
+# Explicit response_model declarations give every endpoint a stable, documented
+# contract (OpenAPI schema + runtime validation) instead of ad-hoc dicts.
+class RuntimeFailuresResponse(BaseModel):
+    failures: List[RecentJobFailureRecord]
+
+
+class SourcesResponse(BaseModel):
+    sources: List[SourceOperationalRecord]
+
+
+class InboxResponse(BaseModel):
+    count: int
+    inbox_items: List[Dict[str, Any]]
+
+
+class StoriesResponse(BaseModel):
+    count: int
+    stories: List[SearchResult]
+
+
+class ProjectsResponse(BaseModel):
+    count: int
+    projects: List[ProjectSummary]
+
+
+class SavedResponse(BaseModel):
+    count: int
+    saved_items: List[Dict[str, Any]]
+
+
+class ChangesResponse(BaseModel):
+    count: int
+    changes: List[Dict[str, Any]]
+
+
+class SearchResponse(BaseModel):
+    query: str
+    mode: str
+    count: int
+    results: List[SearchResult]
+
+
+class DailyStatusResponse(BaseModel):
+    runs: List[DailySignalRun]
+
+
+class MessageResponse(BaseModel):
+    status: Optional[str] = None
+    message: str
+
+
+class SaveItemResponse(BaseModel):
+    message: str
+    saved_item: Optional[Dict[str, Any]] = None
 
 
 def get_db_path() -> str:
@@ -41,13 +108,13 @@ def readiness(db: Database = Depends(get_db)):
     }
 
 
-@router.get("/runtime", summary="Runtime daemon and jobs operational overview")
-@router.get("/runtime/overview", summary="Runtime operational overview alias")
+@router.get("/runtime", summary="Runtime daemon and jobs operational overview", response_model=RuntimeOverviewResponse)
+@router.get("/runtime/overview", summary="Runtime operational overview alias", response_model=RuntimeOverviewResponse)
 def get_runtime(db: Database = Depends(get_db)):
     return runtime_service.get_runtime_overview(db=db)
 
 
-@router.get("/runtime/failures", summary="Recent job failures")
+@router.get("/runtime/failures", summary="Recent job failures", response_model=RuntimeFailuresResponse)
 def get_runtime_failures(
     limit: int = Query(10, ge=1, le=50, description="Max failed runs to return"),
     db: Database = Depends(get_db),
@@ -55,12 +122,12 @@ def get_runtime_failures(
     return {"failures": runtime_service.get_recent_job_failures(limit=limit, db=db)}
 
 
-@router.get("/sources", summary="Source adapters health and checkpoints")
+@router.get("/sources", summary="Source adapters health and checkpoints", response_model=SourcesResponse)
 def get_sources(db: Database = Depends(get_db)):
     return {"sources": runtime_service.get_source_health(db=db)}
 
 
-@router.get("/inbox", summary="Active daily inbox items")
+@router.get("/inbox", summary="Active daily inbox items", response_model=InboxResponse)
 def get_inbox(
     unseen_only: bool = Query(False, description="Filter only unseen items"),
     project: Optional[str] = Query(None, description="Filter by project relevance"),
@@ -102,7 +169,7 @@ def get_briefing(
     return briefing
 
 
-@router.get("/stories", summary="Top technology intelligence stories")
+@router.get("/stories", summary="Top technology intelligence stories", response_model=StoriesResponse)
 def get_stories(
     limit: int = Query(20, ge=1, le=50, description="Max stories (1-50)"),
     project: Optional[str] = Query(None, description="Filter by project relevance"),
@@ -113,7 +180,7 @@ def get_stories(
     return {"count": len(stories), "stories": [s.model_dump() for s in stories]}
 
 
-@router.get("/stories/{cluster_id}", summary="Story cluster details")
+@router.get("/stories/{cluster_id}", summary="Story cluster details", response_model=StoryDetail)
 def get_story_by_id(cluster_id: str, db: Database = Depends(get_db)):
     story = intel_service.get_story(cluster_id=cluster_id, db=db)
     if not story:
@@ -121,7 +188,7 @@ def get_story_by_id(cluster_id: str, db: Database = Depends(get_db)):
     return story.model_dump()
 
 
-@router.get("/claims/{claim_id}", summary="Claim verification and evidence provenance")
+@router.get("/claims/{claim_id}", summary="Claim verification and evidence provenance", response_model=ClaimDetail)
 def get_claim_by_id(claim_id: str, db: Database = Depends(get_db)):
     claim = claims_service.get_claim(claim_id=claim_id, db=db)
     if not claim:
@@ -129,7 +196,7 @@ def get_claim_by_id(claim_id: str, db: Database = Depends(get_db)):
     return claim.model_dump()
 
 
-@router.get("/projects", summary="List project technology profiles")
+@router.get("/projects", summary="List project technology profiles", response_model=ProjectsResponse)
 def get_projects(active_only: bool = Query(True, description="Only active projects"), db: Database = Depends(get_db)):
     projects = projects_service.list_projects(db=db, active_only=active_only)
     return {"count": len(projects), "projects": [p.model_dump() for p in projects]}
@@ -143,7 +210,7 @@ def get_project_profile_by_id(project_id: str, db: Database = Depends(get_db)):
     return profile
 
 
-@router.get("/projects/{project_id}/intelligence", summary="Project-specific intelligence & recommendations")
+@router.get("/projects/{project_id}/intelligence", summary="Project-specific intelligence & recommendations", response_model=ProjectIntelligence)
 def get_project_intel(
     project_id: str,
     limit: int = Query(10, ge=1, le=50, description="Max recommendations (1-50)"),
@@ -155,7 +222,7 @@ def get_project_intel(
     return intel.model_dump()
 
 
-@router.get("/saved", summary="Saved personal library items")
+@router.get("/saved", summary="Saved personal library items", response_model=SavedResponse)
 def get_saved(
     limit: int = Query(20, ge=1, le=50, description="Max items (1-50)"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
@@ -167,7 +234,7 @@ def get_saved(
     return {"count": len(items), "saved_items": items}
 
 
-@router.post("/saved", summary="Save a story cluster to personal library")
+@router.post("/saved", summary="Save a story cluster to personal library", response_model=SaveItemResponse)
 def save_item(
     req: SaveItemRequest,
     db: Database = Depends(get_db),
@@ -186,7 +253,7 @@ def save_item(
     return {"message": msg, "saved_item": item}
 
 
-@router.delete("/saved/{saved_id}", summary="Remove an item from saved personal library")
+@router.delete("/saved/{saved_id}", summary="Remove an item from saved personal library", response_model=MessageResponse)
 def delete_saved(
     saved_id: str,
     db: Database = Depends(get_db),
@@ -197,7 +264,7 @@ def delete_saved(
     return {"message": msg}
 
 
-@router.get("/changes", summary="Recent intelligence changes and claim revisions")
+@router.get("/changes", summary="Recent intelligence changes and claim revisions", response_model=ChangesResponse)
 def get_changes(
     hours: int = Query(24, ge=1, le=720, description="Hours to look back (default 24)"),
     importance_min: Optional[str] = Query(None, pattern="^(low|medium|high|critical)$", description="Min importance"),
@@ -215,7 +282,7 @@ def get_changes(
     return {"count": len(changes), "changes": changes}
 
 
-@router.get("/search", summary="Search verified intelligence")
+@router.get("/search", summary="Search verified intelligence", response_model=SearchResponse)
 def search(
     q: str = Query(..., min_length=1, max_length=200, description="Search query"),
     project: Optional[str] = Query(None, description="Project context filter/boost"),
@@ -259,7 +326,19 @@ class RefreshRequest(BaseModel):
     scope: str
     idempotency_key: Optional[str] = None
 
-@router.post("/projects", summary="Add a new project")
+# Scopes the daemon worker knows how to execute (must mirror runner dispatch).
+VALID_REFRESH_SCOPES = {
+    "daily_refresh",
+    "inbox_refresh",
+    "morning_brief",
+    "health_check",
+    "recheck",
+    "project_scan",
+    "search_refresh",
+    "story_recheck",
+}
+
+@router.post("/projects", summary="Add a new project", response_model=Project)
 def create_project(req: ProjectCreate, db: Database = Depends(get_db)):
     try:
         proj = projects_service.add_project(
@@ -272,19 +351,20 @@ def create_project(req: ProjectCreate, db: Database = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/projects/{project_id}/archive", summary="Soft-archive a project")
+@router.post("/projects/{project_id}/archive", summary="Soft-archive a project", response_model=MessageResponse)
 def archive_project(project_id: str, reason: Optional[str] = None, db: Database = Depends(get_db)):
     success = projects_service.archive_project(project_id=project_id, reason=reason, db=db)
     if not success:
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
     return {"status": "success", "message": "Project archived successfully"}
 
-@router.post("/projects/{project_id}/restore", summary="Restore an archived project")
-def restore_project(project_id: str, db: Database = Depends(get_db)):
-    success = projects_service.restore_project(project_id=project_id, db=db)
-    if not success:
+@router.post("/projects/{project_id}/restore", summary="Restore an archived project and enqueue async re-scan", status_code=202, response_model=RefreshOperation)
+def restore_project(project_id: str, response: Response, db: Database = Depends(get_db)):
+    op = projects_service.restore_project(project_id=project_id, db=db)
+    if op is None:
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
-    return {"status": "success", "message": "Project restored successfully"}
+    response.status_code = status.HTTP_202_ACCEPTED
+    return op.model_dump()
 
 @router.post("/projects/{project_id}/scan", summary="Rescan a single project")
 def scan_project(project_id: str, db: Database = Depends(get_db)):
@@ -296,10 +376,18 @@ def scan_project(project_id: str, db: Database = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@router.post("/runtime/refresh", summary="Enqueue background refresh operation", status_code=202)
+@router.post("/runtime/refresh", summary="Enqueue background refresh operation", status_code=202, response_model=RefreshOperation)
 def enqueue_refresh(req: RefreshRequest, response: Response, db: Database = Depends(get_db)):
-    scope = req.scope
+    scope = (req.scope or "").strip()
     idempotency_key = req.idempotency_key or ""
+
+    # Validate scope up front: reject unknown scopes with 422 so clients get a
+    # truthful error instead of an operation that can never execute.
+    if scope not in VALID_REFRESH_SCOPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown refresh scope '{scope}'. Valid scopes: {sorted(VALID_REFRESH_SCOPES)}",
+        )
 
     cursor = db.conn.cursor()
     cursor.execute(
@@ -333,7 +421,7 @@ def enqueue_refresh(req: RefreshRequest, response: Response, db: Database = Depe
     return op.model_dump()
 
 
-@router.get("/runtime/operations/{operation_id}", summary="Get refresh operation status")
+@router.get("/runtime/operations/{operation_id}", summary="Get refresh operation status", response_model=RefreshOperation)
 def get_operation(operation_id: str, db: Database = Depends(get_db)):
     op = db.get_refresh_operation(operation_id)
     if not op:
@@ -341,7 +429,7 @@ def get_operation(operation_id: str, db: Database = Depends(get_db)):
     return op.model_dump()
 
 
-@router.get("/daily/status", summary="Get status of daily signal runs")
+@router.get("/daily/status", summary="Get status of daily signal runs", response_model=DailyStatusResponse)
 def get_daily_status(date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format"), db: Database = Depends(get_db)):
     if date:
         run = db.get_daily_signal_run_by_date(date)
@@ -350,20 +438,9 @@ def get_daily_status(date: Optional[str] = Query(None, description="Date in YYYY
         cursor = db.conn.cursor()
         cursor.execute("SELECT * FROM daily_signal_runs ORDER BY runtime_date DESC LIMIT 30")
         rows = cursor.fetchall()
-        runs = []
-        for r in rows:
-            runs.append({
-                "id": r["id"],
-                "runtime_date": r["runtime_date"],
-                "status": r["status"],
-                "started_at": r["started_at"],
-                "completed_at": r["completed_at"],
-                "new_signal_count": r["new_signal_count"],
-                "updated_signal_count": r["updated_signal_count"],
-                "carried_signal_count": r["carried_signal_count"],
-                "briefing_id": r["briefing_id"],
-                "error_summary": r["error_summary"],
-            })
+        # Both paths return identical canonical DailySignalRun fields so clients
+        # can consume either response shape interchangeably.
+        runs = [db._row_to_daily_signal_run(r).model_dump() for r in rows]
         return {"runs": runs}
 
 

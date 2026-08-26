@@ -729,6 +729,25 @@ def run_daily_refresh(
     if dry_run:
         return {"status": "dry_run", "surface_date": surface_date}
 
+    # Idempotence + catch-up: skip only when a successful run already exists
+    # for this date. A previously FAILED run is retried with an incremented
+    # retry_count so transient failures do not permanently block the day.
+    existing_run = db.get_daily_signal_run_by_date(surface_date)
+    retry_count = 0
+    if existing_run is not None:
+        if existing_run.status in ("completed", "completed_empty", "partial_sources"):
+            logger.info(f"Daily Refresh for {surface_date} already completed (run: {existing_run.id}). Skipping.")
+            return {
+                "status": "already_completed",
+                "surface_date": surface_date,
+                "daily_run_id": existing_run.id,
+                "briefing_id": existing_run.briefing_id,
+            }
+        # Failed run: retry with incremented retry_count, keep the same run id.
+        daily_run_id = existing_run.id
+        retry_count = (existing_run.retry_count or 0) + 1
+        logger.warning(f"Retrying failed Daily Refresh for {surface_date} (attempt {retry_count}, run: {daily_run_id})")
+
     logger.info(f"Starting Daily Refresh pipeline for {surface_date} (run: {daily_run_id})")
 
     try:
@@ -789,7 +808,7 @@ def run_daily_refresh(
             new_signal_count=new_signals,
             updated_signal_count=updated_signals,
             carried_signal_count=carried_signals,
-            retry_count=0,
+            retry_count=retry_count,
             briefing_id=briefing.id,
             source_status_json=json.dumps(source_status),
             error_summary=None,
@@ -823,7 +842,7 @@ def run_daily_refresh(
             new_signal_count=0,
             updated_signal_count=0,
             carried_signal_count=0,
-            retry_count=0,
+            retry_count=retry_count,
             briefing_id=None,
             source_status_json=None,
             error_summary=str(e),

@@ -24,7 +24,19 @@ def _isolate_hermes_env():
     saved = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
+
+    # Force deterministic offline embeddings for the whole suite: no network,
+    # no model download, stable hash-based vectors. Tests that specifically
+    # exercise the online path must override via monkeypatch.
+    saved_offline = os.environ.get("HERMES_EMBEDDINGS_OFFLINE")
+    os.environ["HERMES_EMBEDDINGS_OFFLINE"] = "1"
+
     yield
+
+    if saved_offline is None:
+        os.environ.pop("HERMES_EMBEDDINGS_OFFLINE", None)
+    else:
+        os.environ["HERMES_EMBEDDINGS_OFFLINE"] = saved_offline
     for k, v in saved.items():
         if v is None:
             os.environ.pop(k, None)

@@ -2,10 +2,13 @@ import argparse
 import logging
 import os
 import signal
+import sqlite3
 import sys
+import threading
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterator, List, Optional
 
 from app.runtime.locks import SingleInstanceLock
 from app.runtime.logging_config import setup_runtime_logging
@@ -44,6 +47,58 @@ def _signal_handler(signum, frame):
     global _stop_requested
     _stop_requested = True
     print(f"\n[HERMES] Received shutdown signal ({signum}). Finishing current task and exiting gracefully...", flush=True)
+
+
+@contextmanager
+def _operation_lease(
+    db_path: str,
+    op_id: str,
+    worker_id: str,
+    lease_minutes: int = 5,
+    renew_seconds: int = 60,
+) -> Iterator[None]:
+    """Renews a running operation's lease/heartbeat while it executes.
+
+    Long-running operations would otherwise exceed their lease and be
+    reclaimed as abandoned by ``recover_stale_refresh_operations``. Renewals
+    run on a daemon thread with a dedicated SQLite connection so they do not
+    contend with the worker's connection.
+    """
+    stop = threading.Event()
+
+    def _renew() -> None:
+        try:
+            conn = sqlite3.connect(db_path, timeout=10.0)
+        except Exception:
+            return
+        try:
+            while not stop.wait(renew_seconds):
+                now = datetime.now(timezone.utc)
+                lease_expires_at = now + timedelta(minutes=lease_minutes)
+                try:
+                    conn.execute(
+                        """
+                        UPDATE refresh_operations
+                        SET heartbeat_at = ?, lease_expires_at = ?
+                        WHERE id = ? AND status = 'running' AND worker_id = ?
+                        """,
+                        (now.isoformat(), lease_expires_at.isoformat(), op_id, worker_id),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_renew, daemon=True, name=f"op-heartbeat-{op_id}")
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def run_daemon(
@@ -181,47 +236,49 @@ def run_daemon(
                 db.recover_stale_refresh_operations(now)
                 op = db.get_next_queued_operation()
                 if op:
-                    from datetime import timedelta
                     worker_id = f"worker-{os.getpid()}"
                     lease_expires = now + timedelta(minutes=5)
                     if db.claim_refresh_operation(op.id, worker_id, now, lease_expires):
                         logger.info(f"Claimed queued refresh operation: {op.id} [scope={op.scope}]")
-                        try:
-                            if op.scope == "daily_refresh":
-                                run_daily_refresh(db, now=now)
-                            elif op.scope == "inbox_refresh":
-                                run_inbox_generation(db, now=now)
-                            elif op.scope == "morning_brief":
-                                generate_scheduled_morning_briefing(db, now=now)
-                            elif op.scope == "health_check":
-                                run_health_check_job(db, now=now)
-                            elif op.scope == "recheck":
-                                run_longitudinal_recheck(db, now=now)
-                            elif op.scope == "project_scan":
-                                run_context_scan(db, now=now)
-                                run_context_match(db, now=now)
-                            elif op.scope == "search_refresh":
-                                run_source_ingestion(db, now=now)
-                                run_semantic_processing(db, now=now)
-                                run_claims_processing(db, now=now)
-                            elif op.scope == "story_recheck":
-                                run_longitudinal_recheck(db, now=now)
-                            else:
-                                logger.warning(f"Unknown operation scope: {op.scope}")
+                        with _operation_lease(db.db_path, op.id, worker_id):
+                            try:
+                                if op.scope == "daily_refresh":
+                                    run_daily_refresh(db, now=now)
+                                elif op.scope == "inbox_refresh":
+                                    run_inbox_generation(db, now=now)
+                                elif op.scope == "morning_brief":
+                                    generate_scheduled_morning_briefing(db, now=now)
+                                elif op.scope == "health_check":
+                                    run_health_check_job(db, now=now)
+                                elif op.scope == "recheck":
+                                    run_longitudinal_recheck(db, now=now)
+                                elif op.scope == "project_scan":
+                                    run_context_scan(db, now=now)
+                                    run_context_match(db, now=now)
+                                elif op.scope == "search_refresh":
+                                    run_source_ingestion(db, now=now)
+                                    run_semantic_processing(db, now=now)
+                                    run_claims_processing(db, now=now)
+                                elif op.scope == "story_recheck":
+                                    run_longitudinal_recheck(db, now=now)
+                                else:
+                                    # Unknown scope is a terminal failure, never a
+                                    # silent success.
+                                    raise ValueError(f"Unknown operation scope: {op.scope}")
 
-                            db.conn.execute(
-                                "UPDATE refresh_operations SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?",
-                                (datetime.now(timezone.utc).isoformat(), op.id)
-                            )
-                            db.conn.commit()
-                            logger.info(f"Completed refresh operation: {op.id}")
-                        except Exception as e:
-                            logger.exception(f"Failed refresh operation {op.id}: {e}")
-                            db.conn.execute(
-                                "UPDATE refresh_operations SET status = 'failed', error_summary = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ?",
-                                (str(e), datetime.now(timezone.utc).isoformat(), op.id)
-                            )
-                            db.conn.commit()
+                                db.conn.execute(
+                                    "UPDATE refresh_operations SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?",
+                                    (datetime.now(timezone.utc).isoformat(), op.id)
+                                )
+                                db.conn.commit()
+                                logger.info(f"Completed refresh operation: {op.id}")
+                            except Exception as e:
+                                logger.exception(f"Failed refresh operation {op.id}: {e}")
+                                db.conn.execute(
+                                    "UPDATE refresh_operations SET status = 'failed', error_summary = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ?",
+                                    (str(e), datetime.now(timezone.utc).isoformat(), op.id)
+                                )
+                                db.conn.commit()
             except Exception as ex:
                 logger.error(f"Error checking refresh operations: {ex}")
 

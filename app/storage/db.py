@@ -837,6 +837,13 @@ class Database:
                     ("data_cutoff_at", "TEXT"),
                     ("freshness_kind", "TEXT"),
                     ("daily_run_id", "TEXT"),
+                    ("source_published_at", "TEXT"),
+                    ("source_updated_at", "TEXT"),
+                    ("last_changed_at", "TEXT"),
+                    ("last_evaluated_at", "TEXT"),
+                    ("surfaced_at", "TEXT"),
+                    ("snapshot_date", "TEXT"),
+                    ("freshness_reason", "TEXT"),
                 ]:
                     _safe_add_column("inbox_items", col_name, col_def, existing_inb_cols)
 
@@ -2943,6 +2950,13 @@ class Database:
             data_cutoff_at=d.get("data_cutoff_at"),
             freshness_kind=d.get("freshness_kind"),
             daily_run_id=d.get("daily_run_id"),
+            source_published_at=datetime.fromisoformat(d["source_published_at"]) if d.get("source_published_at") else None,
+            source_updated_at=datetime.fromisoformat(d["source_updated_at"]) if d.get("source_updated_at") else None,
+            last_changed_at=datetime.fromisoformat(d["last_changed_at"]) if d.get("last_changed_at") else None,
+            last_evaluated_at=datetime.fromisoformat(d["last_evaluated_at"]) if d.get("last_evaluated_at") else None,
+            surfaced_at=datetime.fromisoformat(d["surfaced_at"]) if d.get("surfaced_at") else None,
+            snapshot_date=d.get("snapshot_date"),
+            freshness_reason=d.get("freshness_reason"),
         )
 
     def save_inbox_item(self, item: InboxItem) -> bool:
@@ -2953,8 +2967,10 @@ class Database:
             created_at, first_seen_at, last_seen_at, expires_at, seen_at,
             opened_at, is_starred, saved_item_id, matched_project_ids_json,
             reason_codes_json, surface_date, latest_event_at, last_materialized_at,
-            data_cutoff_at, freshness_kind, daily_run_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            data_cutoff_at, freshness_kind, daily_run_id,
+            source_published_at, source_updated_at, last_changed_at,
+            last_evaluated_at, surfaced_at, snapshot_date, freshness_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -2986,6 +3002,13 @@ class Database:
                 item.data_cutoff_at,
                 item.freshness_kind,
                 item.daily_run_id,
+                item.source_published_at.isoformat() if item.source_published_at else None,
+                item.source_updated_at.isoformat() if item.source_updated_at else None,
+                item.last_changed_at.isoformat() if item.last_changed_at else None,
+                item.last_evaluated_at.isoformat() if item.last_evaluated_at else None,
+                item.surfaced_at.isoformat() if item.surfaced_at else None,
+                item.snapshot_date,
+                item.freshness_reason,
             ),
         )
         self.conn.commit()
@@ -4004,6 +4027,24 @@ class Database:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    def renew_refresh_operation_heartbeat(self, op_id: str, worker_id: str, now: datetime, lease_expires_at: datetime) -> bool:
+        """Renews the lease and heartbeat of a running operation owned by worker_id.
+
+        Returns True when the renewal was applied; False when the operation is
+        not in 'running' state or is owned by a different worker (lease lost).
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE refresh_operations
+            SET heartbeat_at = ?, lease_expires_at = ?
+            WHERE id = ? AND status = 'running' AND worker_id = ?
+            """,
+            (now.isoformat(), lease_expires_at.isoformat(), op_id, worker_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def has_active_operation_in_scope(self, scope: str, target_id: Optional[str] = None) -> bool:
         cursor = self.conn.cursor()

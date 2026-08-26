@@ -377,12 +377,19 @@ def generate_daily_inbox(
     candidate_records: List[Dict[str, Any]] = []
     seen_repos: Set[str] = set()
 
+    # Archived projects must not influence inbox candidate scoring or
+    # classification; restrict project matches to active projects only.
+    active_project_ids = {p.id for p in db.get_all_projects(active_only=True)}
+    all_project_matches = [
+        m for m in db.get_all_project_matches() if m.project_id in active_project_ids
+    ]
+
     for cluster in all_clusters:
         events = db.get_cluster_events(cluster.id)
         claims = db.get_claims_by_cluster(cluster.id)
         assessment = db.get_technology_assessment(cluster.id)
         tech_state = db.get_technology_state(cluster.id)
-        matches = [m for m in db.get_all_project_matches() if m.entity_id == cluster.id]
+        matches = [m for m in all_project_matches if m.entity_id == cluster.id]
 
         all_changes = [c for c in db.get_all_intelligence_changes() if c.entity_id in [cl.id for cl in claims] or c.entity_id == cluster.id]
         user_facing_changes = [c for c in all_changes if is_user_facing_change(c, change_cutoff)]
@@ -544,13 +551,15 @@ def generate_daily_inbox(
                     break
 
         has_change_today = False
+        last_changed_dt = None
         for ch in user_facing_changes:
             ch_created = ch.created_at
             if ch_created.tzinfo is None:
                 ch_created = ch_created.replace(tzinfo=timezone.utc)
+            if last_changed_dt is None or ch_created > last_changed_dt:
+                last_changed_dt = ch_created
             if start_utc <= ch_created <= end_utc:
                 has_change_today = True
-                break
 
         if is_first_seen_today:
             freshness_kind = "new"
@@ -587,6 +596,14 @@ def generate_daily_inbox(
             data_cutoff_at=(data_cutoff_at or now).isoformat(),
             freshness_kind=freshness_kind,
             daily_run_id=daily_run_id or f"daily-run:{today_local_date}",
+            # Provenance: source timestamps come from the newest SOURCE event
+            # (published_at or discovered_at), never internal bookkeeping times.
+            source_published_at=latest_event_dt,
+            source_updated_at=latest_event_dt,
+            last_changed_at=last_changed_dt,
+            last_evaluated_at=now,
+            surfaced_at=now,
+            snapshot_date=today_local_date,
         )
 
         c["inbox_item"] = item

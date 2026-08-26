@@ -48,9 +48,13 @@ def test_project_lifecycle_and_archival(mock_unload, mock_get_emb, tmp_path):
     assert len(all_projects) == 1
     assert all_projects[0].is_active is False
 
-    # 4. Restore project
-    restore_res = restore_project(proj.id, db=db)
-    assert restore_res is True
+    # 4. Restore project — returns the queued async scan operation
+    restore_op = restore_project(proj.id, db=db)
+    assert restore_op is not None
+    assert restore_op.scope == "project_scan"
+    assert restore_op.target_id == proj.id
+    assert restore_op.status == "queued"
+    assert db.get_refresh_operation(restore_op.id) is not None
 
     active_projects = db.get_all_projects(active_only=True)
     assert len(active_projects) == 1

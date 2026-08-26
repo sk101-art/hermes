@@ -297,3 +297,38 @@ def test_projects_endpoints(client_with_db):
     # 5. Nonexistent project returns 404
     resp_404 = client.get("/projects/project:nonexistent/intelligence")
     assert resp_404.status_code == 404
+
+
+def test_project_restore_returns_202_and_enqueues_async_scan(client_with_db):
+    """POST /projects/{id}/restore must enqueue an asynchronous project_scan
+    and return 202 Accepted with the queued operation (never block on the scan)."""
+    client, db = client_with_db
+
+    # Archive the fixture project first so restore has work to do.
+    resp_archive = client.post("/projects/project:api-test/archive")
+    assert resp_archive.status_code == 200
+
+    # Restore must be asynchronous: 202 Accepted, not 200.
+    resp = client.post("/projects/project:api-test/restore")
+    assert resp.status_code == 202, f"restore must return 202, got {resp.status_code}"
+
+    op = resp.json()
+    assert op["scope"] == "project_scan"
+    assert op["target_id"] == "project:api-test"
+    assert op["status"] == "queued"
+    assert op["id"]
+
+    # The operation must be persisted and retrievable via the operations API.
+    resp_op = client.get(f"/runtime/operations/{op['id']}")
+    assert resp_op.status_code == 200
+    assert resp_op.json()["status"] == "queued"
+
+    # The project must be active again.
+    proj = db.get_project("project:api-test")
+    assert proj is not None
+    assert proj.is_active is True
+    assert proj.status == "active"
+
+    # Restoring a nonexistent project returns 404.
+    resp_404 = client.post("/projects/project:nonexistent/restore")
+    assert resp_404.status_code == 404
