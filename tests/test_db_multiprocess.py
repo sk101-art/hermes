@@ -28,19 +28,17 @@ def get_sha256(filepath):
 
 # 1. Pure Path Precedence Resolution Test
 def test_resolve_db_path(monkeypatch, tmp_path):
-    # A. Explicit argument takes precedence over HERMES_DB_PATH (test isolation)
+    # A. HERMES_DB_PATH takes precedence over explicit constructor path
     temp_env_db = str(tmp_path / "env_db.db")
     monkeypatch.setenv("HERMES_DB_PATH", temp_env_db)
-    assert resolve_db_path("explicit.db") == os.path.abspath("explicit.db")
-
-    # B. HERMES_DB_PATH is used when no explicit path is given
+    assert resolve_db_path("explicit.db") == os.path.abspath(temp_env_db)
     assert resolve_db_path() == os.path.abspath(temp_env_db)
 
-    # C. Explicit path precedence when HERMES_DB_PATH is not set
+    # B. Explicit path precedence when HERMES_DB_PATH is not set
     monkeypatch.delenv("HERMES_DB_PATH", raising=False)
     assert resolve_db_path("explicit.db") == os.path.abspath("explicit.db")
 
-    # D. Default runtime path precedence when neither is set
+    # C. Default runtime path precedence when neither is set
     mock_runtime = tmp_path / "runtime" / "tech_intel.db"
     assert resolve_db_path(None, mock_runtime) == os.path.abspath(str(mock_runtime))
 
@@ -388,6 +386,95 @@ def test_real_migration_partial_table(monkeypatch, tmp_path):
     assert row is not None
     assert row["runtime_timezone"] == "UTC"
     assert row["run_kind"] == "daily_refresh"
+    db.close()
+
+
+# 8b-2. Real Production Migration — legacy runtime_date UNIQUE with canonical columns present
+def test_real_migration_legacy_date_unique_rebuild(monkeypatch, tmp_path):
+    """Table already has runtime_timezone and run_kind but carries the legacy single-column
+    runtime_date UNIQUE constraint. Migration must rebuild to drop that uniqueness so
+    different timezone/run-kind identities can share a date, while duplicate composite
+    identities still fail. Rows must be preserved and no temp table may remain."""
+    db_file = str(tmp_path / "legacy_unique.db")
+    monkeypatch.setenv("HERMES_DB_PATH", db_file)
+
+    conn = connect_db(db_file)
+    conn.execute("""
+        CREATE TABLE daily_briefings (
+            id TEXT PRIMARY KEY, briefing_date TEXT NOT NULL, generated_at TEXT NOT NULL,
+            total_items INTEGER DEFAULT 0, high_priority_count INTEGER DEFAULT 0,
+            project_relevant_count INTEGER DEFAULT 0, content_hash TEXT NOT NULL,
+            summary_text TEXT, sections_json TEXT, created_at TEXT NOT NULL
+        )
+    """)
+    # Legacy table: canonical columns present, but runtime_date is UNIQUE.
+    conn.execute("""
+        CREATE TABLE daily_signal_runs (
+            id TEXT PRIMARY KEY,
+            runtime_date TEXT UNIQUE NOT NULL,
+            runtime_timezone TEXT NOT NULL,
+            run_kind TEXT NOT NULL DEFAULT 'daily_refresh',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            data_cutoff_at TEXT,
+            status TEXT NOT NULL,
+            new_signal_count INTEGER DEFAULT 0,
+            updated_signal_count INTEGER DEFAULT 0,
+            carried_signal_count INTEGER DEFAULT 0,
+            retry_count INTEGER DEFAULT 0,
+            briefing_id TEXT,
+            source_status_json TEXT,
+            error_summary TEXT,
+            content_hash TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("INSERT INTO daily_signal_runs (id, runtime_date, runtime_timezone, run_kind, started_at, status, content_hash) VALUES ('run1', '2026-08-25', 'Asia/Kolkata', 'daily_refresh', '2026-08-25T08:00:00Z', 'completed', 'hash1')")
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path=db_file)
+    cursor = db.conn.cursor()
+
+    # 1. Old single-column uniqueness is gone
+    def _unique_index_cols():
+        result = []
+        for idx_row in cursor.execute("PRAGMA index_list(daily_signal_runs)").fetchall():
+            if not idx_row["unique"]:
+                continue
+            cols = [r["name"] for r in cursor.execute(
+                f'PRAGMA index_info("{idx_row["name"]}")'
+            ).fetchall()]
+            result.append(cols)
+        return result
+
+    unique_cols_list = _unique_index_cols()
+    assert ["runtime_date"] not in unique_cols_list, f"Legacy runtime_date UNIQUE still present: {unique_cols_list}"
+    assert ["runtime_date", "runtime_timezone", "run_kind"] in unique_cols_list
+
+    # 2. Different timezone/run-kind identities may share a date
+    cursor.execute("INSERT INTO daily_signal_runs (id, runtime_date, runtime_timezone, run_kind, started_at, status, content_hash) VALUES ('run2', '2026-08-25', 'UTC', 'daily_refresh', '2026-08-25T09:00:00Z', 'completed', 'hash2')")
+    cursor.execute("INSERT INTO daily_signal_runs (id, runtime_date, runtime_timezone, run_kind, started_at, status, content_hash) VALUES ('run3', '2026-08-25', 'Asia/Kolkata', 'backfill', '2026-08-25T10:00:00Z', 'completed', 'hash3')")
+    db.conn.commit()
+
+    # 3. Duplicate composite identity fails
+    try:
+        cursor.execute("INSERT INTO daily_signal_runs (id, runtime_date, runtime_timezone, run_kind, started_at, status, content_hash) VALUES ('run4', '2026-08-25', 'Asia/Kolkata', 'daily_refresh', '2026-08-25T11:00:00Z', 'completed', 'hash4')")
+        dup_rejected = False
+    except sqlite3.IntegrityError:
+        dup_rejected = True
+    db.conn.rollback()
+    assert dup_rejected, "Duplicate composite identity was not rejected"
+
+    # 4. Existing rows preserved
+    count = cursor.execute("SELECT COUNT(*) FROM daily_signal_runs").fetchone()[0]
+    assert count == 3
+    row = cursor.execute("SELECT * FROM daily_signal_runs WHERE id='run1'").fetchone()
+    assert row["runtime_timezone"] == "Asia/Kolkata"
+    assert row["run_kind"] == "daily_refresh"
+
+    # 5. No migration temporary table remains
+    tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "daily_signal_runs_mig_tmp" not in tables
     db.close()
 
 

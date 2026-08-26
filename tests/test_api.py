@@ -102,7 +102,25 @@ def client_with_db():
 
     app.dependency_overrides.clear()
     setup_db.close()
-    shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # Bounded retries for Windows file-lock release (WAL/SHM handles), then
+    # assert the database and sidecar files were actually removed.
+    import gc
+    db_file = os.path.join(temp_dir, "test_api.db")
+    sidecars = [db_file, db_file + "-wal", db_file + "-shm"]
+    last_err = None
+    for attempt in range(5):
+        gc.collect()
+        try:
+            shutil.rmtree(temp_dir)
+            last_err = None
+            break
+        except PermissionError as e:
+            last_err = e
+            time.sleep(0.2 * (attempt + 1))
+    assert last_err is None, f"Temp dir cleanup failed after retries: {last_err}"
+    for p in sidecars:
+        assert not os.path.exists(p), f"File not removed during cleanup: {p}"
 
 
 def test_api_health(client_with_db):

@@ -230,13 +230,13 @@ class InterprocessLock:
 
 
 def resolve_db_path(db_path: Optional[str] = None, _default_runtime_file: Optional[Path] = None) -> str:
-    # Explicit argument wins over ambient environment so that callers which
-    # request a specific database file always get it (test isolation).
-    if db_path is not None:
-        return os.path.abspath(db_path)
+    # Authoritative precedence: HERMES_DB_PATH > explicit constructor path >
+    # default runtime file > repo default.
     env_path = os.environ.get("HERMES_DB_PATH")
     if env_path:
         return os.path.abspath(env_path)
+    if db_path is not None:
+        return os.path.abspath(db_path)
     if _default_runtime_file is not None:
         return os.path.abspath(str(_default_runtime_file))
     repo_root = Path(__file__).resolve().parents[2]
@@ -887,13 +887,40 @@ class Database:
                 existing_dsr_cols = {r["name"] for r in dsr_info}
 
                 # Legacy schema detection: needs a full column-aware rebuild when the
-                # canonical timezone column is absent (legacy timezone_name) or run_kind
-                # is missing. Only columns confirmed by PRAGMA table_info are referenced.
+                # canonical timezone column is absent (legacy timezone_name), run_kind
+                # is missing, or the legacy single-column runtime_date UNIQUE constraint
+                # exists. Only columns confirmed by PRAGMA table_info are referenced.
                 has_runtime_timezone = "runtime_timezone" in existing_dsr_cols
                 has_run_kind = "run_kind" in existing_dsr_cols
                 has_timezone_name = "timezone_name" in existing_dsr_cols
 
-                if not has_runtime_timezone or not has_run_kind:
+                # Detect legacy runtime_date UNIQUE via index introspection. The normal
+                # non-unique idx_daily_runs_date must NOT trigger a rebuild.
+                def _has_legacy_date_unique() -> bool:
+                    try:
+                        idx_rows = cursor.execute("PRAGMA index_list(daily_signal_runs)").fetchall()
+                    except Exception:
+                        return False
+                    for idx_row in idx_rows:
+                        # Row layout: seq, name, unique, origin, partial (SQLite >= 3.9)
+                        idx_name = idx_row["name"]
+                        is_unique = bool(idx_row["unique"])
+                        if not is_unique:
+                            continue
+                        try:
+                            col_rows = cursor.execute(f'PRAGMA index_info("{idx_name}")').fetchall()
+                        except Exception:
+                            continue
+                        indexed_cols = [r["name"] for r in sorted(col_rows, key=lambda c: c["seqno"])]
+                        if indexed_cols == ["runtime_date"]:
+                            return True
+                    return False
+
+                needs_rebuild = (
+                    not has_runtime_timezone or not has_run_kind or _has_legacy_date_unique()
+                )
+
+                if needs_rebuild:
                     try:
                         cursor.execute("""
                             CREATE TABLE daily_signal_runs_mig_tmp (

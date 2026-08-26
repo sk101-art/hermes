@@ -12,9 +12,18 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes_env():
-    """Snapshot and restore HERMES env vars around every test."""
+    """Guarantee a controlled environment for every test.
+
+    Production precedence is HERMES_DB_PATH > explicit path, so any leaked
+    value would silently redirect every Database() call. Each test therefore
+    starts with these variables cleared; tests that need them set them
+    explicitly (via monkeypatch or direct assignment) and the original
+    shell values are restored afterwards.
+    """
     keys = ["HERMES_DB_PATH", "HERMES_LOCK_PATH", "HERMES_TEST_INSTANCE_ID"]
     saved = {k: os.environ.get(k) for k in keys}
+    for k in keys:
+        os.environ.pop(k, None)
     yield
     for k, v in saved.items():
         if v is None:
