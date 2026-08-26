@@ -391,6 +391,7 @@ VALID_REFRESH_SCOPES = {
     "project_scan",
     "search_refresh",
     "story_recheck",
+    "saved_hydration",
 }
 
 @router.post("/projects", summary="Add a new project and enqueue async initial scan", status_code=202, response_model=Project)

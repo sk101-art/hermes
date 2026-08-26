@@ -22,6 +22,12 @@ DEFAULT_RUNTIME_CONFIG = {
     "heartbeat_file": "data/runtime_heartbeat.json",
     "lock_file": "data/hermes.lock",
     "jobs": {
+        "daily_refresh": {
+            "time": "07:00",
+            "timeout_minutes": 60,
+            "max_retries": 8,
+            "retry_interval_minutes": 15,
+        },
         "ingestion": {"interval_minutes": 60, "timeout_minutes": 15},
         "semantic": {"interval_minutes": 60, "timeout_minutes": 15},
         "claims": {"interval_minutes": 60, "timeout_minutes": 15},

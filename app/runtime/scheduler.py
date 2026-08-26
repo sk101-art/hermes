@@ -184,6 +184,8 @@ def is_job_due(
         target_time_str = j_cfg.get("time", "07:00")
         sched_time = parse_time_string(target_time_str)
         today_date_str = runtime_date_string(now, config)
+        max_retries = int(j_cfg.get("max_retries", 8))
+        retry_interval = timedelta(minutes=int(j_cfg.get("retry_interval_minutes", 15)))
 
         run_state = db.get_daily_signal_run_by_date(today_date_str) if db else None
         if not run_state:
@@ -192,20 +194,21 @@ def is_job_due(
             else:
                 return False, f"SCHEDULED_AT_{target_time_str}"
 
-        if run_state.status in ("completed", "completed_empty"):
+        # Successful terminal states (including valid quiet days and partial
+        # source availability) are never re-run for the same date.
+        if run_state.status in ("completed", "completed_empty", "partial_sources"):
             return False, "ALREADY_COMPLETED_TODAY"
 
         if run_state.status == "running":
             return False, "ALREADY_RUNNING_TODAY"
 
-        if run_state.retry_count >= 8:
+        if run_state.retry_count >= max_retries:
             return False, f"FAILED_MAX_RETRIES_REACHED ({run_state.retry_count} retries)"
 
         last_attempt_time = run_state.completed_at or run_state.started_at
         elapsed = now - last_attempt_time
-        retry_interval = timedelta(minutes=15)
         if elapsed >= retry_interval:
-            return True, f"RETRY_DUE (Attempt {run_state.retry_count + 1}, elapsed {int(elapsed.total_seconds() / 60)}m >= 15m)"
+            return True, f"RETRY_DUE (Attempt {run_state.retry_count + 1}, elapsed {int(elapsed.total_seconds() / 60)}m >= {int(retry_interval.total_seconds() / 60)}m)"
 
         remaining = int((retry_interval - elapsed).total_seconds() / 60)
         return False, f"RETRY_IN_{remaining}m"

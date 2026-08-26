@@ -9,6 +9,15 @@ runtime:
   lock_file: "data/hermes.lock"
 
   jobs:
+    daily_refresh:
+      # Canonical daily intelligence cycle (ingestion -> semantic -> claims ->
+      # recheck -> project matching -> Today snapshot -> Morning Briefing).
+      # Runs once per runtime-local day at the scheduled time; failed runs are
+      # retried automatically by the scheduler retry policy.
+      time: "07:00"
+      timeout_minutes: 60
+      max_retries: 8
+      retry_interval_minutes: 15
     ingestion:
       interval_minutes: 60
       timeout_minutes: 15

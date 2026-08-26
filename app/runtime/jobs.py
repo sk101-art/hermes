@@ -698,6 +698,77 @@ def run_health_check_job(
     return {"status": "completed", "health": health}
 
 
+def run_saved_hydration(
+    db: Database,
+    dry_run: bool = False,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Re-hydrates active SavedItem snapshot fields from current intelligence.
+
+    Refreshes verification/maturity/risk/claim-status snapshots and link status
+    for every active saved item without mutating user notes, tags, or the
+    saved_at timestamp. Items whose backing cluster no longer exists are marked
+    'unresolved' instead of being deleted.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if dry_run:
+        return {"status": "dry_run"}
+
+    saved_items = db.get_all_saved_items(active_only=True)
+    hydrated = 0
+    unresolved = 0
+
+    for item in saved_items:
+        cluster = db.get_cluster(item.story_cluster_id) if item.story_cluster_id else None
+        if not cluster:
+            if item.link_status != "unresolved":
+                item.link_status = "unresolved"
+                db.save_saved_item(item)
+                unresolved += 1
+            continue
+
+        claims = db.get_claims_by_cluster(cluster.id)
+        current_claims = [c for c in claims if getattr(c, "is_current", True)]
+        assessment = db.get_technology_assessment(cluster.id)
+        tech_state = db.get_technology_state(cluster.id)
+
+        if current_claims:
+            scores = [c.verification_score for c in current_claims if c.verification_score is not None]
+            item.verification_snapshot = round(sum(scores) / len(scores), 4) if scores else item.verification_snapshot
+        if assessment:
+            item.maturity_snapshot = assessment.maturity_stage
+        if tech_state:
+            item.risk_snapshot = tech_state.risk_score
+
+        # Claim status snapshot from current claims
+        if current_claims:
+            statuses = [getattr(c, "status", None) for c in current_claims]
+            if any(s == "contradicted" for s in statuses):
+                item.claim_status_snapshot = "contradicted"
+            elif any(s == "superseded" for s in statuses):
+                item.claim_status_snapshot = "superseded"
+            elif any(s == "supported" for s in statuses):
+                item.claim_status_snapshot = "supported"
+            else:
+                item.claim_status_snapshot = "unverified"
+
+        if item.link_status != "resolved":
+            item.link_status = "resolved"
+        db.save_saved_item(item)
+        hydrated += 1
+
+    db.increment_runtime_metric("saved_hydration_runs", 1)
+    logger.info(f"Saved hydration complete: {hydrated} hydrated, {unresolved} marked unresolved")
+    return {
+        "status": "completed",
+        "hydrated": hydrated,
+        "unresolved": unresolved,
+        "total_active": len(saved_items),
+    }
+
+
 def run_daily_refresh(
     db: Database,
     dry_run: bool = False,

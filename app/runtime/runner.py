@@ -26,6 +26,7 @@ from app.runtime.jobs import (
     generate_scheduled_morning_briefing,
     run_health_check_job,
     run_longitudinal_recheck,
+    run_saved_hydration,
     run_source_ingestion,
     run_semantic_processing,
     run_claims_processing,
@@ -97,6 +98,124 @@ def _operation_lease(
         yield
     finally:
         stop.set()
+
+
+def _execute_operation_scope(db: Database, op, now: datetime) -> None:
+    """Executes the work for a claimed operation scope. Raises on failure."""
+    if op.scope == "daily_refresh":
+        run_daily_refresh(db, now=now)
+    elif op.scope == "inbox_refresh":
+        run_inbox_generation(db, now=now)
+    elif op.scope == "morning_brief":
+        generate_scheduled_morning_briefing(db, now=now)
+    elif op.scope == "health_check":
+        run_health_check_job(db, now=now)
+    elif op.scope == "recheck":
+        run_longitudinal_recheck(db, now=now)
+    elif op.scope == "saved_hydration":
+        run_saved_hydration(db, now=now)
+    elif op.scope == "project_scan":
+        # Targeted operation: scan ONLY the project named by op.target_id,
+        # never all projects.
+        if not op.target_id:
+            raise ValueError("project_scan operation is missing target_id")
+        from app.services.projects import scan_single_project
+        scan_res = scan_single_project(project_id=op.target_id, db=db)
+        if scan_res.get("status") == "failed":
+            raise ValueError(f"project_scan failed for {op.target_id}: {scan_res.get('error')}")
+    elif op.scope == "search_refresh":
+        run_source_ingestion(db, now=now)
+        run_semantic_processing(db, now=now)
+        run_claims_processing(db, now=now)
+    elif op.scope == "story_recheck":
+        run_longitudinal_recheck(db, now=now)
+    else:
+        # Unknown scope is a terminal failure, never a silent success.
+        raise ValueError(f"Unknown operation scope: {op.scope}")
+
+
+def process_next_queued_operation(
+    db: Database,
+    worker_id: Optional[str] = None,
+    now: Optional[datetime] = None,
+    lease_minutes: int = 5,
+) -> Optional[Dict[str, Any]]:
+    """Claims and executes the next queued refresh operation, if any.
+
+    This is the single canonical worker dispatch used by the daemon loop and
+    directly testable in isolation. Returns a result dict describing the
+    processed operation, or None when no queued operation existed.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if worker_id is None:
+        worker_id = f"worker-{os.getpid()}"
+
+    db.recover_stale_refresh_operations(now)
+    op = db.get_next_queued_operation()
+    if op is None:
+        return None
+
+    lease_expires = now + timedelta(minutes=lease_minutes)
+    if not db.claim_refresh_operation(op.id, worker_id, now, lease_expires):
+        # Another worker claimed it first.
+        return {"operation_id": op.id, "status": "skipped", "reason": "claim_lost"}
+
+    with _operation_lease(db.db_path, op.id, worker_id):
+        try:
+            _execute_operation_scope(db, op, now)
+            completed_at = datetime.now(timezone.utc)
+            db.conn.execute(
+                "UPDATE refresh_operations SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?",
+                (completed_at.isoformat(), op.id),
+            )
+            db.conn.commit()
+            return {"operation_id": op.id, "scope": op.scope, "status": "completed"}
+        except Exception as e:
+            from app.runtime.sanitization import sanitize_error
+            _, sanitized = sanitize_error(e)
+            db.conn.execute(
+                "UPDATE refresh_operations SET status = 'failed', error_summary = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ?",
+                (sanitized, datetime.now(timezone.utc).isoformat(), op.id),
+            )
+            db.conn.commit()
+            return {"operation_id": op.id, "scope": op.scope, "status": "failed", "error": sanitized}
+
+
+def startup_daily_catch_up(
+    db: Database,
+    now: Optional[datetime] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Startup catch-up for the daily intelligence cycle.
+
+    Inspects the daily-run status for the current runtime date (NOT merely
+    briefing existence):
+      - no run and scheduled time passed -> run the full daily refresh
+      - failed run past retry interval -> retry via the same pipeline
+      - completed/completed_empty/partial_sources -> skip (day is settled)
+      - scheduled time not yet passed -> skip (normal schedule will handle it)
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if config is None:
+        config = load_runtime_config()
+
+    from app.runtime.timezone import runtime_date_string, to_runtime_local
+    from app.runtime.scheduler import is_job_due
+
+    today_str = runtime_date_string(now, config)
+    run_state = db.get_daily_signal_run_by_date(today_str)
+
+    if run_state is not None and run_state.status in ("completed", "completed_empty", "partial_sources"):
+        return {"action": "skipped", "reason": "ALREADY_COMPLETED_TODAY", "surface_date": today_str}
+
+    due, reason = is_job_due("daily_refresh", db, now, config)
+    if not due:
+        return {"action": "skipped", "reason": reason, "surface_date": today_str}
+
+    result = run_daily_refresh(db, now=now, surface_date=today_str)
+    return {"action": "executed", "reason": reason, "surface_date": today_str, "result": result}
 
 
 def run_daemon(
@@ -208,81 +327,29 @@ def run_daemon(
             return
 
         # 6. Continuous Daemon Loop
-        # A. Startup briefing catch-up check
+        # A. Startup daily-cycle catch-up: inspects daily-run status (not just
+        # briefing existence) and retries failed/incomplete cycles per policy.
         try:
-            from app.runtime.timezone import runtime_date_string
             now_utc = datetime.now(timezone.utc)
-            today_str = runtime_date_string(now_utc, config)
-            logger.info(f"Checking startup catch-up for morning briefing on {today_str}...")
-            existing_briefing = db.get_daily_briefing(today_str)
-            if not existing_briefing:
-                logger.info(f"Morning Briefing for {today_str} is missing. Running daily refresh catch-up...")
-                run_daily_refresh(db, now=now_utc, surface_date=today_str)
-                logger.info("Startup briefing catch-up completed successfully.")
+            catch_up = startup_daily_catch_up(db, now=now_utc, config=config)
+            if catch_up.get("action") == "executed":
+                logger.info(f"Startup daily catch-up executed ({catch_up.get('reason')}).")
             else:
-                logger.info(f"Morning Briefing for {today_str} already exists. Startup catch-up skipped.")
+                logger.info(f"Startup daily catch-up skipped: {catch_up.get('reason')}")
         except Exception as e:
-            logger.error(f"Startup briefing catch-up check failed: {e}")
+            logger.error(f"Startup daily catch-up check failed: {e}")
 
         logger.info("HERMES daemon started successfully. Entering scheduler loop.")
         while not _stop_requested:
             now = datetime.now(timezone.utc)
             run_all_due_jobs(db, now=now, config=config)
             
-            # B. Poll and execute queued background operations
+            # B. Poll and execute queued background operations via the
+            # canonical testable dispatch.
             try:
-                db.recover_stale_refresh_operations(now)
-                op = db.get_next_queued_operation()
-                if op:
-                    worker_id = f"worker-{os.getpid()}"
-                    lease_expires = now + timedelta(minutes=5)
-                    if db.claim_refresh_operation(op.id, worker_id, now, lease_expires):
-                        logger.info(f"Claimed queued refresh operation: {op.id} [scope={op.scope}]")
-                        with _operation_lease(db.db_path, op.id, worker_id):
-                            try:
-                                if op.scope == "daily_refresh":
-                                    run_daily_refresh(db, now=now)
-                                elif op.scope == "inbox_refresh":
-                                    run_inbox_generation(db, now=now)
-                                elif op.scope == "morning_brief":
-                                    generate_scheduled_morning_briefing(db, now=now)
-                                elif op.scope == "health_check":
-                                    run_health_check_job(db, now=now)
-                                elif op.scope == "recheck":
-                                    run_longitudinal_recheck(db, now=now)
-                                elif op.scope == "project_scan":
-                                    # Targeted operation: scan ONLY the project
-                                    # named by op.target_id, never all projects.
-                                    if not op.target_id:
-                                        raise ValueError("project_scan operation is missing target_id")
-                                    from app.services.projects import scan_single_project
-                                    scan_res = scan_single_project(project_id=op.target_id, db=db)
-                                    if scan_res.get("status") == "failed":
-                                        raise ValueError(f"project_scan failed for {op.target_id}: {scan_res.get('error')}")
-                                elif op.scope == "search_refresh":
-                                    run_source_ingestion(db, now=now)
-                                    run_semantic_processing(db, now=now)
-                                    run_claims_processing(db, now=now)
-                                elif op.scope == "story_recheck":
-                                    run_longitudinal_recheck(db, now=now)
-                                else:
-                                    # Unknown scope is a terminal failure, never a
-                                    # silent success.
-                                    raise ValueError(f"Unknown operation scope: {op.scope}")
-
-                                db.conn.execute(
-                                    "UPDATE refresh_operations SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?",
-                                    (datetime.now(timezone.utc).isoformat(), op.id)
-                                )
-                                db.conn.commit()
-                                logger.info(f"Completed refresh operation: {op.id}")
-                            except Exception as e:
-                                logger.exception(f"Failed refresh operation {op.id}: {e}")
-                                db.conn.execute(
-                                    "UPDATE refresh_operations SET status = 'failed', error_summary = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ?",
-                                    (str(e), datetime.now(timezone.utc).isoformat(), op.id)
-                                )
-                                db.conn.commit()
+                op_result = process_next_queued_operation(db, now=now)
+                if op_result:
+                    logger.info(f"Processed refresh operation: {op_result}")
             except Exception as ex:
                 logger.error(f"Error checking refresh operations: {ex}")
 

@@ -9,10 +9,15 @@ TASK_NAME = "HERMES-Tech-Intelligence"
 
 
 def build_task_parameters() -> Tuple[str, str, str, str]:
-    """Generates dynamic, absolute parameters for Windows Task Scheduler registration."""
+    """Generates dynamic, absolute parameters for Windows Task Scheduler registration.
+
+    The scheduled task launches the HERMES supervisor, which manages both the
+    API server and the daemon as separate child processes with automatic
+    restart on failure and duplicate prevention.
+    """
     python_exe = str(Path(sys.executable).resolve())
     working_dir = str(Path.cwd().resolve())
-    action_cmd = f'"{python_exe}" -m app.runtime.runner'
+    action_cmd = f'"{python_exe}" -m app.runtime.supervisor'
     return TASK_NAME, python_exe, working_dir, action_cmd
 
 
@@ -43,7 +48,8 @@ def install_scheduled_task(dry_run: bool = False) -> Tuple[bool, str]:
         print(f"Working Directory:  {working_dir}")
         print(f"Action Command:     {action_cmd}")
         print(f"Trigger:            At User Logon (/sc ONLOGON)")
-        print(f"Settings:           Single instance, restart on failure")
+        print(f"Settings:           Supervisor manages API+daemon; restarts children")
+        print(f"                    on failure; single-instance lock prevents duplicates")
         print("=" * 65)
         return True, "Dry-run complete. No changes made."
 
