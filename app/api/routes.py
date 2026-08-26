@@ -86,11 +86,26 @@ class SaveItemResponse(BaseModel):
 
 
 def get_db_path() -> str:
-    return os.getenv("HERMES_DB_PATH", "data/tech_intel.db")
+    """Resolve the operational database path via the canonical resolver.
+
+    Precedence: HERMES_DB_PATH env > default runtime file > repo runtime default.
+    Never defaults to the immutable baseline (data/tech_intel.db).
+    """
+    from app.storage.db import resolve_db_path
+    return resolve_db_path(None)
 
 
 def get_db():
-    return Database(db_path=get_db_path())
+    """FastAPI dependency yielding a Database opened through the canonical
+    resolver and guaranteeing the connection is closed after each request."""
+    db = Database()
+    try:
+        yield db
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 @router.get("/health", summary="Health check")
@@ -100,10 +115,45 @@ def health(db: Database = Depends(get_db)):
 
 @router.get("/health/ready", summary="Readiness check", include_in_schema=False)
 def readiness(db: Database = Depends(get_db)):
+    """Operational readiness probe.
+
+    Reports the resolved database path, writability, baseline/runtime identity,
+    daemon heartbeat status, and the current runtime date/timezone. Readiness
+    FAILS (503) when the API resolved the immutable baseline database for
+    operational use — the API must always operate on a writable runtime DB.
+    """
+    from app.runtime.state import is_heartbeat_alive, load_runtime_config
+    from app.runtime.timezone import get_effective_timezone, runtime_date_string
+
     db.conn.execute("SELECT 1").fetchone()
+
+    # The API must never operate on the immutable baseline for operational use.
+    if db.is_baseline or not db.is_writable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "API resolved the immutable baseline database for operational use. "
+                f"Resolved path: {db.db_path}. Operational endpoints require a "
+                "writable runtime database (set HERMES_DB_PATH or use the default "
+                "runtime location data/runtime/tech_intel.db)."
+            ),
+        )
+
+    config = load_runtime_config()
+    hb_alive, hb_data = is_heartbeat_alive()
+    _, tz_name, tz_warning = get_effective_timezone(config)
+
     return {
         "status": "ready",
         "database_path": str(db.db_path),
+        "database_writable": bool(db.is_writable),
+        "is_baseline": bool(db.is_baseline),
+        "daemon_heartbeat_alive": bool(hb_alive),
+        "daemon_pid": (hb_data or {}).get("pid"),
+        "daemon_heartbeat_age_seconds": (hb_data or {}).get("age_seconds"),
+        "runtime_date": runtime_date_string(datetime.now(timezone.utc), config),
+        "runtime_timezone": tz_name,
+        "timezone_warning": tz_warning,
         "test_instance_id": os.getenv("HERMES_TEST_INSTANCE_ID"),
     }
 
