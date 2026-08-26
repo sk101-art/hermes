@@ -22,7 +22,7 @@ def get_effective_timezone(config: Optional[Dict[str, Any]] = None) -> Tuple[tzi
 
     # Support nested runtime.timezone or top-level timezone
     runtime_sec = config.get("runtime", {}) if isinstance(config.get("runtime"), dict) else {}
-    tz_str = runtime_sec.get("timezone") or config.get("timezone", "Asia/Kolkata")
+    tz_str = runtime_sec.get("timezone") or config.get("timezone", "local")
 
     if not tz_str or str(tz_str).lower() in ("local", "auto"):
         local_tz = datetime.now().astimezone().tzinfo
@@ -98,31 +98,3 @@ def runtime_day_bounds_utc(date_val: Any, config: Optional[Dict[str, Any]] = Non
     local_end = datetime.combine(dt_val, datetime.max.time()).replace(tzinfo=eff_tz)
     return local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
 
-
-def format_runtime_timestamp(value: Any, config: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """
-    Converts a datetime (or ISO string) to the standard runtime format string.
-    If value is naive, it's normalized to UTC before converting to local.
-    Returns: '25 Aug 2026, 8:14 AM IST'
-    """
-    if not value:
-        return None
-    
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value)
-        except ValueError:
-            return value # Return as-is if unparseable
-            
-    if not isinstance(value, datetime):
-        return str(value)
-        
-    local_dt = to_runtime_local(value, config)
-    eff_tz, tz_name, _ = get_effective_timezone(config)
-    
-    # Try to get short timezone name (e.g. IST)
-    tz_short = local_dt.tzname() or tz_name
-    if tz_short == "Asia/Kolkata":
-        tz_short = "IST"
-        
-    return local_dt.strftime("%d %b %Y, %I:%M %p ") + tz_short

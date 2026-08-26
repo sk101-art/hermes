@@ -763,34 +763,25 @@ def run_daily_refresh(
 
         logger.info(f"Completed Daily Refresh pipeline for {surface_date} (run: {daily_run_id})")
         
-        # Determine if it's empty
-        is_empty = False
-        if not inbox_res and not ingest_res.get("events_inserted", 0):
-            is_empty = True
-            
+        # Save the daily signal run to DB to prevent duplicate runs
         from app.models.schemas import DailySignalRun
-        from app.runtime.timezone import get_effective_timezone
-        _, tz_name, _ = get_effective_timezone(load_runtime_config())
-        
         run_record = DailySignalRun(
             id=daily_run_id,
-            runtime_date=surface_date,
-            timezone_name=tz_name,
-            run_kind="daily_refresh",
+            run_date=surface_date,
+            status="completed",
             started_at=now,
             completed_at=datetime.now(timezone.utc),
-            data_cutoff_at=data_cutoff_at,
-            status="completed_empty" if is_empty else "completed",
-            new_signal_count=ingest_res.get("events_inserted", 0) or ingest_res.get("events_processed", 0) or 0,
-            updated_signal_count=0,
-            carried_signal_count=0,
-            briefing_id=briefing.id,
+            total_signals_ingested=ingest_res.get("events_inserted", 0) or ingest_res.get("events_processed", 0) or 0,
+            total_clusters_processed=semantic_res.get("events_processed", 0),
+            total_claims_extracted=claims_res.get("claims_processed", 0) or 0,
+            total_inbox_items=len(inbox_res),
+            generation_status=briefing.generation_status,
             error_summary=None,
         )
         db.save_daily_signal_run(run_record)
 
         return {
-            "status": run_record.status,
+            "status": "completed",
             "surface_date": surface_date,
             "daily_run_id": daily_run_id,
             "briefing_id": briefing.id,
@@ -800,18 +791,17 @@ def run_daily_refresh(
     except Exception as e:
         logger.exception(f"Daily Refresh pipeline failed for {surface_date} (run: {daily_run_id}): {e}")
         from app.models.schemas import DailySignalRun
-        from app.runtime.timezone import get_effective_timezone
-        _, tz_name, _ = get_effective_timezone(load_runtime_config())
-        
         run_record = DailySignalRun(
             id=daily_run_id,
-            runtime_date=surface_date,
-            timezone_name=tz_name,
-            run_kind="daily_refresh",
+            run_date=surface_date,
+            status="failed",
             started_at=now,
             completed_at=datetime.now(timezone.utc),
-            data_cutoff_at=data_cutoff_at,
-            status="failed",
+            total_signals_ingested=0,
+            total_clusters_processed=0,
+            total_claims_extracted=0,
+            total_inbox_items=0,
+            generation_status="failed",
             error_summary=str(e),
         )
         db.save_daily_signal_run(run_record)

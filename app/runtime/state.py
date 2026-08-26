@@ -155,7 +155,7 @@ def record_source_failure(
     config: Optional[Dict[str, Any]] = None,
     error_category: Optional[str] = None,
 ) -> SourceCheckpoint:
-    """Updates source checkpoint with structured sanitization and fixed backoff on failure."""
+    """Updates source checkpoint with structured sanitization and exponential backoff on failure."""
     if now is None:
         now = datetime.now(timezone.utc)
     if config is None:

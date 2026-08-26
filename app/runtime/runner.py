@@ -46,39 +46,6 @@ def _signal_handler(signum, frame):
     print(f"\n[HERMES] Received shutdown signal ({signum}). Finishing current task and exiting gracefully...", flush=True)
 
 
-class LeaseHeartbeat:
-    def __init__(self, db, op_id: str):
-        self.db = db
-        self.op_id = op_id
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        
-    def start(self):
-        self._thread.start()
-        
-    def stop(self):
-        self._stop_event.set()
-        self._thread.join()
-        
-    def _run(self):
-        while not self._stop_event.wait(60.0):
-            try:
-                from datetime import timedelta
-                now = datetime.now(timezone.utc)
-                lease_expires = now + timedelta(minutes=5)
-                # Create a new connection for the background thread to avoid SQLite threading issues
-                import sqlite3
-                conn = sqlite3.connect(self.db.db_path, timeout=10.0)
-                conn.execute(
-                    "UPDATE refresh_operations SET heartbeat_at = ?, lease_expires_at = ? WHERE id = ? AND status = 'running'",
-                    (now.isoformat(), lease_expires.isoformat(), self.op_id)
-                )
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-
-
 def run_daemon(
     db: Database,
     once: bool = False,
@@ -219,8 +186,6 @@ def run_daemon(
                     lease_expires = now + timedelta(minutes=5)
                     if db.claim_refresh_operation(op.id, worker_id, now, lease_expires):
                         logger.info(f"Claimed queued refresh operation: {op.id} [scope={op.scope}]")
-                        hb = LeaseHeartbeat(db, op.id)
-                        hb.start()
                         try:
                             if op.scope == "daily_refresh":
                                 run_daily_refresh(db, now=now)
@@ -235,12 +200,6 @@ def run_daemon(
                             elif op.scope == "project_scan":
                                 run_context_scan(db, now=now)
                                 run_context_match(db, now=now)
-                            elif op.scope == "project_refresh":
-                                run_context_scan(db, now=now)
-                                run_context_match(db, now=now)
-                            elif op.scope == "saved_hydration":
-                                # Handle saved hydration
-                                pass
                             elif op.scope == "search_refresh":
                                 run_source_ingestion(db, now=now)
                                 run_semantic_processing(db, now=now)
@@ -248,7 +207,7 @@ def run_daemon(
                             elif op.scope == "story_recheck":
                                 run_longitudinal_recheck(db, now=now)
                             else:
-                                raise ValueError(f"Unknown operation scope: {op.scope}")
+                                logger.warning(f"Unknown operation scope: {op.scope}")
 
                             db.conn.execute(
                                 "UPDATE refresh_operations SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?",
@@ -263,8 +222,6 @@ def run_daemon(
                                 (str(e), datetime.now(timezone.utc).isoformat(), op.id)
                             )
                             db.conn.commit()
-                        finally:
-                            hb.stop()
             except Exception as ex:
                 logger.error(f"Error checking refresh operations: {ex}")
 
@@ -303,4 +260,3 @@ def main(argv: Optional[List[str]] = None):
 
 if __name__ == "__main__":
     main()
-import threading
