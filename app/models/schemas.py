@@ -608,7 +608,8 @@ class RuntimeJobRun(BaseModel):
 class DailySignalRun(BaseModel):
     id: str  # daily-run:YYYY-MM-DD
     runtime_date: str  # YYYY-MM-DD
-    timezone_name: str
+    runtime_timezone: str
+    run_kind: str = "daily"
     started_at: datetime
     completed_at: Optional[datetime] = None
     data_cutoff_at: Optional[datetime] = None

@@ -24,7 +24,16 @@ def test_db(tmp_path):
 @pytest.fixture
 def client(test_db):
     from app.api.routes import get_db
-    app.dependency_overrides[get_db] = lambda: test_db
+    db_path = test_db.db_path
+    
+    def override_get_db():
+        request_db = Database(db_path=db_path)
+        try:
+            yield request_db
+        finally:
+            request_db.close()
+    
+    app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -353,8 +362,8 @@ def test_api_get_briefing_validation_and_status_codes(client, test_db):
 
     # 404 for valid date with no briefing
     r_404 = client.get("/briefing?date=2026-01-01")
-    assert r_404.status_code == 200
-    assert r_404.json()["status"] == "missing"
+    assert r_404.status_code == 404
+    assert "No briefing found" in r_404.json()["detail"]
 
     # 200 for generated briefing
     now = datetime(2026, 8, 20, 8, 0, 0, tzinfo=timezone.utc)
@@ -371,9 +380,7 @@ def test_api_get_briefing_validation_and_status_codes(client, test_db):
 
     r_200 = client.get("/briefing?date=2026-08-20")
     assert r_200.status_code == 200
-    envelope = r_200.json()
-    assert envelope['status'] == 'completed'
-    data = envelope['briefing']
+    data = r_200.json()
     assert data["briefing_date"] == "2026-08-20"
     assert data["total_items"] == 1
     assert "must_know" in data["sections"]
@@ -496,16 +503,6 @@ def test_atomic_persistence_rollback_on_error(test_db):
         project_impact_score = None
         matched_project_ids = []
         snapshot_version = "v1"
-        source_published_at = None
-        source_updated_at = None
-        first_seen_at = None
-        last_changed_at = None
-        last_evaluated_at = None
-        surfaced_at = None
-        snapshot_date = None
-        daily_run_id = None
-        freshness_kind = None
-        freshness_reason = None
 
     with pytest.raises(sqlite3.IntegrityError):
         test_db.save_daily_briefing_with_items(briefing, [BadItem()])

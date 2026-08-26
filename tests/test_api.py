@@ -17,7 +17,7 @@ from app.storage.db import Database
 def client_with_db():
     temp_dir = tempfile.mkdtemp()
     db_path = os.path.join(temp_dir, "test_api.db")
-    db = Database(db_path=db_path)
+    setup_db = Database(db_path=db_path)
 
     now = datetime.now(timezone.utc)
 
@@ -33,7 +33,7 @@ def client_with_db():
         discovered_at=now,
         final_score=0.90,
     )
-    db.save_event(ev)
+    setup_db.save_event(ev)
 
     cl = StoryCluster(
         id="cluster_api_1",
@@ -46,7 +46,7 @@ def client_with_db():
         created_at=now,
         updated_at=now,
     )
-    db.save_cluster(cl)
+    setup_db.save_cluster(cl)
 
     claim = Claim(
         id="claim_api_1",
@@ -59,7 +59,7 @@ def client_with_db():
         status="supported",
         verification_score=0.85,
     )
-    db.save_claim(claim)
+    setup_db.save_claim(claim)
 
     proj = Project(
         id="project:api-test",
@@ -70,7 +70,7 @@ def client_with_db():
         libraries=["requests"],
         topics=["api-testing"],
     )
-    db.save_project(proj)
+    setup_db.save_project(proj)
 
     inbox = InboxItem(
         id="inbox_api_1",
@@ -85,17 +85,23 @@ def client_with_db():
         state="unseen",
         matched_project_ids=["project:api-test"],
     )
-    db.save_inbox_item(inbox)
+    setup_db.save_inbox_item(inbox)
 
-    # Keep the setup database for test assertions; each request will create its own connection
-    # Override get_db to create a new Database instance per request (thread-safe)
-    app.dependency_overrides[get_db] = lambda: Database(db_path=db_path)
+    # Generator dependency override - creates new connection per request, closes after
+    def override_get_db():
+        request_db = Database(db_path=db_path)
+        try:
+            yield request_db
+        finally:
+            request_db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
 
-    yield client, db
+    yield client, setup_db
 
     app.dependency_overrides.clear()
-    db.close()
+    setup_db.close()
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 

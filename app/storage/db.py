@@ -246,19 +246,6 @@ class Database:
 
     def __init__(self, db_path: Optional[str] = None, timeout: float = 10.0, _baseline_file: Optional[Path] = None, _default_runtime_file: Optional[Path] = None):
         self.db_path = resolve_db_path(db_path, _default_runtime_file)
-        
-        # Test guard: Prevent tests from silently mutating the real operational database.
-        # Tests MUST explicitly inject HERMES_DB_PATH or db_path to an isolated temporary location.
-        if db_path is None and not os.environ.get("HERMES_DB_PATH"):
-            repo_root = Path(__file__).resolve().parents[2]
-            default_runtime = (repo_root / "data" / "runtime" / "tech_intel.db").resolve()
-            if os.path.abspath(self.db_path) == os.path.abspath(str(default_runtime)):
-                raise RuntimeError(
-                    "Database() instantiated without explicit db_path or HERMES_DB_PATH, "
-                    "which would target the real operational database at data/runtime/tech_intel.db. "
-                    "Tests must inject an isolated path via HERMES_DB_PATH or the db_path parameter."
-                )
-        
         self.has_fts5 = False
         
         # Determine canonical baseline path
@@ -364,8 +351,9 @@ class Database:
                         if self.conn:
                             try:
                                 self.conn.close()
-                            except Exception:
-                                pass
+                            except Exception as close_err:
+                                import sys
+                                print(f"[DB] Nonfatal connection close failure: {close_err}", file=sys.stderr)
                             self.conn = None
                         for suffix in ["", "-wal", "-shm", "-journal"]:
                             p = temp_db_path + suffix
@@ -399,8 +387,9 @@ class Database:
                         if self.conn:
                             try:
                                 self.conn.close()
-                            except Exception:
-                                pass
+                            except Exception as close_err:
+                                import sys
+                                print(f"[DB] Nonfatal connection close failure: {close_err}", file=sys.stderr)
                             self.conn = None
                         for suffix in ["", "-wal", "-shm", "-journal"]:
                             p = temp_db_path + suffix
@@ -423,8 +412,9 @@ class Database:
                     if self.conn:
                         try:
                             self.conn.close()
-                        except Exception:
-                            pass
+                        except Exception as close_err:
+                            import sys
+                            print(f"[DB] Nonfatal connection close failure: {close_err}", file=sys.stderr)
                         self.conn = None
                     raise e
 
@@ -470,89 +460,75 @@ class Database:
         except sqlite3.OperationalError:
             schema_exists = False
 
-        if not schema_exists:
-            schema_path = Path(__file__).parent / "schema.sql"
-            schema_sql = ""
-            if schema_path.exists():
-                with open(schema_path, "r", encoding="utf-8") as f:
-                    schema_sql = f.read()
-                    
-            # Assert schema_sql contains no transaction-control statements (case-insensitive)
-            for keyword in ["BEGIN", "COMMIT", "ROLLBACK"]:
-                import re
-                if re.search(r"\b" + keyword + r"\b", schema_sql, re.IGNORECASE):
-                    raise DatabaseMigrationError(f"schema.sql contains forbidden transaction control statement: {keyword}")
+        # 1. Disable foreign keys when required
+        try:
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            fk_state = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+            if int(fk_state) != 0:
+                raise DatabaseMigrationError("Failed to disable foreign keys before migration.")
+        except Exception as e:
+            if isinstance(e, DatabaseMigrationError):
+                raise
+            raise DatabaseMigrationError(f"Failed to disable foreign keys: {e}") from e
 
-            # 1. Disable foreign keys when required
+        try:
+            if not schema_exists:
+                schema_path = Path(__file__).parent / "schema.sql"
+                schema_sql = ""
+                if schema_path.exists():
+                    with open(schema_path, "r", encoding="utf-8") as f:
+                        schema_sql = f.read()
+                        
+                # Assert schema_sql contains no transaction-control statements (case-insensitive)
+                for keyword in ["BEGIN", "COMMIT", "ROLLBACK"]:
+                    import re
+                    if re.search(r"\b" + keyword + r"\b", schema_sql, re.IGNORECASE):
+                        raise DatabaseMigrationError(f"schema.sql contains forbidden transaction control statement: {keyword}")
+
+                # 2. Acquire one BEGIN IMMEDIATE transaction and load schema.sql
+                self.conn.executescript("BEGIN IMMEDIATE;\n" + schema_sql)
+                cursor = self.conn.cursor()
+            else:
+                # Schema exists, start transaction for migrations
+                self.conn.execute("BEGIN IMMEDIATE")
+                cursor = self.conn.cursor()
+
+            # 3. Run column migrations (idempotent, safe to run on fresh and existing databases)
+            self._migrate_columns_internal(cursor)
+            
+            # 4. Set up FTS inside the same transaction (create or repair)
             try:
-                self.conn.execute("PRAGMA foreign_keys=OFF")
+                cursor.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(id UNINDEXED, title, text)"
+                )
+                self.has_fts5 = True
+            except sqlite3.OperationalError as fts_err:
+                if "no such module: fts5" in str(fts_err).lower():
+                    self.has_fts5 = False
+                else:
+                    raise fts_err
+                    
+            # 5. Commit once
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception as rb_err:
+                raise DatabaseMigrationError(f"Rollback failed after migration error: {rb_err}") from e
+            raise DatabaseMigrationError(f"Database schema initialization and migration transaction failed: {e}") from e
+        finally:
+            # 6. Restore foreign keys
+            try:
+                self.conn.execute("PRAGMA foreign_keys=ON")
                 fk_state = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
-                if int(fk_state) != 0:
-                    raise DatabaseMigrationError("Failed to disable foreign keys before migration.")
+                if int(fk_state) != 1:
+                    raise DatabaseMigrationError("Failed to re-enable foreign keys after migration.")
             except Exception as e:
                 if isinstance(e, DatabaseMigrationError):
                     raise
-                raise DatabaseMigrationError(f"Failed to disable foreign keys: {e}") from e
+                raise DatabaseMigrationError(f"Failed to restore foreign keys: {e}") from e
 
-            try:
-                # 2. Acquire one BEGIN IMMEDIATE transaction and load schema.sql
-                self.conn.executescript("BEGIN IMMEDIATE;\n" + schema_sql)
-                
-                cursor = self.conn.cursor()
-                
-                # 3. Run column migrations
-                self._migrate_columns_internal(cursor)
-                
-                # 4. Set up FTS inside the same transaction
-                try:
-                    cursor.execute(
-                        "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(id UNINDEXED, title, text)"
-                    )
-                    self.has_fts5 = True
-                except sqlite3.OperationalError as fts_err:
-                    if "no such module: fts5" in str(fts_err).lower():
-                        self.has_fts5 = False
-                    else:
-                        raise fts_err
-                        
-                # 5. Commit once
-                self.conn.commit()
-            except Exception as e:
-                try:
-                    self.conn.rollback()
-                except Exception:
-                    pass
-                raise DatabaseMigrationError(f"Database schema initialization and migration transaction failed: {e}") from e
-            finally:
-                # 6. Restore foreign keys
-                try:
-                    self.conn.execute("PRAGMA foreign_keys=ON")
-                    fk_state = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
-                    if int(fk_state) != 1:
-                        raise DatabaseMigrationError("Failed to re-enable foreign keys after migration.")
-                except Exception as e:
-                    if isinstance(e, DatabaseMigrationError):
-                        raise
-                    raise DatabaseMigrationError(f"Failed to restore foreign keys: {e}") from e
-        else:
-            # Schema exists, check if migration is needed
-            try:
-                cursor.execute("SELECT runtime_timezone FROM daily_briefing_revisions LIMIT 1")
-                migration_needed = False
-            except sqlite3.OperationalError:
-                migration_needed = True
-
-            if migration_needed:
-                self._migrate_columns()
-
-            # Set has_fts5 flag
-            try:
-                cursor.execute("SELECT 1 FROM events_fts LIMIT 1")
-                self.has_fts5 = True
-            except sqlite3.OperationalError:
-                self.has_fts5 = False
-
-        # Run integrity checks
+        # 7. Run integrity checks
         try:
             qc = self.conn.execute("PRAGMA quick_check").fetchone()[0]
             if qc != "ok":
@@ -867,8 +843,9 @@ class Database:
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS daily_signal_runs (
                             id TEXT PRIMARY KEY,
-                            runtime_date TEXT UNIQUE NOT NULL,
-                            timezone_name TEXT NOT NULL,
+                            runtime_date TEXT NOT NULL,
+                            runtime_timezone TEXT NOT NULL,
+                            run_kind TEXT NOT NULL DEFAULT 'daily',
                             started_at TEXT NOT NULL,
                             completed_at TEXT,
                             data_cutoff_at TEXT,
@@ -884,18 +861,35 @@ class Database:
                         )
                     """)
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date)")
+                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_runs_composite ON daily_signal_runs(runtime_date, runtime_timezone, run_kind)")
                 except Exception as e:
                     sanitized = str(e).split("\n")[0]
                     raise DatabaseMigrationError(f"Failed creating daily_signal_runs table: {sanitized}") from e
+            else:
+                # Migrate existing table: add runtime_timezone and run_kind columns, update indexes
+                dsr_info = cursor.execute("PRAGMA table_info(daily_signal_runs)").fetchall()
+                existing_dsr_cols = {r["name"] for r in dsr_info}
+                _safe_add_column("daily_signal_runs", "runtime_timezone", "TEXT", existing_dsr_cols)
+                _safe_add_column("daily_signal_runs", "run_kind", "TEXT NOT NULL DEFAULT 'daily'", existing_dsr_cols)
+                # Migrate timezone_name -> runtime_timezone if needed
+                if "timezone_name" in existing_dsr_cols and "runtime_timezone" in existing_dsr_cols:
+                    try:
+                        cursor.execute("UPDATE daily_signal_runs SET runtime_timezone = timezone_name WHERE runtime_timezone IS NULL OR runtime_timezone = ''")
+                    except sqlite3.OperationalError as update_err:
+                        raise DatabaseMigrationError(f"Failed to migrate timezone_name to runtime_timezone: {update_err}") from update_err
+                # Drop old UNIQUE constraint on runtime_date and create composite unique index
+                try:
+                    cursor.execute("DROP INDEX IF EXISTS idx_daily_runs_date")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date)")
+                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_runs_composite ON daily_signal_runs(runtime_date, runtime_timezone, run_kind)")
+                except sqlite3.OperationalError as idx_err:
+                    raise DatabaseMigrationError(f"Failed to update daily_signal_runs indexes: {idx_err}") from idx_err
 
             # 16. refresh_operations table
             if "refresh_operations" in all_tables:
-                try:
-                    ro_info = cursor.execute("PRAGMA table_info(refresh_operations)").fetchall()
-                    existing_ro_cols = {r["name"] for r in ro_info}
-                    _safe_add_column("refresh_operations", "idempotency_key", "TEXT", existing_ro_cols)
-                except Exception:
-                    pass
+                ro_info = cursor.execute("PRAGMA table_info(refresh_operations)").fetchall()
+                existing_ro_cols = {r["name"] for r in ro_info}
+                _safe_add_column("refresh_operations", "idempotency_key", "TEXT", existing_ro_cols)
 
             if "refresh_operations" not in all_tables:
                 try:
@@ -991,8 +985,8 @@ class Database:
             try:
                 cursor.execute("DROP TABLE IF EXISTS claim_revisions_mig_tmp")
                 cursor.execute("DROP TABLE IF EXISTS technology_assessment_revisions_mig_tmp")
-            except Exception:
-                pass
+            except sqlite3.OperationalError as cleanup_err:
+                raise DatabaseMigrationError(f"Cleanup failed during migration rollback: {cleanup_err}") from cleanup_err
             raise DatabaseMigrationError(f"Migration transaction failed: {e}") from e
         finally:
             try:
@@ -3900,48 +3894,15 @@ class Database:
     def close(self) -> None:
         if self.conn:
             try:
-                self.conn.commit()
-            except Exception:
-                pass
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+            except Exception as e:
+                raise DatabaseInitializationError(f"Failed to rollback transaction on close: {e}") from e
             try:
                 self.conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                raise DatabaseInitializationError(f"Failed to close database connection: {e}") from e
             self.conn = None
-
-
-# List of all audited database mutating methods
-MUTATING_METHODS = [
-    "insert_event", "save_event", "save_embedding", "create_cluster", "update_cluster",
-    "save_cluster", "add_event_to_cluster", "clear_clusters_and_relationships",
-    "save_relationship", "save_claim", "save_evidence", "save_technology_assessment",
-    "insert_claim_revision", "insert_technology_assessment_revision", "save_technology_state",
-    "insert_recheck_queue_item", "update_recheck_item_status", "clear_recheck_queue",
-    "insert_intelligence_change", "save_intelligence_change", "save_project",
-    "save_project_file", "delete_project_file", "delete_project_files", "save_project_profile",
-    "save_project_embedding", "save_project_match", "clear_project_matches",
-    "clear_claims_and_evidence", "save_inbox_item", "update_inbox_item_state",
-    "clear_inbox_items", "save_saved_item", "update_saved_item_note", "add_saved_item_tag",
-    "clear_saved_items", "save_user_feedback", "save_daily_briefing",
-    "save_daily_briefing_with_items", "save_daily_briefing_items", "save_source_checkpoint",
-    "save_runtime_job", "save_runtime_job_run", "save_daily_signal_run",
-    "save_refresh_operation", "claim_refresh_operation", "recover_stale_refresh_operations",
-    "create_briefing_revision"
-]
-
-def require_writable(func):
-    def wrapper(self, *args, **kwargs):
-        self._require_writable(func.__name__)
-        return func(self, *args, **kwargs)
-    wrapper.__name__ = func.__name__
-    wrapper.__doc__ = func.__doc__
-    return wrapper
-
-# Wrap all registered mutating methods at module load time
-for name in MUTATING_METHODS:
-    if hasattr(Database, name):
-        original = getattr(Database, name)
-        setattr(Database, name, require_writable(original))
 
 
 

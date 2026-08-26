@@ -529,8 +529,9 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
 
 CREATE TABLE IF NOT EXISTS daily_signal_runs (
     id TEXT PRIMARY KEY,
-    runtime_date TEXT UNIQUE NOT NULL,
-    timezone_name TEXT NOT NULL,
+    runtime_date TEXT NOT NULL,
+    runtime_timezone TEXT NOT NULL,
+    run_kind TEXT NOT NULL DEFAULT 'daily',
     started_at TEXT NOT NULL,
     completed_at TEXT,
     data_cutoff_at TEXT,
@@ -546,6 +547,7 @@ CREATE TABLE IF NOT EXISTS daily_signal_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_runs_composite ON daily_signal_runs(runtime_date, runtime_timezone, run_kind);
 
 CREATE TABLE IF NOT EXISTS daily_briefing_revisions (
     id TEXT PRIMARY KEY,
