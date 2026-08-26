@@ -1,4 +1,11 @@
 ﻿reference_dir: "reference"
+
+# Path safety boundary for project scanning. Explicit allow-list of root
+# directories that user-supplied project paths may reside in. Empty list means
+# "use defaults" (repository root, current working directory, OS temp dir).
+# Override at runtime with the HERMES_ALLOWED_PROJECT_ROOTS environment
+# variable (os.pathsep-separated paths).
+allowed_project_roots: []
 max_file_size_kb: 512
 max_total_project_mb: 25
 max_match_candidates: 100

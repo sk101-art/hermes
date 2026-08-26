@@ -375,6 +375,25 @@ def get_project_intelligence(
     )
 
 
+def enqueue_project_scan(project_id: str, db: Database) -> RefreshOperation:
+    """Enqueues a targeted asynchronous 'project_scan' operation for one project.
+
+    The daemon worker executes the scan in the background; the caller only
+    receives the queued operation record (API surfaces return 202 Accepted).
+    """
+    now = datetime.now(timezone.utc)
+    op = RefreshOperation(
+        id=f"refresh:project_scan:{now.timestamp()}",
+        scope="project_scan",
+        target_id=project_id,
+        status="queued",
+        requested_at=now,
+        trigger="user_requested",
+    )
+    db.save_refresh_operation(op)
+    return op
+
+
 def add_project(
     name: str,
     path: str,
@@ -391,12 +410,16 @@ def add_project(
         db = Database()
 
     name_clean = name.strip()
+    if not name_clean:
+        raise ValueError("Project name must not be empty.")
     project_id = f"project:{name_clean.lower().replace(' ', '_')}"
+    if db.get_project(project_id):
+        raise ValueError(f"Project '{name_clean}' already exists.")
 
     from app.context.scanner import is_path_safe_and_inside_allowed_roots
     p_path = Path(path).resolve()
     if not is_path_safe_and_inside_allowed_roots(p_path):
-        raise ValueError(f"Project path '{path}' is not within allowed workspace directories.")
+        raise ValueError(f"Project path '{path}' is not an existing directory within allowed workspace roots.")
 
     proj = Project(
         id=project_id,
@@ -412,16 +435,53 @@ def add_project(
     db.save_project(proj)
 
     # Enqueue asynchronous initial scan instead of blocking the caller.
-    now = datetime.now(timezone.utc)
-    op_id = f"refresh:project_scan:{now.timestamp()}"
-    db.save_refresh_operation(RefreshOperation(
-        id=op_id,
-        scope="project_scan",
-        target_id=proj.id,
-        status="queued",
-        requested_at=now,
-        trigger="user_requested",
-    ))
+    enqueue_project_scan(proj.id, db)
+    return db.get_project(proj.id)
+
+
+def update_project(
+    project_id: str,
+    name: Optional[str] = None,
+    path: Optional[str] = None,
+    description: Optional[str] = None,
+    db: Optional[Database] = None,
+) -> Project:
+    """Updates a project's mutable fields and enqueues an asynchronous re-scan.
+
+    Raises ValueError when the project does not exist or the new path fails
+    path-safety validation. Like add_project, the follow-up scan is queued so
+    the API call returns promptly (202 at the HTTP layer).
+    """
+    if db is None:
+        db = Database()
+
+    proj = db.get_project(project_id)
+    if not proj:
+        raise ValueError(f"Project '{project_id}' not found.")
+
+    from app.context.scanner import is_path_safe_and_inside_allowed_roots
+
+    if name is not None:
+        name_clean = name.strip()
+        if not name_clean:
+            raise ValueError("Project name must not be empty.")
+        proj.name = name_clean
+
+    if path is not None:
+        p_path = Path(path).resolve()
+        if not is_path_safe_and_inside_allowed_roots(p_path):
+            raise ValueError(f"Project path '{path}' is not an existing directory within allowed workspace roots.")
+        proj.path = str(p_path).replace("\\", "/")
+
+    if description is not None:
+        proj.description = description
+
+    proj.updated_at = datetime.now(timezone.utc)
+    proj.last_scan_status = "pending"
+    db.save_project(proj)
+
+    # Enqueue asynchronous re-scan instead of blocking the caller.
+    enqueue_project_scan(proj.id, db)
     return db.get_project(proj.id)
 
 
@@ -430,13 +490,20 @@ def archive_project(
     reason: Optional[str] = None,
     db: Optional[Database] = None,
 ) -> bool:
-    """Soft-archives a project by setting is_active = 0, status = 'archived'."""
+    """Idempotently soft-archives a project (is_active = 0, status = 'archived').
+
+    Archiving an already-archived project is a no-op that still succeeds, so
+    the DELETE endpoint is safe to retry.
+    """
     if db is None:
         db = Database()
 
     proj = db.get_project(project_id)
     if not proj:
         return False
+
+    if proj.status == "archived" and not proj.is_active:
+        return True  # already archived: idempotent success
 
     proj.is_active = False
     proj.status = "archived"
@@ -471,18 +538,7 @@ def restore_project(
     db.save_project(proj)
 
     # Enqueue asynchronous re-scan instead of blocking the caller.
-    now = datetime.now(timezone.utc)
-    op_id = f"refresh:project_scan:{now.timestamp()}"
-    op = RefreshOperation(
-        id=op_id,
-        scope="project_scan",
-        target_id=proj.id,
-        status="queued",
-        requested_at=now,
-        trigger="user_requested",
-    )
-    db.save_refresh_operation(op)
-    return op
+    return enqueue_project_scan(proj.id, db)
 
 
 def scan_single_project(

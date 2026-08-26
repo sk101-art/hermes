@@ -26,8 +26,6 @@ from app.runtime.jobs import (
     generate_scheduled_morning_briefing,
     run_health_check_job,
     run_longitudinal_recheck,
-    run_context_scan,
-    run_context_match,
     run_source_ingestion,
     run_semantic_processing,
     run_claims_processing,
@@ -253,8 +251,14 @@ def run_daemon(
                                 elif op.scope == "recheck":
                                     run_longitudinal_recheck(db, now=now)
                                 elif op.scope == "project_scan":
-                                    run_context_scan(db, now=now)
-                                    run_context_match(db, now=now)
+                                    # Targeted operation: scan ONLY the project
+                                    # named by op.target_id, never all projects.
+                                    if not op.target_id:
+                                        raise ValueError("project_scan operation is missing target_id")
+                                    from app.services.projects import scan_single_project
+                                    scan_res = scan_single_project(project_id=op.target_id, db=db)
+                                    if scan_res.get("status") == "failed":
+                                        raise ValueError(f"project_scan failed for {op.target_id}: {scan_res.get('error')}")
                                 elif op.scope == "search_refresh":
                                     run_source_ingestion(db, now=now)
                                     run_semantic_processing(db, now=now)
@@ -304,8 +308,10 @@ def main(argv: Optional[List[str]] = None):
     parser.add_argument("--job", type=str, default=None, help="Run a specific named job once")
     parser.add_argument("--dry-run", action="store_true", help="Preview due jobs and sources without mutating state")
     args = parser.parse_args(argv)
-    import os
-    db = Database(db_path=os.getenv("HERMES_DB_PATH", "data/tech_intel.db"))
+    # Database() applies the operational default path resolution
+    # (HERMES_DB_PATH env > default runtime DB), so the daemon always
+    # operates on the canonical operational database.
+    db = Database()
     run_daemon(
         db=db,
         once=args.once,

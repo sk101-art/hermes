@@ -143,16 +143,66 @@ def discover_projects(reference_dir: str = "reference") -> List[Path]:
     return projects
 
 
+def get_allowed_project_roots() -> List[Path]:
+    """Returns the configured allow-list of project root directories.
+
+    Precedence:
+    1. ``HERMES_ALLOWED_PROJECT_ROOTS`` env var (os.pathsep-separated paths)
+    2. ``allowed_project_roots`` list in ``config/context.yaml``
+    3. Defaults: repository root, current working directory, OS temp directory.
+    """
+    env_roots = os.environ.get("HERMES_ALLOWED_PROJECT_ROOTS", "").strip()
+    if env_roots:
+        roots = []
+        for part in env_roots.split(os.pathsep):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                roots.append(Path(part).resolve())
+            except Exception:
+                continue
+        if roots:
+            return roots
+
+    try:
+        import yaml
+        cfg_path = Path(__file__).resolve().parents[2] / "config" / "context.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            cfg_roots = cfg.get("allowed_project_roots")
+            if isinstance(cfg_roots, list) and cfg_roots:
+                roots = []
+                for part in cfg_roots:
+                    try:
+                        roots.append(Path(str(part)).resolve())
+                    except Exception:
+                        continue
+                if roots:
+                    return roots
+    except Exception:
+        pass
+
+    return [
+        Path(__file__).resolve().parents[2],  # repository root
+        Path(os.path.abspath(".")).resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+    ]
+
+
 def is_path_safe_and_inside_allowed_roots(path: Path) -> bool:
-    """Checks if a resolved path is safe and resides within allowed workspace roots, CWD, or temp directories."""
+    """Validates a candidate project path completely.
+
+    The resolved path must be an existing directory (rejects files, missing
+    paths, and symlink/`..` traversal escapes after resolution) and must be
+    equal to or nested inside one of the configured allowed project roots.
+    """
     try:
         resolved = path.resolve()
-        allowed_roots = [
-            Path("C:/Users/sujay/Downloads/hermes").resolve(),
-            Path(os.path.abspath(".")).resolve(),
-            Path(tempfile.gettempdir()).resolve(),
-        ]
-        for root in allowed_roots:
+        if not resolved.is_dir():
+            return False
+        for root in get_allowed_project_roots():
             r_str = str(root).lower().replace("\\", "/")
             path_str = str(resolved).lower().replace("\\", "/")
             if path_str == r_str or path_str.startswith(r_str + "/"):

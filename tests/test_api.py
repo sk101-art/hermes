@@ -305,7 +305,7 @@ def test_project_restore_returns_202_and_enqueues_async_scan(client_with_db):
     client, db = client_with_db
 
     # Archive the fixture project first so restore has work to do.
-    resp_archive = client.post("/projects/project:api-test/archive")
+    resp_archive = client.delete("/projects/project:api-test")
     assert resp_archive.status_code == 200
 
     # Restore must be asynchronous: 202 Accepted, not 200.

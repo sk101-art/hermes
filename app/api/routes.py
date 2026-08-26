@@ -322,6 +322,11 @@ class ProjectCreate(BaseModel):
     path: str
     description: Optional[str] = None
 
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    path: Optional[str] = None
+    description: Optional[str] = None
+
 class RefreshRequest(BaseModel):
     scope: str
     idempotency_key: Optional[str] = None
@@ -338,8 +343,13 @@ VALID_REFRESH_SCOPES = {
     "story_recheck",
 }
 
-@router.post("/projects", summary="Add a new project", response_model=Project)
-def create_project(req: ProjectCreate, db: Database = Depends(get_db)):
+@router.post("/projects", summary="Add a new project and enqueue async initial scan", status_code=202, response_model=Project)
+def create_project(req: ProjectCreate, response: Response, db: Database = Depends(get_db)):
+    """Creates the project profile and queues a targeted background scan.
+
+    Returns 202 Accepted immediately; scan progress is tracked on the project
+    (last_scan_status) and via /runtime/operations/{operation_id}.
+    """
     try:
         proj = projects_service.add_project(
             name=req.name,
@@ -347,12 +357,36 @@ def create_project(req: ProjectCreate, db: Database = Depends(get_db)):
             description=req.description,
             db=db
         )
+        response.status_code = status.HTTP_202_ACCEPTED
         return proj.model_dump()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/projects/{project_id}/archive", summary="Soft-archive a project", response_model=MessageResponse)
+@router.put("/projects/{project_id}", summary="Update a project and enqueue async re-scan", status_code=202, response_model=Project)
+def update_project(project_id: str, req: ProjectUpdate, response: Response, db: Database = Depends(get_db)):
+    """Updates mutable project fields and queues a targeted background re-scan.
+
+    Returns 202 Accepted immediately; the scan never blocks the request.
+    """
+    try:
+        proj = projects_service.update_project(
+            project_id=project_id,
+            name=req.name,
+            path=req.path,
+            description=req.description,
+            db=db,
+        )
+        response.status_code = status.HTTP_202_ACCEPTED
+        return proj.model_dump()
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(status_code=code, detail=msg)
+
+@router.delete("/projects/{project_id}", summary="Idempotently soft-archive a project", response_model=MessageResponse)
 def archive_project(project_id: str, reason: Optional[str] = None, db: Database = Depends(get_db)):
+    """Idempotent archive: DELETE succeeds whether or not the project was
+    already archived. Only unknown project IDs return 404."""
     success = projects_service.archive_project(project_id=project_id, reason=reason, db=db)
     if not success:
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
@@ -365,16 +399,6 @@ def restore_project(project_id: str, response: Response, db: Database = Depends(
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
     response.status_code = status.HTTP_202_ACCEPTED
     return op.model_dump()
-
-@router.post("/projects/{project_id}/scan", summary="Rescan a single project")
-def scan_project(project_id: str, db: Database = Depends(get_db)):
-    try:
-        res = projects_service.scan_single_project(project_id=project_id, db=db)
-        if res.get("status") == "failed":
-            raise HTTPException(status_code=400, detail=res.get("error"))
-        return res
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
 @router.post("/runtime/refresh", summary="Enqueue background refresh operation", status_code=202, response_model=RefreshOperation)
 def enqueue_refresh(req: RefreshRequest, response: Response, db: Database = Depends(get_db)):
