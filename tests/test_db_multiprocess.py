@@ -516,3 +516,98 @@ def test_concurrent_revision_creation(monkeypatch, tmp_path):
     nums = [r[0] for r in cursor.fetchall()]
     assert nums == [1, 2, 3]
     db.close()
+
+
+# 12. Legacy daily_signal_runs Migration Test (Composite Identity)
+def test_legacy_daily_signal_runs_migration_composite_identity(monkeypatch, tmp_path):
+    """Proves legacy daily_signal_runs with runtime_date UNIQUE migrates to composite identity."""
+    db_file = str(tmp_path / "legacy_migration.db")
+    monkeypatch.setenv("HERMES_DB_PATH", db_file)
+
+    # 1. Create legacy table with runtime_date UNIQUE and timezone_name
+    conn = connect_db(db_file)
+    conn.execute("""
+        CREATE TABLE daily_signal_runs (
+            id TEXT PRIMARY KEY,
+            runtime_date TEXT UNIQUE NOT NULL,
+            timezone_name TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            data_cutoff_at TEXT,
+            status TEXT NOT NULL,
+            new_signal_count INTEGER DEFAULT 0,
+            updated_signal_count INTEGER DEFAULT 0,
+            carried_signal_count INTEGER DEFAULT 0,
+            retry_count INTEGER DEFAULT 0,
+            briefing_id TEXT,
+            source_status_json TEXT,
+            error_summary TEXT,
+            content_hash TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    # Insert legacy rows
+    conn.execute("""
+        INSERT INTO daily_signal_runs (id, runtime_date, timezone_name, started_at, status, content_hash)
+        VALUES ('run1', '2026-08-25', 'Asia/Kolkata', '2026-08-25T08:00:00Z', 'completed', 'hash1')
+    """)
+    conn.execute("""
+        INSERT INTO daily_signal_runs (id, runtime_date, timezone_name, started_at, status, content_hash)
+        VALUES ('run2', '2026-08-26', 'America/New_York', '2026-08-26T08:00:00Z', 'completed', 'hash2')
+    """)
+    conn.commit()
+    conn.close()
+
+    # 2. Migrate via Database()
+    db = Database(db_path=db_file)
+
+    # 3. Verify migration
+    cursor = db.conn.cursor()
+
+    # Check columns
+    info = cursor.execute("PRAGMA table_info(daily_signal_runs)").fetchall()
+    cols = {r["name"] for r in info}
+    assert "runtime_timezone" in cols
+    assert "run_kind" in cols
+    assert "timezone_name" not in cols  # Should be dropped after migration
+
+    # Check data migration
+    rows = cursor.execute("SELECT * FROM daily_signal_runs ORDER BY runtime_date").fetchall()
+    assert len(rows) == 2
+    assert rows[0]["runtime_timezone"] == "Asia/Kolkata"
+    assert rows[0]["run_kind"] == "daily_refresh"
+    assert rows[1]["runtime_timezone"] == "America/New_York"
+    assert rows[1]["run_kind"] == "daily_refresh"
+
+    # 4. Verify composite uniqueness - can have same date with different run_kind
+    cursor.execute("""
+        INSERT INTO daily_signal_runs (id, runtime_date, runtime_timezone, run_kind, started_at, status, content_hash)
+        VALUES ('run3', '2026-08-25', 'Asia/Kolkata', 'manual_refresh', '2026-08-25T10:00:00Z', 'completed', 'hash3')
+    """)
+    db.conn.commit()
+
+    # Should succeed - same date, different run_kind
+    count = cursor.execute("SELECT COUNT(*) FROM daily_signal_runs WHERE runtime_date = '2026-08-25'").fetchone()[0]
+    assert count == 2
+
+    # 5. Duplicate composite key should fail
+    try:
+        cursor.execute("""
+            INSERT INTO daily_signal_runs (id, runtime_date, runtime_timezone, run_kind, started_at, status, content_hash)
+            VALUES ('run4', '2026-08-25', 'Asia/Kolkata', 'daily_refresh', '2026-08-25T10:00:00Z', 'completed', 'hash4')
+        """)
+        db.conn.commit()
+        assert False, "Should have raised IntegrityError for duplicate composite key"
+    except sqlite3.IntegrityError:
+        pass  # Expected
+
+    # 6. No migration temporary table remains
+    tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "daily_signal_runs_mig_tmp" not in tables
+
+    # 7. Retry is idempotent - reopening should work
+    db.close()
+    db2 = Database(db_path=db_file)
+    cursor2 = db2.conn.cursor()
+    rows = cursor2.execute("SELECT COUNT(*) FROM daily_signal_runs").fetchone()[0]
+    assert rows == 3  # Original 2 + 1 manual_refresh
+    db2.close()

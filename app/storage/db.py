@@ -471,6 +471,62 @@ class Database:
                 raise
             raise DatabaseMigrationError(f"Failed to disable foreign keys: {e}") from e
 
+        # Handle legacy daily_signal_runs table before running schema.sql
+        # If daily_signal_runs exists with legacy schema (missing runtime_timezone/run_kind columns),
+        # we need to rebuild it before running schema.sql to avoid index creation failures
+        try:
+            cursor.execute("PRAGMA table_info(daily_signal_runs)")
+            dsr_cols = {r["name"] for r in cursor.fetchall()}
+            needs_dsr_rebuild = "daily_signal_runs" in [r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()] and ("runtime_timezone" not in dsr_cols or "run_kind" not in dsr_cols)
+        except sqlite3.OperationalError:
+            needs_dsr_rebuild = False
+        
+        if needs_dsr_rebuild:
+            # Rebuild daily_signal_runs table with canonical schema before running schema.sql
+            try:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS daily_signal_runs_mig_tmp (
+                        id TEXT PRIMARY KEY,
+                        runtime_date TEXT NOT NULL,
+                        runtime_timezone TEXT NOT NULL,
+                        run_kind TEXT NOT NULL DEFAULT 'daily_refresh',
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        data_cutoff_at TEXT,
+                        status TEXT NOT NULL,
+                        new_signal_count INTEGER DEFAULT 0,
+                        updated_signal_count INTEGER DEFAULT 0,
+                        carried_signal_count INTEGER DEFAULT 0,
+                        retry_count INTEGER DEFAULT 0,
+                        briefing_id TEXT,
+                        source_status_json TEXT,
+                        error_summary TEXT,
+                        content_hash TEXT NOT NULL DEFAULT ''
+                    )
+                """)
+                # Migrate data from legacy table
+                cursor.execute("""
+                    INSERT INTO daily_signal_runs_mig_tmp (id, runtime_date, runtime_timezone, run_kind, started_at, completed_at, data_cutoff_at, status, new_signal_count, updated_signal_count, carried_signal_count, retry_count, briefing_id, source_status_json, error_summary, content_hash)
+                    SELECT 
+                        id, runtime_date, 
+                        COALESCE(timezone_name, 'UTC') AS runtime_timezone,
+                        'daily_refresh' AS run_kind,
+                        started_at, completed_at, data_cutoff_at, status,
+                        COALESCE(new_signal_count, 0),
+                        COALESCE(updated_signal_count, 0),
+                        COALESCE(carried_signal_count, 0),
+                        COALESCE(retry_count, 0),
+                        briefing_id, source_status_json, error_summary, COALESCE(content_hash, '')
+                    FROM daily_signal_runs
+                """)
+                cursor.execute("DROP TABLE daily_signal_runs")
+                cursor.execute("ALTER TABLE daily_signal_runs_mig_tmp RENAME TO daily_signal_runs")
+                # Recreate indexes
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date)")
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_runs_composite ON daily_signal_runs(runtime_date, runtime_timezone, run_kind)")
+            except sqlite3.OperationalError as e:
+                raise DatabaseMigrationError(f"Failed to rebuild legacy daily_signal_runs table: {e}") from e
+        
         try:
             if not schema_exists:
                 schema_path = Path(__file__).parent / "schema.sql"
@@ -870,13 +926,7 @@ class Database:
                 dsr_info = cursor.execute("PRAGMA table_info(daily_signal_runs)").fetchall()
                 existing_dsr_cols = {r["name"] for r in dsr_info}
                 _safe_add_column("daily_signal_runs", "runtime_timezone", "TEXT", existing_dsr_cols)
-                _safe_add_column("daily_signal_runs", "run_kind", "TEXT NOT NULL DEFAULT 'daily'", existing_dsr_cols)
-                # Migrate timezone_name -> runtime_timezone if needed
-                if "timezone_name" in existing_dsr_cols and "runtime_timezone" in existing_dsr_cols:
-                    try:
-                        cursor.execute("UPDATE daily_signal_runs SET runtime_timezone = timezone_name WHERE runtime_timezone IS NULL OR runtime_timezone = ''")
-                    except sqlite3.OperationalError as update_err:
-                        raise DatabaseMigrationError(f"Failed to migrate timezone_name to runtime_timezone: {update_err}") from update_err
+                _safe_add_column("daily_signal_runs", "run_kind", "TEXT NOT NULL DEFAULT 'daily_refresh'", existing_dsr_cols)
                 # Drop old UNIQUE constraint on runtime_date and create composite unique index
                 try:
                     cursor.execute("DROP INDEX IF EXISTS idx_daily_runs_date")
@@ -3724,7 +3774,7 @@ class Database:
     def save_daily_signal_run(self, run: DailySignalRun) -> bool:
         sql = """
         INSERT OR REPLACE INTO daily_signal_runs (
-            id, runtime_date, timezone_name, started_at, completed_at, data_cutoff_at,
+            id, runtime_date, runtime_timezone, run_kind, started_at, completed_at, data_cutoff_at,
             status, new_signal_count, updated_signal_count, carried_signal_count,
             retry_count, briefing_id, source_status_json, error_summary, content_hash
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3734,7 +3784,8 @@ class Database:
             (
                 run.id,
                 run.runtime_date,
-                run.timezone_name,
+                run.runtime_timezone,
+                run.run_kind,
                 run.started_at.isoformat(),
                 run.completed_at.isoformat() if run.completed_at else None,
                 run.data_cutoff_at.isoformat() if run.data_cutoff_at else None,
@@ -3757,7 +3808,8 @@ class Database:
         return DailySignalRun(
             id=d["id"],
             runtime_date=d["runtime_date"],
-            timezone_name=d["timezone_name"],
+            runtime_timezone=d["runtime_timezone"],
+            run_kind=d.get("run_kind", "daily_refresh"),
             started_at=datetime.fromisoformat(d["started_at"]),
             completed_at=datetime.fromisoformat(d["completed_at"]) if d.get("completed_at") else None,
             data_cutoff_at=datetime.fromisoformat(d["data_cutoff_at"]) if d.get("data_cutoff_at") else None,
