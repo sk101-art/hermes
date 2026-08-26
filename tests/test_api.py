@@ -87,26 +87,24 @@ def client_with_db():
     )
     db.save_inbox_item(inbox)
 
-    app.dependency_overrides[get_db] = lambda: db
+    # Keep the setup database for test assertions; each request will create its own connection
+    # Override get_db to create a new Database instance per request (thread-safe)
+    app.dependency_overrides[get_db] = lambda: Database(db_path=db_path)
     client = TestClient(app)
 
     yield client, db
 
     app.dependency_overrides.clear()
+    db.close()
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def test_api_health(client_with_db):
-    client, db = client_with_db
-    
-    from app.runtime.health import check_system_health
-    print("DEBUG ACTUAL HEALTH:", check_system_health(db))
-    
+    client, _ = client_with_db
     resp = client.get("/health")
     assert resp.status_code == 200
     data = resp.json()
-    print("DEBUG HEALTH:", data)
-    assert data["status"] in ["healthy", "unhealthy", "degraded"]
+    assert data["status"] == "healthy"
     assert data["database"] == "ok"
 
 

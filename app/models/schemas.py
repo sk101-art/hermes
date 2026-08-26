@@ -528,9 +528,6 @@ class DailyBriefing(BaseModel):
     source_status_json: Optional[str] = None
     daily_run_id: Optional[str] = None
     original_generated_at: Optional[str] = None
-    current_revision_id: Optional[str] = None
-    latest_generated_at: Optional[datetime] = None
-    latest_data_cutoff_at: Optional[datetime] = None
 
 
 class DailyBriefingItem(BaseModel):
@@ -612,7 +609,6 @@ class DailySignalRun(BaseModel):
     id: str  # daily-run:YYYY-MM-DD
     runtime_date: str  # YYYY-MM-DD
     timezone_name: str
-    run_kind: str = "daily_refresh"
     started_at: datetime
     completed_at: Optional[datetime] = None
     data_cutoff_at: Optional[datetime] = None
@@ -625,23 +621,9 @@ class DailySignalRun(BaseModel):
     source_status_json: Optional[str] = None  # JSON string
     error_summary: Optional[str] = None
     content_hash: str = ""
-
-
-class OperationScope(str, Enum):
-    daily_refresh = "daily_refresh"
-    morning_brief = "morning_brief"
-    inbox_refresh = "inbox_refresh"
-    health_check = "health_check"
-    recheck = "recheck"
-    project_scan = "project_scan"
-    project_refresh = "project_refresh"
-    saved_hydration = "saved_hydration"
-    search_refresh = "search_refresh"
-    story_recheck = "story_recheck"
-
 class RefreshOperation(BaseModel):
     id: str  # op:uuid
-    scope: OperationScope
+    scope: str
     target_id: Optional[str] = None
     requested_at: datetime
     started_at: Optional[datetime] = None

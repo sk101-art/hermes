@@ -40,10 +40,10 @@ def measure_bundle(dist_dir: str = "frontend/dist") -> dict:
                 assets["other"] += size
 
     ceilings = {
-        "js": 200_000,
+        "js": 185_000,
         "css": 70_000,
         "html": 1_000,
-        "total": 280_000
+        "total": 250_000,
     }
 
     violations = []

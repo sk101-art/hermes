@@ -246,6 +246,19 @@ class Database:
 
     def __init__(self, db_path: Optional[str] = None, timeout: float = 10.0, _baseline_file: Optional[Path] = None, _default_runtime_file: Optional[Path] = None):
         self.db_path = resolve_db_path(db_path, _default_runtime_file)
+        
+        # Test guard: Prevent tests from silently mutating the real operational database.
+        # Tests MUST explicitly inject HERMES_DB_PATH or db_path to an isolated temporary location.
+        if db_path is None and not os.environ.get("HERMES_DB_PATH"):
+            repo_root = Path(__file__).resolve().parents[2]
+            default_runtime = (repo_root / "data" / "runtime" / "tech_intel.db").resolve()
+            if os.path.abspath(self.db_path) == os.path.abspath(str(default_runtime)):
+                raise RuntimeError(
+                    "Database() instantiated without explicit db_path or HERMES_DB_PATH, "
+                    "which would target the real operational database at data/runtime/tech_intel.db. "
+                    "Tests must inject an isolated path via HERMES_DB_PATH or the db_path parameter."
+                )
+        
         self.has_fts5 = False
         
         # Determine canonical baseline path
@@ -913,10 +926,12 @@ class Database:
                     raise DatabaseMigrationError(f"Failed creating refresh_operations table: {sanitized}") from e
 
             if "runtime_jobs" in all_tables:
-                try:
+                rj_info = cursor.execute("PRAGMA table_info(runtime_jobs)").fetchall()
+                existing_rj_cols = {r["name"] for r in rj_info}
+                if "evaluation_status" in existing_rj_cols:
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status)")
-                except Exception:
-                    pass
+                if "next_run_at" in existing_rj_cols:
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_jobs_next_run ON runtime_jobs(next_run_at)")
         except Exception as e:
             if isinstance(e, DatabaseMigrationError):
                 raise
@@ -3357,18 +3372,18 @@ class Database:
                         it.project_impact_score,
                         json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
                         getattr(it, "snapshot_version", None),
-                        it.source_published_at.isoformat() if hasattr(it.source_published_at, "isoformat") else it.source_published_at,
-                        it.source_updated_at.isoformat() if hasattr(it.source_updated_at, "isoformat") else it.source_updated_at,
-                        it.first_seen_at.isoformat() if hasattr(it.first_seen_at, "isoformat") else it.first_seen_at,
-                        it.last_changed_at.isoformat() if hasattr(it.last_changed_at, "isoformat") else it.last_changed_at,
-                        it.last_evaluated_at.isoformat() if hasattr(it.last_evaluated_at, "isoformat") else it.last_evaluated_at,
-                        it.surfaced_at.isoformat() if hasattr(it.surfaced_at, "isoformat") else it.surfaced_at,
-                        it.snapshot_date,
-                        it.daily_run_id,
-                        it.freshness_kind,
-                        it.freshness_reason,
-                        it.content_hash,
-                        it.source_name,
+                        getattr(it, "source_published_at", None).isoformat() if hasattr(getattr(it, "source_published_at", None), "isoformat") else getattr(it, "source_published_at", None),
+                        getattr(it, "source_updated_at", None).isoformat() if hasattr(getattr(it, "source_updated_at", None), "isoformat") else getattr(it, "source_updated_at", None),
+                        getattr(it, "first_seen_at", None).isoformat() if hasattr(getattr(it, "first_seen_at", None), "isoformat") else getattr(it, "first_seen_at", None),
+                        getattr(it, "last_changed_at", None).isoformat() if hasattr(getattr(it, "last_changed_at", None), "isoformat") else getattr(it, "last_changed_at", None),
+                        getattr(it, "last_evaluated_at", None).isoformat() if hasattr(getattr(it, "last_evaluated_at", None), "isoformat") else getattr(it, "last_evaluated_at", None),
+                        getattr(it, "surfaced_at", None).isoformat() if hasattr(getattr(it, "surfaced_at", None), "isoformat") else getattr(it, "surfaced_at", None),
+                        getattr(it, "snapshot_date", None),
+                        getattr(it, "daily_run_id", None),
+                        getattr(it, "freshness_kind", None),
+                        getattr(it, "freshness_reason", None),
+                        getattr(it, "content_hash", None),
+                        getattr(it, "source_name", None),
                     ),
                 )
             return True
@@ -3411,18 +3426,18 @@ class Database:
                         it.project_impact_score,
                         json.dumps(it.matched_project_ids) if it.matched_project_ids else None,
                         getattr(it, "snapshot_version", None),
-                        it.source_published_at.isoformat() if hasattr(it.source_published_at, "isoformat") else it.source_published_at,
-                        it.source_updated_at.isoformat() if hasattr(it.source_updated_at, "isoformat") else it.source_updated_at,
-                        it.first_seen_at.isoformat() if hasattr(it.first_seen_at, "isoformat") else it.first_seen_at,
-                        it.last_changed_at.isoformat() if hasattr(it.last_changed_at, "isoformat") else it.last_changed_at,
-                        it.last_evaluated_at.isoformat() if hasattr(it.last_evaluated_at, "isoformat") else it.last_evaluated_at,
-                        it.surfaced_at.isoformat() if hasattr(it.surfaced_at, "isoformat") else it.surfaced_at,
-                        it.snapshot_date,
-                        it.daily_run_id,
-                        it.freshness_kind,
-                        it.freshness_reason,
-                        it.content_hash,
-                        it.source_name,
+                        getattr(it, "source_published_at", None).isoformat() if hasattr(getattr(it, "source_published_at", None), "isoformat") else getattr(it, "source_published_at", None),
+                        getattr(it, "source_updated_at", None).isoformat() if hasattr(getattr(it, "source_updated_at", None), "isoformat") else getattr(it, "source_updated_at", None),
+                        getattr(it, "first_seen_at", None).isoformat() if hasattr(getattr(it, "first_seen_at", None), "isoformat") else getattr(it, "first_seen_at", None),
+                        getattr(it, "last_changed_at", None).isoformat() if hasattr(getattr(it, "last_changed_at", None), "isoformat") else getattr(it, "last_changed_at", None),
+                        getattr(it, "last_evaluated_at", None).isoformat() if hasattr(getattr(it, "last_evaluated_at", None), "isoformat") else getattr(it, "last_evaluated_at", None),
+                        getattr(it, "surfaced_at", None).isoformat() if hasattr(getattr(it, "surfaced_at", None), "isoformat") else getattr(it, "surfaced_at", None),
+                        getattr(it, "snapshot_date", None),
+                        getattr(it, "daily_run_id", None),
+                        getattr(it, "freshness_kind", None),
+                        getattr(it, "freshness_reason", None),
+                        getattr(it, "content_hash", None),
+                        getattr(it, "source_name", None),
                     ),
                 )
             return True
@@ -3462,18 +3477,18 @@ class Database:
                     project_impact_score=r["project_impact_score"] if "project_impact_score" in keys else None,
                     matched_project_ids=mp,
                     snapshot_version=r["snapshot_version"] if "snapshot_version" in keys else None,
-                    source_published_at=to_dt(r.get("source_published_at")),
-                    source_updated_at=to_dt(r.get("source_updated_at")),
-                    first_seen_at=to_dt(r.get("first_seen_at")),
-                    last_changed_at=to_dt(r.get("last_changed_at")),
-                    last_evaluated_at=to_dt(r.get("last_evaluated_at")),
-                    surfaced_at=to_dt(r.get("surfaced_at")),
-                    snapshot_date=r.get("snapshot_date"),
-                    daily_run_id=r.get("daily_run_id"),
-                    freshness_kind=r.get("freshness_kind"),
-                    freshness_reason=r.get("freshness_reason"),
-                    content_hash=r.get("content_hash"),
-                    source_name=r.get("source_name")
+                    source_published_at=to_dt(r["source_published_at"]) if "source_published_at" in keys and r["source_published_at"] else None,
+                    source_updated_at=to_dt(r["source_updated_at"]) if "source_updated_at" in keys and r["source_updated_at"] else None,
+                    first_seen_at=to_dt(r["first_seen_at"]) if "first_seen_at" in keys and r["first_seen_at"] else None,
+                    last_changed_at=to_dt(r["last_changed_at"]) if "last_changed_at" in keys and r["last_changed_at"] else None,
+                    last_evaluated_at=to_dt(r["last_evaluated_at"]) if "last_evaluated_at" in keys and r["last_evaluated_at"] else None,
+                    surfaced_at=to_dt(r["surfaced_at"]) if "surfaced_at" in keys and r["surfaced_at"] else None,
+                    snapshot_date=r["snapshot_date"] if "snapshot_date" in keys else None,
+                    daily_run_id=r["daily_run_id"] if "daily_run_id" in keys else None,
+                    freshness_kind=r["freshness_kind"] if "freshness_kind" in keys else None,
+                    freshness_reason=r["freshness_reason"] if "freshness_reason" in keys else None,
+                    content_hash=r["content_hash"] if "content_hash" in keys else None,
+                    source_name=r["source_name"] if "source_name" in keys else None
                 )
             )
         return items
@@ -3883,7 +3898,16 @@ class Database:
         return cursor.fetchone() is not None
 
     def close(self) -> None:
-        self.conn.close()
+        if self.conn:
+            try:
+                self.conn.commit()
+            except Exception:
+                pass
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = None
 
 
 # List of all audited database mutating methods

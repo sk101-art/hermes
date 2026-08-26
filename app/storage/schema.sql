@@ -426,10 +426,7 @@ CREATE TABLE IF NOT EXISTS daily_briefings (
     generation_status TEXT,
     source_status_json TEXT,
     daily_run_id TEXT,
-    original_generated_at TEXT,
-    current_revision_id TEXT,
-    latest_generated_at TEXT,
-    latest_data_cutoff_at TEXT
+    original_generated_at TEXT
 );
 
 
@@ -506,8 +503,7 @@ CREATE TABLE IF NOT EXISTS runtime_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runtime_jobs_status ON runtime_jobs(last_status);
-CREATE INDEX IF NOT EXISTS idx_runtime_jobs_eval_status ON runtime_jobs(evaluation_status);
-CREATE INDEX IF NOT EXISTS idx_runtime_jobs_next_run ON runtime_jobs(next_run_at);
+-- idx_runtime_jobs_eval_status and idx_runtime_jobs_next_run are created by migrations after ensuring columns exist
 
 CREATE TABLE IF NOT EXISTS runtime_job_runs (
     id TEXT PRIMARY KEY,
@@ -533,9 +529,8 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
 
 CREATE TABLE IF NOT EXISTS daily_signal_runs (
     id TEXT PRIMARY KEY,
-    runtime_date TEXT NOT NULL,
+    runtime_date TEXT UNIQUE NOT NULL,
     timezone_name TEXT NOT NULL,
-    run_kind TEXT NOT NULL DEFAULT 'daily_refresh',
     started_at TEXT NOT NULL,
     completed_at TEXT,
     data_cutoff_at TEXT,
@@ -547,8 +542,7 @@ CREATE TABLE IF NOT EXISTS daily_signal_runs (
     briefing_id TEXT,
     source_status_json TEXT,
     error_summary TEXT,
-    content_hash TEXT NOT NULL DEFAULT '',
-    UNIQUE(runtime_date, timezone_name, run_kind)
+    content_hash TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_runs_date ON daily_signal_runs(runtime_date);
