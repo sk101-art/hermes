@@ -838,13 +838,21 @@ def get_today_inbox(
     section: Optional[str] = None,
     limit: int = 20,
     db: Optional[Database] = None,
+    surface_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Retrieves calibrated daily inbox items."""
+    """Retrieves calibrated daily inbox items for the current runtime-local date.
+
+    Defaults to the runtime-local date and NEVER returns historically active
+    rows from other days (legacy rows without a surface_date remain visible).
+    """
     if db is None:
         db = Database()
 
     limit = max(1, min(limit, 50))
-    items = db.get_active_inbox_items(limit=None)
+    if surface_date is None:
+        config = load_runtime_config()
+        surface_date = runtime_date_string(datetime.now(timezone.utc), config)
+    items = db.get_active_inbox_items_for_date(surface_date, limit=None)
 
     if unseen_only:
         items = [it for it in items if it.state == "unseen"]

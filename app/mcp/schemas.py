@@ -25,6 +25,7 @@ class TodayInboxInput(BaseModel):
     project: Optional[str] = Field(None, max_length=100, description="Filter by project relevance")
     section: Optional[str] = Field(None, max_length=50, description="Filter by section")
     limit: int = Field(20, ge=1, le=50, description="Max items (1-50, default 20)")
+    date: Optional[str] = Field(None, max_length=10, description="Snapshot date in YYYY-MM-DD format (defaults to current runtime-local date)")
 
 
 class MorningBriefInput(BaseModel):

@@ -465,7 +465,15 @@ def run_inbox_generation(
 
     active_items = generate_daily_inbox(db=db, now=now, rebuild_today=False)
     db.increment_runtime_metric("inbox_items_generated", len(active_items))
-    return {"active_inbox_items": len(active_items), "status": "completed"}
+    counts = getattr(active_items, "counts", None) or {}
+    return {
+        "active_inbox_items": len(active_items),
+        "new_items": counts.get("new", 0),
+        "updated_items": counts.get("updated", 0),
+        "corrected_items": counts.get("corrected", 0),
+        "carried_forward_items": counts.get("carried_forward", 0),
+        "status": "completed",
+    }
 
 
 def run_inbox_cleanup(
@@ -481,8 +489,11 @@ def run_inbox_cleanup(
         return {"status": "dry_run"}
 
     cursor = db.conn.cursor()
+    # Phase 4 Req 3: TTL expiry applies only to legacy rows without a
+    # surface_date; dated snapshot rows follow the daily materialization
+    # lifecycle (prior-day suppression) instead of the 24-hour TTL.
     cursor.execute(
-        "UPDATE inbox_items SET state = 'expired' WHERE expires_at < ? AND is_starred = 0 AND state NOT IN ('expired', 'archived')",
+        "UPDATE inbox_items SET state = 'expired' WHERE expires_at < ? AND is_starred = 0 AND surface_date IS NULL AND state NOT IN ('expired', 'archived')",
         (now.isoformat(),),
     )
     db.conn.commit()
@@ -866,7 +877,7 @@ def run_daily_refresh(
         }
         new_signals = ingest_res.get("events_ingested", 0) or 0
         updated_signals = semantic_res.get("events_processed", 0)
-        carried_signals = len(inbox_res)
+        carried_signals = (getattr(inbox_res, "counts", None) or {}).get("carried_forward", 0)
         run_record = DailySignalRun(
             id=daily_run_id,
             runtime_date=surface_date,
@@ -887,12 +898,17 @@ def run_daily_refresh(
         )
         db.save_daily_signal_run(run_record)
 
+        inbox_counts = getattr(inbox_res, "counts", None) or {}
         return {
             "status": "completed",
             "surface_date": surface_date,
             "daily_run_id": daily_run_id,
             "briefing_id": briefing.id,
             "inbox_items_count": len(inbox_res),
+            "inbox_new_count": inbox_counts.get("new", 0),
+            "inbox_updated_count": inbox_counts.get("updated", 0),
+            "inbox_corrected_count": inbox_counts.get("corrected", 0),
+            "inbox_carried_forward_count": inbox_counts.get("carried_forward", 0),
             "signals_run": run_record.model_dump(),
         }
     except Exception as e:

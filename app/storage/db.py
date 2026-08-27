@@ -3049,6 +3049,72 @@ class Database:
         cursor.execute(query, params)
         return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
 
+    def get_inbox_items_by_surface_date(
+        self,
+        surface_date: str,
+        include_expired: bool = False,
+        include_suppressed: bool = False,
+        limit: Optional[int] = None,
+    ) -> List[InboxItem]:
+        """Returns inbox items materialized for an EXACT surface_date snapshot.
+
+        This is the date-specific immutable snapshot query: it never returns
+        historically active rows from other days.
+        """
+        cursor = self.conn.cursor()
+        if include_expired:
+            state_filter = ""
+        elif include_suppressed:
+            state_filter = " AND state NOT IN ('expired', 'archived')"
+        else:
+            state_filter = " AND state IN ('unseen', 'seen', 'opened', 'starred')"
+        query = f"SELECT * FROM inbox_items WHERE surface_date = ?{state_filter} ORDER BY inbox_score DESC"
+        params: List[Any] = [surface_date]
+        if limit is not None and limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+        cursor.execute(query, params)
+        return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
+
+    def get_inbox_items_by_daily_run_id(
+        self,
+        daily_run_id: str,
+        limit: Optional[int] = None,
+    ) -> List[InboxItem]:
+        """Returns inbox items produced by an EXACT daily_run_id."""
+        cursor = self.conn.cursor()
+        query = "SELECT * FROM inbox_items WHERE daily_run_id = ? ORDER BY inbox_score DESC"
+        params: List[Any] = [daily_run_id]
+        if limit is not None and limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+        cursor.execute(query, params)
+        return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
+
+    def get_active_inbox_items_for_date(
+        self,
+        surface_date: str,
+        limit: Optional[int] = None,
+    ) -> List[InboxItem]:
+        """Returns active inbox items for the requested runtime-local date.
+
+        Includes legacy rows with no surface_date (NULL) so pre-snapshot data
+        remains visible, but never returns dated rows from other days.
+        """
+        cursor = self.conn.cursor()
+        query = (
+            "SELECT * FROM inbox_items "
+            "WHERE state IN ('unseen', 'seen', 'opened', 'starred') "
+            "AND (surface_date IS NULL OR surface_date = ?) "
+            "ORDER BY inbox_score DESC"
+        )
+        params: List[Any] = [surface_date]
+        if limit is not None and limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+        cursor.execute(query, params)
+        return [self._row_to_inbox_item(r) for r in cursor.fetchall()]
+
     def get_inbox_items_by_state(self, state: str) -> List[InboxItem]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM inbox_items WHERE state = ? ORDER BY inbox_score DESC", (state,))
@@ -3087,12 +3153,17 @@ class Database:
             now = datetime.now(timezone.utc)
         now_str = now.isoformat()
         cursor = self.conn.cursor()
-        # Expire non-starred items whose expires_at is in the past and state != 'expired'
+        # Expire non-starred items whose expires_at is in the past and state != 'expired'.
+        # Phase 4 Req 3: TTL expiry applies only to legacy rows without a
+        # surface_date. Date-specific snapshot rows are governed by the daily
+        # materialization lifecycle (prior-day suppression), not by the TTL,
+        # so they remain recoverable as carry-forward candidates.
         cursor.execute(
             """
             UPDATE inbox_items
             SET state = 'expired'
             WHERE expires_at <= ? AND is_starred = 0 AND state != 'expired'
+              AND surface_date IS NULL
             """,
             (now_str,),
         )

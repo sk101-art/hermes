@@ -87,6 +87,7 @@ def tool_get_today_inbox(args: Dict[str, Any], db: Optional[Database] = None) ->
             section=validated.section,
             limit=validated.limit,
             db=db,
+            surface_date=validated.date,
         )
         return {"count": len(items), "inbox_items": items}
     except Exception as e:

@@ -219,6 +219,11 @@ export function renderInboxCard(item) {
   const savedBadge = isStarred
     ? '<span class="inbox-state-badge state-saved" data-state="starred" aria-label="Saved in personal library">&#9733; Saved</span>'
     : '';
+  // Phase 4 Req 3: carried-forward items are explicitly labeled and never
+  // presented as newly published / newly released.
+  const carriedBadge = item.freshness_kind === 'carried_forward'
+    ? '<span class="inbox-state-badge state-carried" data-state="carried_forward" aria-label="Carried forward from a previous day">Carried Forward</span>'
+    : '';
 
   const reasonChips = reasons.map((rc) => {
     const isWeakening = rc.includes('weakened') || rc.includes('contradict') || rc.includes('risk');
@@ -266,6 +271,7 @@ export function renderInboxCard(item) {
           ${typeHtml || ''}
           ${stateBadge}
           ${savedBadge}
+          ${carriedBadge}
         </div>
         <div class="inbox-meta-right">
           ${expiryHtml}

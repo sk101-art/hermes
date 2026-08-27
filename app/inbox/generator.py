@@ -35,6 +35,11 @@ def load_inbox_config() -> Dict[str, Any]:
         "max_must_know": 5,
         "max_project_items_per_project": 6,
         "max_section_items": 6,
+        # Carried-forward policy: only unresolved high-value / project-critical
+        # items may carry forward, under an explicit cap. A quiet day may be 0.
+        "max_carried_forward": 5,
+        "carry_forward_min_score": 0.60,
+        "carry_forward_min_project_impact": 0.70,
         "briefing": {
             "target_items": 15,
             "max_items": 20,
@@ -318,6 +323,24 @@ def calculate_inbox_score(
     return inbox_score, reasons, item_type, breakdown
 
 
+class InboxMaterializationResult(list):
+    """Active inbox items for one date-specific immutable snapshot.
+
+    Behaves exactly like the list of active ``InboxItem`` objects (len, iter,
+    indexing, equality) so existing callers keep working, and additionally
+    exposes freshness counts:
+      - ``counts["new"]``             first surfaced on this snapshot date
+      - ``counts["updated"]``         new source event or intelligence change today
+      - ``counts["corrected"]``       items in the corrections_updates section
+      - ``counts["carried_forward"]`` unresolved high-value items carried over
+    """
+
+    def __init__(self, items: List[InboxItem], counts: Dict[str, int], surface_date: str):
+        super().__init__(items)
+        self.counts = counts
+        self.surface_date = surface_date
+
+
 def generate_daily_inbox(
     db: Database,
     lookback_hours: Optional[int] = None,
@@ -370,7 +393,29 @@ def generate_daily_inbox(
         if rebuild_today:
             db.conn.execute("UPDATE inbox_items SET state = 'suppressed' WHERE state IN ('unseen', 'seen', 'opened')")
             db.conn.commit()
-        db.conn.execute("UPDATE inbox_items SET state = 'expired' WHERE expires_at < ? AND is_starred = 0 AND state NOT IN ('expired', 'archived')", (now.isoformat(),))
+        # Phase 4 Req 3: at daily materialization, suppress prior-day
+        # non-starred active items WITHOUT deleting history. Dated snapshot
+        # rows from earlier days must never remain active and pollute Today.
+        # Starred items survive; strictly-earlier dates only (catch-up runs
+        # for a past date never suppress the current day's active items).
+        # This runs BEFORE TTL expiry so prior-day items stay recoverable as
+        # carry-forward candidates instead of being hard-expired.
+        db.conn.execute(
+            "UPDATE inbox_items SET state = 'suppressed' "
+            "WHERE state IN ('unseen', 'seen', 'opened') AND is_starred = 0 "
+            "AND surface_date IS NOT NULL AND surface_date < ?",
+            (today_local_date,),
+        )
+        db.conn.commit()
+        # TTL expiry applies only to legacy rows without a surface_date.
+        # Date-specific snapshot rows are governed by the daily materialization
+        # lifecycle (suppression above), not by the 24-hour TTL.
+        db.conn.execute(
+            "UPDATE inbox_items SET state = 'expired' "
+            "WHERE expires_at < ? AND is_starred = 0 AND surface_date IS NULL "
+            "AND state NOT IN ('expired', 'archived')",
+            (now.isoformat(),),
+        )
         db.conn.commit()
 
     all_clusters = db.get_all_clusters()
@@ -495,49 +540,19 @@ def generate_daily_inbox(
     eligible_candidates = [c for c in candidate_records if not c["rejection_reason"]]
     eligible_candidates.sort(key=lambda c: (c["score"], c["breakdown"]["project_impact"]), reverse=True)
 
-    # Active vs Suppressed selection with section caps
-    section_counts: Dict[str, int] = defaultdict(int)
-    active_count = 0
-    active_items: List[InboxItem] = []
+    # Phase 4 Req 3: freshness is computed BEFORE selection so carried-forward
+    # candidates can be gated by the explicit carry-forward policy.
+    start_utc, end_utc = runtime_day_bounds_utc(today_local_date, runtime_config)
+    max_carried = int(cfg.get("max_carried_forward", 5))
+    carry_min_score = float(cfg.get("carry_forward_min_score", 0.60))
+    carry_min_impact = float(cfg.get("carry_forward_min_project_impact", 0.70))
 
     for c in eligible_candidates:
-        sec = c["section"]
-        cluster = c["cluster"]
         existing_inbox = c["existing_inbox"]
-        saved_item = c["saved_item"]
-        latest_event_dt = c["latest_event_dt"]
-        user_facing_changes = c["user_facing_changes"]
-
-        # Check section cap and daily cap
-        cap_for_sec = section_caps.get(sec, 5)
-        is_starred = bool(saved_item and saved_item.is_active)
-
-        if (section_counts[sec] < cap_for_sec and active_count < max_items) or is_starred:
-            if is_starred:
-                state = "starred"
-            elif existing_inbox and existing_inbox.state in ("seen", "opened"):
-                state = existing_inbox.state
-            else:
-                state = "unseen"
-
-            section_counts[sec] += 1
-            active_count += 1
-            c["selected"] = True
-            c["final_state"] = state
-        else:
-            state = "suppressed"
-            c["selected"] = False
-            c["final_state"] = state
-            c["rejection_reason"] = "section_cap" if section_counts[sec] >= cap_for_sec else "daily_cap"
-
-        inbox_item_id = f"inbox:{cluster.id}:{today_local_date_clean}"
-        matched_pids = [m.project_id for m in c["matches"]]
-
         first_seen_dt = existing_inbox.first_seen_at if (existing_inbox and existing_inbox.first_seen_at) else now
         if first_seen_dt.tzinfo is None:
             first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
-
-        start_utc, end_utc = runtime_day_bounds_utc(today_local_date, runtime_config)
+        c["first_seen_dt"] = first_seen_dt
         is_first_seen_today = (start_utc <= first_seen_dt <= end_utc)
 
         has_new_event_today = False
@@ -552,7 +567,7 @@ def generate_daily_inbox(
 
         has_change_today = False
         last_changed_dt = None
-        for ch in user_facing_changes:
+        for ch in c["user_facing_changes"]:
             ch_created = ch.created_at
             if ch_created.tzinfo is None:
                 ch_created = ch_created.replace(tzinfo=timezone.utc)
@@ -561,12 +576,92 @@ def generate_daily_inbox(
             if start_utc <= ch_created <= end_utc:
                 has_change_today = True
 
-        if is_first_seen_today:
-            freshness_kind = "new"
+        c["last_changed_dt"] = last_changed_dt
+        if existing_inbox is None:
+            # Never surfaced before: this item is new to the inbox regardless
+            # of the wall-clock relationship between now and the surface date.
+            c["freshness_kind"] = "new"
+        elif is_first_seen_today:
+            c["freshness_kind"] = "new"
         elif has_new_event_today or has_change_today:
-            freshness_kind = "updated"
+            c["freshness_kind"] = "updated"
         else:
-            freshness_kind = "carried_forward"
+            c["freshness_kind"] = "carried_forward"
+
+    # Active vs Suppressed selection with section caps + carry-forward gate.
+    # A quiet day may contain zero items: nothing is ever padded to a target.
+    section_counts: Dict[str, int] = defaultdict(int)
+    active_count = 0
+    carried_count = 0
+    active_items: List[InboxItem] = []
+
+    for c in eligible_candidates:
+        sec = c["section"]
+        cluster = c["cluster"]
+        existing_inbox = c["existing_inbox"]
+        saved_item = c["saved_item"]
+        latest_event_dt = c["latest_event_dt"]
+        freshness_kind = c["freshness_kind"]
+        first_seen_dt = c["first_seen_dt"]
+        last_changed_dt = c["last_changed_dt"]
+
+        # Check section cap and daily cap
+        cap_for_sec = section_caps.get(sec, 5)
+        is_starred = bool(saved_item and saved_item.is_active)
+
+        # Phase 4 Req 3: carried-forward candidates are admitted only when
+        # they are unresolved high-value / project-critical items, and only
+        # under the explicit configurable cap. Starred items always survive
+        # and never consume the carry-forward budget.
+        is_carried = freshness_kind == "carried_forward"
+        carry_high_value = (
+            c["score"] >= carry_min_score
+            or c["breakdown"]["project_impact"] >= carry_min_impact
+        )
+
+        if is_carried and not is_starred and not carry_high_value:
+            state = "suppressed"
+            c["selected"] = False
+            c["final_state"] = state
+            c["rejection_reason"] = "carry_forward_not_high_value"
+        elif is_carried and not is_starred and carried_count >= max_carried:
+            state = "suppressed"
+            c["selected"] = False
+            c["final_state"] = state
+            c["rejection_reason"] = "carry_forward_cap"
+        elif (section_counts[sec] < cap_for_sec and active_count < max_items) or is_starred:
+            if is_starred:
+                state = "starred"
+            elif existing_inbox and existing_inbox.state in ("seen", "opened"):
+                state = existing_inbox.state
+            else:
+                state = "unseen"
+
+            section_counts[sec] += 1
+            active_count += 1
+            if is_carried and not is_starred:
+                carried_count += 1
+            c["selected"] = True
+            c["final_state"] = state
+        else:
+            state = "suppressed"
+            c["selected"] = False
+            c["final_state"] = state
+            c["rejection_reason"] = "section_cap" if section_counts[sec] >= cap_for_sec else "daily_cap"
+
+        inbox_item_id = f"inbox:{cluster.id}:{today_local_date_clean}"
+        matched_pids = [m.project_id for m in c["matches"]]
+
+        # Carried items are explicitly labeled and never presented as newly
+        # published / newly released: freshness_kind stays carried_forward,
+        # the item_type is downgraded away from new-release/new-story labels,
+        # and an auditable reason code records the carry-over.
+        item_reasons = list(c["reasons"])
+        if is_carried and "carried_forward" not in item_reasons:
+            item_reasons.append("carried_forward")
+        item_type = c["item_type"]
+        if is_carried and item_type in ("new_release", "new_story"):
+            item_type = "story_update"
 
         item = InboxItem(
             id=inbox_item_id,
@@ -579,7 +674,7 @@ def generate_daily_inbox(
             rank_score=c["score"],
             project_impact_score=c["breakdown"]["project_impact"],
             state=state,
-            item_type=c["item_type"],
+            item_type=item_type,
             created_at=existing_inbox.created_at if existing_inbox and not rebuild_today else now,
             first_seen_at=first_seen_dt,
             last_seen_at=now,
@@ -589,7 +684,7 @@ def generate_daily_inbox(
             is_starred=is_starred,
             saved_item_id=saved_item.id if saved_item else None,
             matched_project_ids=matched_pids,
-            reason_codes=c["reasons"],
+            reason_codes=item_reasons,
             surface_date=today_local_date,
             latest_event_at=latest_event_dt.isoformat() if latest_event_dt else None,
             last_materialized_at=now.isoformat(),
@@ -615,6 +710,18 @@ def generate_daily_inbox(
     if preview:
         return candidate_records
 
-    # Return only active items (unseen, seen, opened, starred)
-    return [it for it in active_items if it.state in ("unseen", "seen", "opened", "starred")]
+    # Return only active items (unseen, seen, opened, starred) as the
+    # date-specific immutable snapshot, with freshness counts.
+    final_active = [it for it in active_items if it.state in ("unseen", "seen", "opened", "starred")]
+    counts = {"new": 0, "updated": 0, "corrected": 0, "carried_forward": 0}
+    for it in final_active:
+        if it.freshness_kind == "new":
+            counts["new"] += 1
+        elif it.freshness_kind == "updated":
+            counts["updated"] += 1
+        elif it.freshness_kind == "carried_forward":
+            counts["carried_forward"] += 1
+        if it.section == "corrections_updates":
+            counts["corrected"] += 1
+    return InboxMaterializationResult(final_active, counts, today_local_date)
 

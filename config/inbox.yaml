@@ -8,6 +8,12 @@
   max_must_know: 5
   max_project_items_per_project: 6
   max_section_items: 6
+  # Carried-forward policy (Phase 4 Req 3): only unresolved high-value /
+  # project-critical items may carry forward, under an explicit cap.
+  # A quiet day may legitimately contain zero items.
+  max_carried_forward: 5
+  carry_forward_min_score: 0.60
+  carry_forward_min_project_impact: 0.70
 
 briefing:
   target_items: 15

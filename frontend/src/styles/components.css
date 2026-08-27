@@ -1627,6 +1627,12 @@
   border: 1px solid #fef08a;
 }
 
+.state-carried {
+  background-color: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
 .inbox-expiry-tag {
   font-size: var(--text-xs);
   color: var(--ink-muted);

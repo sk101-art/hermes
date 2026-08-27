@@ -42,6 +42,8 @@ class SourcesResponse(BaseModel):
 class InboxResponse(BaseModel):
     count: int
     inbox_items: List[Dict[str, Any]]
+    surface_date: Optional[str] = None
+    freshness_counts: Optional[Dict[str, int]] = None
 
 
 class StoriesResponse(BaseModel):
@@ -183,16 +185,53 @@ def get_inbox(
     project: Optional[str] = Query(None, description="Filter by project relevance"),
     section: Optional[str] = Query(None, description="Filter by inbox section"),
     limit: int = Query(20, ge=1, le=50, description="Max results (1-50)"),
+    date: Optional[str] = Query(None, description="Snapshot date in YYYY-MM-DD format (defaults to current runtime-local date)"),
     db: Database = Depends(get_db),
 ):
+    # Phase 4 Req 3: /inbox defaults to the current runtime-local date and
+    # never returns every historically active row.
+    if date is not None:
+        date_clean = date.strip()
+        try:
+            parsed = datetime.strptime(date_clean, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != date_clean:
+                raise ValueError()
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid date format '{date}'. Expected valid calendar date in YYYY-MM-DD format.")
+        target_date = date_clean
+    else:
+        config = load_runtime_config()
+        target_date = runtime_date_string(datetime.now(timezone.utc), config)
+
     items = intel_service.get_today_inbox(
         unseen_only=unseen_only,
         project=project,
         section=section,
         limit=limit,
         db=db,
+        surface_date=target_date,
     )
-    return {"count": len(items), "inbox_items": items}
+
+    # Freshness counts describe the FULL date-specific snapshot, not the
+    # filtered page: new / updated / corrected / carried_forward.
+    snapshot_items = db.get_inbox_items_by_surface_date(target_date)
+    freshness_counts = {"new": 0, "updated": 0, "corrected": 0, "carried_forward": 0}
+    for it in snapshot_items:
+        if it.freshness_kind == "new":
+            freshness_counts["new"] += 1
+        elif it.freshness_kind == "updated":
+            freshness_counts["updated"] += 1
+        elif it.freshness_kind == "carried_forward":
+            freshness_counts["carried_forward"] += 1
+        if it.section == "corrections_updates":
+            freshness_counts["corrected"] += 1
+
+    return {
+        "count": len(items),
+        "inbox_items": items,
+        "surface_date": target_date,
+        "freshness_counts": freshness_counts,
+    }
 
 
 @router.get("/briefing", summary="Daily morning briefing")
