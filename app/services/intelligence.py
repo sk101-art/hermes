@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -1001,6 +1002,31 @@ def get_morning_brief(
             final_sections[sec] = items_by_section[sec]
             ordered_sections.append(sec)
 
+    # Phase 4 Req 5: enrich the briefing response with the daily-run state,
+    # revision history, last successful briefing link and a source contribution
+    # summary so the Briefing view can render every required state.
+    # Single fixed lookup: the run id is deterministic (daily-run:<date>), so
+    # querying by date covers both linked and unlinked briefings.
+    daily_run = db.get_daily_signal_run_by_date(briefing.briefing_date)
+
+    source_contribution: Dict[str, Any] = {}
+    raw_source_status = briefing.source_status_json or (daily_run.source_status_json if daily_run else None)
+    if raw_source_status:
+        try:
+            parsed = json.loads(raw_source_status)
+            if isinstance(parsed, dict):
+                if "sources_polled" in parsed:
+                    source_contribution = {
+                        "sources_polled": parsed.get("sources_polled", []),
+                        "sources_skipped": parsed.get("sources_skipped", []),
+                        "sources_failed": parsed.get("sources_failed", []),
+                    }
+                else:
+                    # Briefing-level {source: health_status} map.
+                    source_contribution = {"source_health": parsed}
+        except (ValueError, TypeError):
+            source_contribution = {}
+
     return {
         "id": briefing.id,
         "briefing_date": briefing.briefing_date,
@@ -1018,4 +1044,9 @@ def get_morning_brief(
         "source_status_json": briefing.source_status_json,
         "daily_run_id": briefing.daily_run_id,
         "original_generated_at": briefing.original_generated_at,
+        # Phase 4 Req 5 additions:
+        "daily_run": daily_run.model_dump() if daily_run else None,
+        "revision_count": db.count_briefing_revisions(briefing.id),
+        "last_successful_briefing_date": db.get_last_successful_briefing_date(briefing.briefing_date),
+        "source_contribution": source_contribution,
     }

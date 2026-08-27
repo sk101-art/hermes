@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ from app.models.schemas import DailyBriefing, DailyBriefingItem, InboxItem
 from app.storage.db import Database
 from app.runtime.timezone import get_effective_timezone, runtime_date_string, to_runtime_local
 from app.runtime.state import load_runtime_config
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -194,6 +197,15 @@ def generate_morning_briefing(
     existing = db.get_daily_briefing(target_date)
     if existing and not refresh:
         return existing
+
+    # Phase 4 Req 5: never replace a successful historical briefing when
+    # refreshing today. Snapshot the existing successful briefing into an
+    # immutable revision BEFORE regenerating, so the prior state survives.
+    if existing and refresh and existing.generation_status in ("completed", "completed_empty"):
+        try:
+            db.create_briefing_revision(existing.id)
+        except Exception as rev_err:
+            logger.warning(f"Could not create briefing revision before refresh for {target_date}: {rev_err}")
 
     original_generated_at = None
     if existing:

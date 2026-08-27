@@ -171,7 +171,10 @@ def test_generate_morning_briefing_separate_inbox_and_rank_scores(test_db):
 
 
 def test_get_morning_brief_no_n_plus_one_bounded_queries(test_db):
-    """Proves get_morning_brief executes in <= 3 queries regardless of item count."""
+    """Proves get_morning_brief executes a fixed, bounded number of queries
+    regardless of item count (no N+1). Phase 4 Req 5 added three fixed
+    enrichment lookups (daily run, revision count, last successful date) to
+    the original three (briefing, items, batched cluster existence)."""
     now = datetime(2026, 8, 20, 8, 0, 0, tzinfo=timezone.utc)
 
     # Insert 15 distinct items
@@ -196,9 +199,12 @@ def test_get_morning_brief_no_n_plus_one_bounded_queries(test_db):
         res = get_morning_brief(date_str="2026-08-20", db=test_db)
 
     assert res is not None
-    # Must execute exactly at most 3 queries: daily_briefings, daily_briefing_items, story_clusters IN (...)
+    # Fixed/batched budget: daily_briefings, daily_briefing_items,
+    # story_clusters IN (...), daily_signal_runs, daily_briefing_revisions
+    # COUNT, last-successful briefing date. All are constant-count regardless
+    # of item count — no per-item queries.
     select_queries = [q for q in counter.queries if "SELECT" in q.upper()]
-    assert len(select_queries) <= 3, f"Expected <= 3 SELECT queries, got {len(select_queries)}: {select_queries}"
+    assert len(select_queries) <= 6, f"Expected <= 6 SELECT queries, got {len(select_queries)}: {select_queries}"
 
 
 def test_get_morning_brief_no_live_claim_reconstruction(test_db):

@@ -878,6 +878,16 @@ def run_daily_refresh(
         new_signals = ingest_res.get("events_ingested", 0) or 0
         updated_signals = semantic_res.get("events_processed", 0)
         carried_signals = (getattr(inbox_res, "counts", None) or {}).get("carried_forward", 0)
+        # Phase 4 Req 5: truthful terminal statuses for every daily cycle:
+        # - partial_sources: usable results exist but some sources failed
+        # - completed_empty: a valid quiet day (zero qualifying items)
+        # - completed: qualifying items exist
+        if ingest_res.get("sources_failed"):
+            run_status = "partial_sources"
+        elif (briefing.total_items or 0) == 0:
+            run_status = "completed_empty"
+        else:
+            run_status = "completed"
         run_record = DailySignalRun(
             id=daily_run_id,
             runtime_date=surface_date,
@@ -886,7 +896,7 @@ def run_daily_refresh(
             started_at=now,
             completed_at=completed_at,
             data_cutoff_at=data_cutoff_at,
-            status="completed" if not ingest_res.get("sources_failed") else "partial_sources",
+            status=run_status,
             new_signal_count=new_signals,
             updated_signal_count=updated_signals,
             carried_signal_count=carried_signals,

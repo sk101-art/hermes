@@ -3418,7 +3418,31 @@ class Database:
         if not row:
             return None
         return self._row_to_daily_briefing(row)
- 
+
+    def get_last_successful_briefing_date(self, before_date: str) -> Optional[str]:
+        """Returns the most recent briefing date strictly before `before_date`
+        whose generation succeeded (completed or a valid completed_empty quiet
+        day). Used for the "last successful briefing" link on failed days."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT briefing_date FROM daily_briefings "
+            "WHERE briefing_date < ? AND generation_status IN ('completed', 'completed_empty') "
+            "ORDER BY briefing_date DESC LIMIT 1",
+            (before_date,),
+        )
+        row = cursor.fetchone()
+        return row["briefing_date"] if row else None
+
+    def count_briefing_revisions(self, briefing_id: str) -> int:
+        """Returns the number of immutable revisions recorded for a briefing."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM daily_briefing_revisions WHERE briefing_id = ?",
+            (briefing_id,),
+        )
+        row = cursor.fetchone()
+        return int(row["n"]) if row else 0
+
     def create_briefing_revision(self, briefing_id: str) -> Optional[str]:
         """Snapshots the current briefing state into a new immutable revision record."""
         def _operation(cursor):

@@ -251,7 +251,9 @@ def test_failed_daily_cycle_retries_with_incremented_retry_count(tmp_path, monke
 
     saved = db.get_daily_signal_run_by_date(today)
     assert saved is not None
-    assert saved.status == "completed"
+    # Phase 4 Req 5: truthful terminal statuses — a zero-item briefing settles
+    # the day as completed_empty, not completed.
+    assert saved.status == "completed_empty"
     assert saved.retry_count == 1  # incremented from the failed attempt
     assert saved.briefing_id == f"briefing:{today}"
     db.close()

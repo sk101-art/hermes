@@ -5,8 +5,9 @@ import { operationManager } from '../state/operation-manager.js';
  * @param {HTMLElement} parentElement - Where to render the control
  * @param {string} scope - The operation scope ('daily_refresh', 'project_scan', etc.)
  * @param {Function} [onComplete] - Callback triggered when the refresh finishes successfully
+ * @param {string} [label] - Button label (default "Sync Data"; e.g. "Run Daily Refresh")
  */
-export function renderRefreshControl(parentElement, scope, onComplete = null) {
+export function renderRefreshControl(parentElement, scope, onComplete = null, label = 'Sync Data') {
   if (!parentElement) return () => {};
 
   const btnId = `btn-refresh-${scope}`;
@@ -16,11 +17,11 @@ export function renderRefreshControl(parentElement, scope, onComplete = null) {
 
   parentElement.innerHTML = `
     <div class="refresh-control-container flex items-center gap-4" style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--space-2);">
-      <button type="button" id="${btnId}" class="btn btn-sm btn-outline" ${initiallyActive ? 'disabled' : ''} style="display:inline-flex;align-items:center;gap:var(--space-1);">
+      <button type="button" id="${btnId}" class="btn btn-sm btn-outline" aria-label="${label}" ${initiallyActive ? 'disabled' : ''} style="display:inline-flex;align-items:center;gap:var(--space-1);">
         <span class="refresh-icon">🔄</span>
-        <span class="refresh-label">Sync Data</span>
+        <span class="refresh-label">${label}</span>
       </button>
-      <span id="${statusId}" class="refresh-status text-sm text-muted" style="font-size:var(--text-sm);margin-left:var(--space-2);"></span>
+      <span id="${statusId}" class="refresh-status text-sm text-muted" role="status" aria-live="polite" style="font-size:var(--text-sm);margin-left:var(--space-2);"></span>
     </div>
   `;
 

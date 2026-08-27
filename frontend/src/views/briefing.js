@@ -220,6 +220,90 @@ function renderDateToolbar(activeDate, todayIso) {
 }
 
 /**
+ * Renders state banners from the enriched /briefing payload:
+ * quiet day (completed_empty), failed (retry + last-successful link),
+ * running progress, partial sources, source contribution, revision note.
+ */
+export function renderBriefingStateBanner(briefing) {
+  const status = briefing.generation_status || 'completed';
+  const dailyRun = briefing.daily_run || null;
+  const parts = [];
+
+  if (status === 'completed_empty') {
+    parts.push(`
+      <div class="panel briefing-state-panel briefing-state-quiet" role="status" style="border-left:3px solid var(--state-info, #2563eb);padding:var(--space-6);">
+        <h2 style="margin-bottom:var(--space-2);">Quiet Day — No Qualifying Signals</h2>
+        <p class="text-muted" style="line-height:var(--leading-relaxed);">
+          HERMES completed today's refresh; no signals passed relevance/quality thresholds.
+          This is a truthful zero-item snapshot — nothing was padded or fabricated.
+        </p>
+      </div>
+    `);
+  } else if (status === 'failed') {
+    const failedAt = dailyRun && dailyRun.completed_at ? formatTime(dailyRun.completed_at) : 'an unknown time';
+    const errorText = (dailyRun && dailyRun.error_summary) ? dailyRun.error_summary : 'No error details were recorded.';
+    const nextRetry = briefing.next_retry_at ? formatTime(briefing.next_retry_at) : '';
+    const lastGood = briefing.last_successful_briefing_date;
+    parts.push(`
+      <div class="panel briefing-state-panel briefing-state-failed" role="alert" style="border-left:3px solid var(--state-danger, #dc2626);padding:var(--space-6);">
+        <h2 style="margin-bottom:var(--space-2);">Daily Refresh Failed</h2>
+        <p class="text-muted">The daily intelligence cycle for this date failed at <strong>${escapeHtml(failedAt)}</strong>. No briefing snapshot was written for this day.</p>
+        <p class="text-sm" style="margin-top:var(--space-2);"><span class="text-semibold">Error:</span> <span class="mono">${escapeHtml(errorText)}</span></p>
+        ${nextRetry ? `<p class="text-sm" style="margin-top:var(--space-1);"><span class="text-semibold">Next automatic retry:</span> ${escapeHtml(nextRetry)}</p>` : ''}
+        ${lastGood ? `<p class="text-sm" style="margin-top:var(--space-2);">Latest available briefing: <a href="#/briefing?date=${encodeURIComponent(lastGood)}" class="briefing-last-success-link">${escapeHtml(lastGood)}</a></p>` : ''}
+      </div>
+    `);
+  } else if (status === 'running') {
+    const opId = (dailyRun && dailyRun.id) || briefing.daily_run_id || '';
+    parts.push(`
+      <div class="panel briefing-state-panel briefing-state-running" role="status" style="border-left:3px solid var(--state-info, #2563eb);padding:var(--space-6);">
+        <h2 style="margin-bottom:var(--space-2);">Daily Refresh In Progress</h2>
+        <p class="text-muted">The daily intelligence cycle for this date is currently running. The briefing snapshot will appear when the cycle completes.</p>
+        ${opId ? `<p class="text-sm" style="margin-top:var(--space-2);"><span class="text-semibold">Run ID:</span> <span class="mono">${escapeHtml(opId)}</span></p>` : ''}
+      </div>
+    `);
+  }
+
+  if (status === 'partial_sources') {
+    const sc = briefing.source_contribution || {};
+    const failedSources = ensureArray(sc.sources_failed);
+    parts.push(`
+      <div class="panel briefing-state-panel briefing-state-partial" role="status" style="border-left:3px solid var(--state-warning, #d97706);padding:var(--space-4);">
+        <p class="text-sm"><span class="text-semibold">Partial source coverage:</span> ${failedSources.length ? `the following sources failed during this cycle: ${failedSources.map(s => `<span class="mono">${escapeHtml(s)}</span>`).join(', ')}.` : 'one or more sources failed during this cycle.'} Results may be incomplete.</p>
+      </div>
+    `);
+  }
+
+  // Source contribution summary (counts of polled/skipped/failed)
+  const sc = briefing.source_contribution || {};
+  const polled = ensureArray(sc.sources_polled);
+  const skipped = ensureArray(sc.sources_skipped);
+  const failed = ensureArray(sc.sources_failed);
+  if (polled.length || skipped.length || failed.length) {
+    parts.push(`
+      <div class="panel briefing-source-contribution" style="padding:var(--space-4);">
+        <h3 class="text-sm text-semibold" style="margin-bottom:var(--space-2);">Source Contribution</h3>
+        <div class="text-sm text-muted" style="display:flex;gap:var(--space-4);flex-wrap:wrap;">
+          <span>Polled: <strong>${polled.length}</strong></span>
+          <span>Skipped: <strong>${skipped.length}</strong></span>
+          <span>Failed: <strong>${failed.length}</strong></span>
+        </div>
+      </div>
+    `);
+  }
+
+  // Revision note when the snapshot has been revised instead of replaced
+  const revisionCount = briefing.revision_count ?? 0;
+  if (revisionCount > 0) {
+    parts.push(`
+      <p class="text-xs text-muted briefing-revision-note">This briefing has been revised ${revisionCount} time${revisionCount === 1 ? '' : 's'} since its original generation. The original snapshot is preserved in revision history.</p>
+    `);
+  }
+
+  return parts.join('\n');
+}
+
+/**
  * Renders an individual briefing snapshot item.
  */
 export function renderBriefingItemCard(item) {
@@ -351,6 +435,8 @@ export async function renderBriefingView(container, store, params = {}) {
 
     const hasItems = (briefing.total_items > 0) || (orderedSections.some(secKey => sections[secKey] && sections[secKey].length > 0));
     const briefingDateStr = briefing.briefing_date || activeDate;
+    const generationStatus = briefing.generation_status || 'completed';
+    const isRunOnlyState = generationStatus === 'failed' || generationStatus === 'running';
 
     let sectionsHtml = '';
     if (hasItems) {
@@ -371,7 +457,10 @@ export async function renderBriefingView(container, store, params = {}) {
           </section>
         `;
       }
-    } else {
+    } else if (generationStatus === 'completed_empty') {
+      // Quiet-day panel is rendered via the state banner; no padding.
+      sectionsHtml = '';
+    } else if (!isRunOnlyState) {
       sectionsHtml = `
         <div class="panel" style="padding:var(--space-8);text-align:center;">
           <p class="text-muted">No items recorded in this briefing digest.</p>
@@ -379,23 +468,17 @@ export async function renderBriefingView(container, store, params = {}) {
       `;
     }
 
-    const html = `
-      <div id="briefing-announcer" class="sr-only" aria-live="polite" aria-atomic="true">
-        Briefing for ${escapeHtml(briefingDateStr)} loaded with ${briefing.total_items ?? 0} items.
-      </div>
+    let announcerText = `Briefing for ${briefingDateStr} loaded with ${briefing.total_items ?? 0} items.`;
+    if (generationStatus === 'completed_empty') {
+      announcerText = `Daily refresh for ${briefingDateStr} completed with no qualifying signals.`;
+    } else if (generationStatus === 'failed') {
+      announcerText = `Daily refresh for ${briefingDateStr} failed. Showing failure details and retry information.`;
+    } else if (generationStatus === 'running') {
+      announcerText = `Daily refresh for ${briefingDateStr} is in progress.`;
+    }
 
-      <div class="page-header-container">
-        <div>
-          <span class="eyebrow">Daily Intelligence</span>
-          <h1>Morning Briefing</h1>
-          <p class="lead">A date-addressable engineering read: what deserved attention, why it was selected, and historical intelligence snapshots.</p>
-        </div>
-        <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
-          ${renderDateToolbar(briefingDateStr, todayIso)}
-          <div id="briefing-refresh-container"></div>
-        </div>
-      </div>
-
+    const stateBannerHtml = renderBriefingStateBanner(briefing);
+    const summaryPanelHtml = isRunOnlyState ? '' : `
       <div class="briefing-summary-panel">
         <div style="display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap;">
           <div>
@@ -436,6 +519,28 @@ export async function renderBriefingView(container, store, params = {}) {
           </div>
         </div>
       </div>
+    `;
+
+    const html = `
+      <div id="briefing-announcer" class="sr-only" aria-live="polite" aria-atomic="true">
+        ${announcerText}
+      </div>
+
+      <div class="page-header-container">
+        <div>
+          <span class="eyebrow">Daily Intelligence</span>
+          <h1>Morning Briefing</h1>
+          <p class="lead">A date-addressable engineering read: what deserved attention, why it was selected, and historical intelligence snapshots.</p>
+        </div>
+        <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+          ${renderDateToolbar(briefingDateStr, todayIso)}
+          <div id="briefing-refresh-container"></div>
+        </div>
+      </div>
+
+      ${stateBannerHtml}
+
+      ${summaryPanelHtml}
 
       <div class="briefing-content-area">
         ${sectionsHtml}
@@ -447,9 +552,9 @@ export async function renderBriefingView(container, store, params = {}) {
 
     const refreshContainer = container.querySelector('#briefing-refresh-container');
     if (refreshContainer) {
-      const cleanup = renderRefreshControl(refreshContainer, 'morning_brief', () => {
+      const cleanup = renderRefreshControl(refreshContainer, 'daily_refresh', () => {
         renderBriefingView(container, store, params);
-      });
+      }, 'Run Daily Refresh');
       container._viewCleanup = cleanup;
     }
 
@@ -494,9 +599,9 @@ export async function renderBriefingView(container, store, params = {}) {
 
       const refreshContainer = container.querySelector('#briefing-refresh-container');
       if (refreshContainer) {
-        const cleanup = renderRefreshControl(refreshContainer, 'morning_brief', () => {
+        const cleanup = renderRefreshControl(refreshContainer, 'daily_refresh', () => {
           renderBriefingView(container, store, params);
-        });
+        }, 'Run Daily Refresh');
         container._viewCleanup = cleanup;
       }
     } else if (err.status === 422) {

@@ -1,9 +1,11 @@
+import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
+from app.runtime.sanitization import sanitize_error_summary
 from app.runtime.state import load_runtime_config
 from app.runtime.timezone import runtime_date_string
 from app.services import claims as claims_service
@@ -254,6 +256,63 @@ def get_briefing(
 
     briefing = intel_service.get_morning_brief(date_str=target_date, db=db)
     if not briefing:
+        # Phase 4 Req 5A: on a failed (or still-running) daily cycle no briefing
+        # row is written. Surface the daily-run state instead of a bare 404 so
+        # the Briefing view can render failed/running states with retry info.
+        run = db.get_daily_signal_run_by_date(target_date)
+        if run is not None and run.status in ("failed", "running"):
+            run_dump = run.model_dump(mode="json")
+            run_dump["error_summary"] = sanitize_error_summary(run.error_summary)
+
+            next_retry_at = None
+            if run.status == "failed" and run.completed_at is not None:
+                config = load_runtime_config()
+                retry_minutes = (
+                    config.get("jobs", {})
+                    .get("daily_refresh", {})
+                    .get("retry_interval_minutes", 15)
+                )
+                next_retry_at = (run.completed_at + timedelta(minutes=retry_minutes)).isoformat()
+
+            source_contribution: Dict[str, Any] = {}
+            if run.source_status_json:
+                try:
+                    parsed = json.loads(run.source_status_json)
+                    if isinstance(parsed, dict):
+                        if "sources_polled" in parsed:
+                            source_contribution = {
+                                "sources_polled": parsed.get("sources_polled", []),
+                                "sources_skipped": parsed.get("sources_skipped", []),
+                                "sources_failed": parsed.get("sources_failed", []),
+                            }
+                        else:
+                            source_contribution = {"source_health": parsed}
+                except (ValueError, TypeError):
+                    source_contribution = {}
+
+            return {
+                "id": None,
+                "briefing_date": target_date,
+                "generated_at": None,
+                "total_items": 0,
+                "high_priority_count": 0,
+                "project_relevant_count": 0,
+                "content_hash": "",
+                "summary_text": None,
+                "sections": {},
+                "ordered_sections": [],
+                "runtime_timezone": run.runtime_timezone,
+                "data_cutoff_at": run.data_cutoff_at.isoformat() if isinstance(run.data_cutoff_at, datetime) else run.data_cutoff_at,
+                "generation_status": run.status,
+                "source_status_json": run.source_status_json,
+                "daily_run_id": run.id,
+                "original_generated_at": None,
+                "daily_run": run_dump,
+                "revision_count": 0,
+                "last_successful_briefing_date": db.get_last_successful_briefing_date(target_date),
+                "source_contribution": source_contribution,
+                "next_retry_at": next_retry_at,
+            }
         raise HTTPException(status_code=404, detail=f"No briefing found for date '{target_date}'")
     return briefing
 
