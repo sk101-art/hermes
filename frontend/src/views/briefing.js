@@ -13,7 +13,7 @@ import {
   renderInboxRankBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
-import { renderRefreshControl } from '../components/refresh-control.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 
 let activeBriefingRequestToken = 0;
@@ -416,7 +416,24 @@ export async function renderBriefingView(container, store, params = {}) {
   const requestedDate = params && params.date ? params.date.trim() : '';
   const activeDate = requestedDate || todayIso;
 
-  container.innerHTML = renderLoadingState(`Loading morning briefing digest for ${escapeHtml(activeDate)}…`);
+  // Shell-first: paint the route header (h1) synchronously before any await so
+  // hash transitions resolve quickly; content fills in after the fetch.
+  container.innerHTML = `
+    <div class="page-header-container">
+      <div>
+        <span class="eyebrow">Daily Intelligence</span>
+        <h1>Morning Briefing</h1>
+        <p class="lead">A date-addressable engineering read: what deserved attention, why it was selected, and historical intelligence snapshots.</p>
+      </div>
+      <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+        ${renderDateToolbar(activeDate, todayIso)}
+        <div id="briefing-refresh-container"></div>
+      </div>
+    </div>
+    <div class="briefing-content-area">
+      ${renderLoadingState(`Loading morning briefing digest for ${escapeHtml(activeDate)}…`)}
+    </div>
+  `;
 
   try {
     const apiParams = requestedDate ? { date: requestedDate } : {};
@@ -552,13 +569,18 @@ export async function renderBriefingView(container, store, params = {}) {
 
     const refreshContainer = container.querySelector('#briefing-refresh-container');
     if (refreshContainer) {
-      const cleanup = renderRefreshControl(refreshContainer, 'daily_refresh', () => {
-        renderBriefingView(container, store, params);
-      }, 'Run Daily Refresh');
+      const cleanup = renderSurfaceControls(refreshContainer, {
+        scope: 'daily_refresh',
+        onRefresh: () => renderBriefingView(container, store, params),
+        syncLabel: 'Sync Data',
+      });
       container._viewCleanup = cleanup;
     }
 
   } catch (err) {
+    // Navigation aborted the in-flight fetch: the container now belongs to
+    // the next view, so never write a stale error state into it.
+    if (err && err.isAborted && !err.isTimeout) return;
     if (requestToken !== activeBriefingRequestToken) return;
 
     if (err.isNetworkError) {
@@ -599,9 +621,11 @@ export async function renderBriefingView(container, store, params = {}) {
 
       const refreshContainer = container.querySelector('#briefing-refresh-container');
       if (refreshContainer) {
-        const cleanup = renderRefreshControl(refreshContainer, 'daily_refresh', () => {
-          renderBriefingView(container, store, params);
-        }, 'Run Daily Refresh');
+        const cleanup = renderSurfaceControls(refreshContainer, {
+          scope: 'daily_refresh',
+          onRefresh: () => renderBriefingView(container, store, params),
+          syncLabel: 'Sync Data',
+        });
         container._viewCleanup = cleanup;
       }
     } else if (err.status === 422) {

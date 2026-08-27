@@ -12,6 +12,7 @@ import {
   renderProjectRelevanceBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 
 /**
@@ -99,7 +100,38 @@ export async function renderProjectsView(container, store, routeParams = {}) {
  */
 async function renderProjectIndexView(container, store) {
   const reqGen = requestManager.nextGeneration('projects');
-  container.innerHTML = renderLoadingState('Loading local engineering projects…');
+
+  // Shell-first: paint the route header (h1) synchronously before any await so
+  // hash transitions resolve quickly; content fills in after the fetch.
+  container.innerHTML = `
+    <div class="page-header-container">
+      <div>
+        <span class="eyebrow">Context Intelligence</span>
+        <h1>My Projects</h1>
+        <p class="lead">HERMES processes local repository source code, configuration, manifests, and documentation to build technology profiles and relevant engineering context.</p>
+      </div>
+      <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+        <div id="projects-refresh-container"></div>
+        <div>
+          <strong id="projects-active-count">—</strong>
+          <span id="projects-active-label">active projects</span>
+        </div>
+      </div>
+    </div>
+    <div id="projects-content-region">
+      ${renderLoadingState('Loading local engineering projects…')}
+    </div>
+  `;
+
+  const refreshContainer = container.querySelector('#projects-refresh-container');
+  if (refreshContainer) {
+    const cleanup = renderSurfaceControls(refreshContainer, {
+      scope: 'project_scan',
+      onRefresh: () => renderProjectIndexView(container, store),
+      syncLabel: 'Sync Data',
+    });
+    container._viewCleanup = cleanup;
+  }
 
   try {
     const response = await api.getProjects({ params: { active_only: false }, generation: reqGen });
@@ -112,21 +144,12 @@ async function renderProjectIndexView(container, store) {
     const activeProjects = projects.filter(p => p.is_active);
     const archivedProjects = projects.filter(p => !p.is_active);
 
-    let html = `
-      <div class="page-header-container">
-        <div>
-          <span class="eyebrow">Context Intelligence</span>
-          <h1>My Projects</h1>
-          <p class="lead">HERMES processes local repository source code, configuration, manifests, and documentation to build technology profiles and relevant engineering context.</p>
-        </div>
-        <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
-          <div>
-            <strong>${activeProjects.length}</strong>
-            <span>active project${activeProjects.length === 1 ? '' : 's'}</span>
-          </div>
-        </div>
-      </div>
+    const countEl = container.querySelector('#projects-active-count');
+    if (countEl) countEl.textContent = String(activeProjects.length);
+    const labelEl = container.querySelector('#projects-active-label');
+    if (labelEl) labelEl.textContent = `active project${activeProjects.length === 1 ? '' : 's'}`;
 
+    let html = `
       <div class="privacy-notice" role="note" aria-label="Privacy disclosure" style="margin-bottom:var(--space-5);padding:var(--space-3) var(--space-4);background:var(--bg-panel-subtle);border:1px solid var(--border-subtle);border-radius:var(--radius-md);">
         <p class="text-xs text-muted" style="margin:0;line-height:1.5;">
           <strong>Local Workspace Processing:</strong> HERMES processes supported local source files, configurations, manifests, and documentation, storing extracted text, relative paths, content hashes, derived technology profiles, and local embeddings in your local SQLite database. Sensitive filename patterns (such as <code>.env*</code> and keys) and detected binaries are skipped.
@@ -249,11 +272,12 @@ async function renderProjectIndexView(container, store) {
       `;
     }
 
-    container.innerHTML = html;
-
-    // Note: project scans are targeted operations (project_scan + target_id),
-    // so there is no index-level Sync control — use "Rescan Project" on each
-    // project's detail view instead.
+    const contentRegion = container.querySelector('#projects-content-region');
+    if (contentRegion) {
+      contentRegion.innerHTML = html;
+    } else {
+      container.innerHTML = html;
+    }
 
     // Bind add project form submit
     const addForm = container.querySelector('#add-project-form');
@@ -336,16 +360,21 @@ async function renderProjectIndexView(container, store) {
   } catch (err) {
     if (!requestManager.isCurrent('projects', reqGen) || (err && err.isAborted && !err.isTimeout)) return;
 
+    const contentRegion = container.querySelector('#projects-content-region');
     if (err.isNetworkError) {
       store.setConnection('offline', err.message);
-      container.innerHTML = renderOfflineState(() => renderProjectIndexView(container, store), err.message);
+      const offlineHtml = renderOfflineState(() => renderProjectIndexView(container, store), err.message);
+      if (contentRegion) contentRegion.innerHTML = offlineHtml;
+      else container.innerHTML = offlineHtml;
     } else {
       store.setConnection('degraded', err.message);
-      container.innerHTML = renderErrorState(
+      const errorHtml = renderErrorState(
         'Failed to Load Projects',
         err.message,
         `<button class="btn btn-secondary" onclick="window.location.reload()">Retry</button>`
       );
+      if (contentRegion) contentRegion.innerHTML = errorHtml;
+      else container.innerHTML = errorHtml;
     }
   }
 }
@@ -419,6 +448,7 @@ async function renderProjectDetailView(container, store, projectId) {
           </div>
 
           <div class="project-header-meta" style="text-align:right;">
+            <div id="project-detail-refresh-container" style="margin-bottom:var(--space-2);"></div>
             <div class="mono text-xs text-muted">${lastIndexed ? `Indexed · ${formatDate(lastIndexed)}` : 'Never indexed'}</div>
             <div class="mono text-xs text-faint" style="margin-top:var(--space-1);">${topMatches.length} matched intelligence items</div>
           </div>
@@ -667,6 +697,17 @@ async function renderProjectDetailView(container, store, projectId) {
     `;
 
     container.innerHTML = html;
+
+    const refreshContainer = container.querySelector('#project-detail-refresh-container');
+    if (refreshContainer) {
+      const cleanup = renderSurfaceControls(refreshContainer, {
+        scope: 'project_scan',
+        targetId: canonicalId,
+        onRefresh: () => renderProjectDetailView(container, store, canonicalId),
+        syncLabel: 'Sync Data',
+      });
+      container._viewCleanup = cleanup;
+    }
 
     const scanBtn = container.querySelector('.btn-scan-project');
     const archiveBtn = container.querySelector('.btn-archive-project');

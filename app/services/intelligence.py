@@ -947,7 +947,9 @@ def get_morning_brief(
         config = load_runtime_config()
         date_str = runtime_date_string(datetime.now(timezone.utc), config)
 
-    briefing = db.get_daily_briefing(date_str)
+    # Single combined load: briefing + daily run + revision count + last
+    # successful briefing date in ONE query (Phase 4 query-ceiling fix).
+    briefing, daily_run, revision_count, last_successful_date = db.get_briefing_with_metadata(date_str)
     if not briefing:
         return None
 
@@ -1005,10 +1007,8 @@ def get_morning_brief(
     # Phase 4 Req 5: enrich the briefing response with the daily-run state,
     # revision history, last successful briefing link and a source contribution
     # summary so the Briefing view can render every required state.
-    # Single fixed lookup: the run id is deterministic (daily-run:<date>), so
-    # querying by date covers both linked and unlinked briefings.
-    daily_run = db.get_daily_signal_run_by_date(briefing.briefing_date)
-
+    # daily_run / revision_count / last_successful_date come from the combined
+    # get_briefing_with_metadata load above (no extra queries).
     source_contribution: Dict[str, Any] = {}
     raw_source_status = briefing.source_status_json or (daily_run.source_status_json if daily_run else None)
     if raw_source_status:
@@ -1046,7 +1046,7 @@ def get_morning_brief(
         "original_generated_at": briefing.original_generated_at,
         # Phase 4 Req 5 additions:
         "daily_run": daily_run.model_dump() if daily_run else None,
-        "revision_count": db.count_briefing_revisions(briefing.id),
-        "last_successful_briefing_date": db.get_last_successful_briefing_date(briefing.briefing_date),
+        "revision_count": revision_count,
+        "last_successful_briefing_date": last_successful_date,
         "source_contribution": source_contribution,
     }

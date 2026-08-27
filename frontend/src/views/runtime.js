@@ -9,7 +9,7 @@ import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, formatTime, ensureArray, toTitleCase } from '../utils/adapters.js';
 import { focusPageHeading } from '../utils/a11y.js';
-import { renderRefreshControl } from '../components/refresh-control.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 
 function formatFiniteNumber(val, fallback = '—') {
@@ -95,7 +95,32 @@ function getJobStatusClass(status) {
 
 export async function renderRuntimeView(container, store) {
   const reqGen = requestManager.nextGeneration('runtime');
-  container.innerHTML = renderLoadingState('Loading runtime health & operational overview…');
+
+  // Shell-first: paint the route header (h1) synchronously before any await so
+  // hash transitions resolve quickly; content fills in after the fetch.
+  container.innerHTML = `
+    <div class="page-header-container">
+      <div>
+        <span class="eyebrow">Operational Transparency</span>
+        <h1>Runtime & Source Health</h1>
+        <p class="lead">Trustworthy operational telemetry for the HERMES daemon, scheduler pipeline, and intelligence providers.</p>
+      </div>
+      <div id="runtime-refresh-container" style="display:flex;align-items:center;gap:var(--space-2);"></div>
+    </div>
+    <div id="runtime-content-region">
+      ${renderLoadingState('Loading runtime health & operational overview…')}
+    </div>
+  `;
+
+  const refreshContainer = container.querySelector('#runtime-refresh-container');
+  if (refreshContainer) {
+    const cleanup = renderSurfaceControls(refreshContainer, {
+      scope: 'health_check',
+      onRefresh: () => renderRuntimeView(container, store),
+      syncLabel: 'Sync Data',
+    });
+    container._viewCleanup = cleanup;
+  }
 
   try {
     // Single aggregated operational overview request
@@ -124,15 +149,6 @@ export async function renderRuntimeView(container, store) {
     const todayBriefing = freshness.today_briefing || {};
 
     let html = `
-      <div class="page-header-container">
-        <div>
-          <span class="eyebrow">Operational Transparency</span>
-          <h1>Runtime & Source Health</h1>
-          <p class="lead">Trustworthy operational telemetry for the HERMES daemon, scheduler pipeline, and intelligence providers.</p>
-        </div>
-        <div id="runtime-refresh-container" style="display:flex;align-items:center;gap:var(--space-2);"></div>
-      </div>
-
       <!-- Accessible Live Region -->
       <div class="sr-only" aria-live="polite">
         Operational overview status is ${overallStatus}. Daemon is ${daemon.status || 'stopped'}.
@@ -207,6 +223,114 @@ export async function renderRuntimeView(container, store) {
           </div>
           <div class="text-xs text-muted" style="margin-top:4px;">
             Disk: ${system.disk_free_mb !== null && system.disk_free_mb !== undefined ? `${system.disk_free_mb} MB free` : '—'} (${escapeHtml(system.disk_status || 'ok')})
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Daily Intelligence Cycle Panel
+    const dailyRefreshJob = jobs.find(j => j.job_name === 'daily_refresh');
+    const dailyRunStatus = dailyRefreshJob ? dailyRefreshJob.status : 'unknown';
+    const dailyRunLastCompleted = dailyRefreshJob ? formatNullOrTime(dailyRefreshJob.last_completed_at) : 'Never';
+    const dailyRunNextSchedule = dailyRefreshJob ? (dailyRefreshJob.next_schedule || '—') : '—';
+    const dailyRunRetryCount = dailyRefreshJob ? (dailyRefreshJob.failure_count || 0) : 0;
+    const dailyRunDuration = dailyRefreshJob ? formatNullOrSeconds(dailyRefreshJob.duration_seconds) : '—';
+    const lastSuccessfulCycle = freshness.last_successful_ingestion ? formatNullOrTime(freshness.last_successful_ingestion) : 'Never';
+    const activeDbPath = system.database_path || 'data/runtime/tech_intel.db';
+    const sourceStatusSummary = srcCounts;
+
+    html += `
+      <div class="runtime-section-header">
+        <div>
+          <h2 class="runtime-section-title">Daily Intelligence Cycle</h2>
+          <span class="text-xs text-muted">Canonical daily refresh pipeline: ingestion → semantic → claims → recheck → project matching → Today snapshot → Morning Briefing.</span>
+        </div>
+      </div>
+
+      <div class="runtime-grid-diagnostics" style="margin-bottom:var(--space-8);">
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Current Stage</div>
+          <div class="runtime-diag-value">
+            <span class="runtime-status-badge ${getJobStatusClass(dailyRunStatus)}">
+              ${escapeHtml(dailyRunStatus.replace('_', ' ').toUpperCase())}
+            </span>
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            ${dailyRefreshJob ? `Job: ${escapeHtml(dailyRefreshJob.job_name)}` : 'Daily refresh job not configured'}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Progress</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-base);">
+            ${dailyRefreshJob && dailyRefreshJob.status === 'running' ? 'In progress…' : (dailyRefreshJob && dailyRefreshJob.status === 'completed' ? 'Completed' : (dailyRefreshJob && dailyRefreshJob.status === 'failed' ? 'Failed' : 'Pending'))}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Duration: ${dailyRunDuration} · Retries: ${dailyRunRetryCount}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Daemon Heartbeat</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-base);">
+            ${daemon.heartbeat_timestamp ? `${daemon.heartbeat_age_seconds !== null && daemon.heartbeat_age_seconds !== undefined ? `${daemon.heartbeat_age_seconds}s ago` : formatNullOrTime(daemon.heartbeat_timestamp)}` : 'No heartbeat'}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            ${daemon.status === 'running' ? 'Active' : (daemon.status === 'stale' ? 'Stale' : 'Stopped')} ${daemon.pid ? `· PID ${daemon.pid}` : ''}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Retry Policy</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-base);">
+            ${dailyRunRetryCount > 0 ? `${dailyRunRetryCount} retry${dailyRunRetryCount === 1 ? '' : 's'}` : 'No retries'}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Next scheduled: ${escapeHtml(dailyRunNextSchedule)}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Source Status</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-sm);">
+            <span class="runtime-status-badge ${sourceStatusSummary.healthy ? 'runtime-status-healthy' : ''}">${sourceStatusSummary.healthy || 0} Healthy</span>
+            ${sourceStatusSummary.retrying ? `<span class="runtime-status-badge runtime-status-retrying">${sourceStatusSummary.retrying} Retrying</span>` : ''}
+            ${sourceStatusSummary.rate_limited ? `<span class="runtime-status-badge runtime-status-rate-limited">${sourceStatusSummary.rate_limited} Rate-Limited</span>` : ''}
+            ${sourceStatusSummary.degraded ? `<span class="runtime-status-badge runtime-status-degraded">${sourceStatusSummary.degraded} Degraded</span>` : ''}
+            ${sourceStatusSummary.disabled ? `<span class="runtime-status-badge runtime-status-disabled">${sourceStatusSummary.disabled} Disabled</span>` : ''}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            ${sources.length} adapters configured
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Cycle Counts</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-sm);">
+            Signals: ${formatMetricNumber(freshness.signals_ingested)} · Inbox: ${formatMetricNumber(freshness.inbox_items_generated)} · Briefings: ${formatMetricNumber(overview.lifetime_metrics?.briefings_generated)}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Today's briefing: ${todayBriefing.generated ? `${todayBriefing.total_items || 0} items` : 'Not generated'}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Active DB Path</div>
+          <div class="runtime-diag-value mono text-xs" style="font-size:var(--text-xs);word-break:break-all;">
+            ${escapeHtml(activeDbPath)}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            ${system.is_baseline ? '⚠ Baseline (read-only)' : 'Runtime (writable)'}
+          </div>
+        </div>
+
+        <div class="runtime-diag-card">
+          <div class="runtime-diag-label">Last Successful Cycle</div>
+          <div class="runtime-diag-value" style="font-size:var(--text-base);">
+            ${lastSuccessfulCycle}
+          </div>
+          <div class="text-xs text-muted" style="margin-top:4px;">
+            Last daily run: ${dailyRunLastCompleted}
           </div>
         </div>
       </div>
@@ -432,26 +556,28 @@ export async function renderRuntimeView(container, store) {
       </div>
     `;
 
-    container.innerHTML = html;
-    focusPageHeading(container);
-
-    const refreshContainer = container.querySelector('#runtime-refresh-container');
-    if (refreshContainer) {
-      const cleanup = renderRefreshControl(refreshContainer, 'health_check', () => {
-        renderRuntimeView(container, store);
-      });
-      container._viewCleanup = cleanup;
+    const contentRegion = container.querySelector('#runtime-content-region');
+    if (contentRegion) {
+      contentRegion.innerHTML = html;
+    } else {
+      container.innerHTML = html;
     }
+    focusPageHeading(container);
   } catch (err) {
     if (!requestManager.isCurrent('runtime', reqGen) || (err && err.isAborted && !err.isTimeout)) {
       return;
     }
+    const contentRegion = container.querySelector('#runtime-content-region');
     if (err.isNetworkError) {
       store.setConnection('offline', err.message);
-      container.innerHTML = renderOfflineState(undefined, err.message);
+      const offlineHtml = renderOfflineState(undefined, err.message);
+      if (contentRegion) contentRegion.innerHTML = offlineHtml;
+      else container.innerHTML = offlineHtml;
     } else {
       store.setConnection('degraded', err.message);
-      container.innerHTML = renderErrorState('Failed to Load Runtime Status', err.message);
+      const errorHtml = renderErrorState('Failed to Load Runtime Status', err.message);
+      if (contentRegion) contentRegion.innerHTML = errorHtml;
+      else container.innerHTML = errorHtml;
     }
     const retryBtn = container.querySelector('#retry-btn') || container.querySelector('.btn-retry-view');
     if (retryBtn) {

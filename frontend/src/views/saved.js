@@ -24,6 +24,7 @@ import {
   formatScorePercentage,
   isValidNormalizedScore,
 } from '../utils/adapters.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 export const CANONICAL_MATURITY_LABELS = {
   concept: 'Concept',
@@ -304,7 +305,37 @@ export function renderSavedCard(item) {
  * Main Saved Library View Controller
  */
 export async function renderSavedView(container, store) {
-  container.innerHTML = renderLoadingState('Loading saved intelligence library…');
+  // Shell-first: paint the route header (h1) synchronously before any await so
+  // hash transitions resolve quickly; content fills in after the fetch.
+  container.innerHTML = `
+    <div class="page-header-container">
+      <div>
+        <span class="eyebrow">Personal Intelligence Library</span>
+        <h1>Saved Intelligence</h1>
+        <p class="lead">Historical snapshots preserve baseline review states alongside live HERMES intelligence evolutions.</p>
+      </div>
+      <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
+        <div id="saved-refresh-container"></div>
+        <div>
+          <strong id="saved-total-count">—</strong>
+          <span>items displayed</span>
+        </div>
+      </div>
+    </div>
+    <div id="saved-content-region">
+      ${renderLoadingState('Loading saved intelligence library…')}
+    </div>
+  `;
+
+  const refreshContainer = container.querySelector('#saved-refresh-container');
+  if (refreshContainer) {
+    const cleanup = renderSurfaceControls(refreshContainer, {
+      scope: 'saved_hydration',
+      onRefresh: () => renderSavedView(container, store),
+      syncLabel: 'Sync Data',
+    });
+    container._viewCleanup = cleanup;
+  }
 
   try {
     const response = await api.getSavedItems({ limit: 50, include_current: true });
@@ -337,23 +368,6 @@ export async function renderSavedView(container, store) {
       });
 
       let html = `
-        <div class="page-header-container">
-          <div>
-            <span class="eyebrow">Personal Intelligence Library</span>
-            <h1>Saved Intelligence</h1>
-            <p class="lead">Historical snapshots preserve baseline review states alongside live HERMES intelligence evolutions.</p>
-          </div>
-          <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
-            <button type="button" class="btn btn-sm btn-outline" id="btn-refresh-saved" style="display:inline-flex;align-items:center;gap:var(--space-1);">
-              <span>🔄</span> Refresh
-            </button>
-            <div>
-              <strong id="saved-total-count">${filtered.length}</strong>
-              <span>item${filtered.length === 1 ? '' : 's'} displayed</span>
-            </div>
-          </div>
-        </div>
-
         <div id="saved-live-region" class="sr-only" aria-live="polite"></div>
 
         <!-- Filter & Search Toolbar -->
@@ -401,7 +415,16 @@ export async function renderSavedView(container, store) {
         `;
       }
 
-      container.innerHTML = html;
+      const countEl = container.querySelector('#saved-total-count');
+      if (countEl) countEl.textContent = String(filtered.length);
+
+      const contentRegion = container.querySelector('#saved-content-region');
+      if (contentRegion) {
+        contentRegion.innerHTML = html;
+      } else {
+        container.innerHTML = html;
+      }
+
       attachSavedListeners();
     }
 
@@ -423,11 +446,6 @@ export async function renderSavedView(container, store) {
         activeTagFilter = 'all';
         activeStatusFilter = 'all';
         renderViewContent();
-      });
-
-      const refreshBtn = container.querySelector('#btn-refresh-saved');
-      refreshBtn?.addEventListener('click', () => {
-        renderSavedView(container, store);
       });
 
       // Delegated listener for Unsave actions
@@ -490,12 +508,20 @@ export async function renderSavedView(container, store) {
 
     renderViewContent();
   } catch (err) {
+    // Navigation aborted the in-flight fetch: the container now belongs to
+    // the next view, so never write a stale error state into it.
+    if (err && err.isAborted && !err.isTimeout) return;
+    const contentRegion = container.querySelector('#saved-content-region');
     if (err.isNetworkError) {
       store.setConnection('offline', err.message);
-      container.innerHTML = renderOfflineState(undefined, err.message);
+      const offlineHtml = renderOfflineState(undefined, err.message);
+      if (contentRegion) contentRegion.innerHTML = offlineHtml;
+      else container.innerHTML = offlineHtml;
     } else {
       store.setConnection('degraded', err.message);
-      container.innerHTML = renderErrorState('Failed to Load Saved Library', err.message);
+      const errorHtml = renderErrorState('Failed to Load Saved Library', err.message);
+      if (contentRegion) contentRegion.innerHTML = errorHtml;
+      else container.innerHTML = errorHtml;
     }
   }
 }

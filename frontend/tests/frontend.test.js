@@ -7,8 +7,91 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
+import { operationManager } from '../src/state/operation-manager.js';
 
 // Mock DOM environment for testing browser-dependent modules under Node
+function createMockElement() {
+  const element = {
+    setAttribute(name, value) { this.attributes[name] = value; },
+    getAttribute(name) { return this.attributes[name] || null; },
+    removeAttribute(name) { delete this.attributes[name]; },
+    id: '',
+    className: '',
+    style: {},
+    textContent: '',
+    _innerHTML: '',
+    get innerHTML() {
+      if (this._children && this._children.length > 0) {
+        return this._children.map(c => c.outerHTML || c._innerHTML || '').join('');
+      }
+      return this._innerHTML;
+    },
+    set innerHTML(v) {
+      this._innerHTML = v;
+      this._children = []; // Clear children when innerHTML is set directly
+    },
+    get outerHTML() {
+      const attrs = Object.entries(this.attributes).map(([k, v]) => `${k}="${v}"`).join(' ');
+      const attrStr = attrs ? ' ' + attrs : '';
+      return `<${this.tagName || 'div'}${attrStr}>${this.innerHTML}</${this.tagName || 'div'}>`;
+    },
+    disabled: false,
+    attributes: {},
+    classList: {
+      _classes: new Set(),
+      add(cls) { this._classes.add(cls); },
+      remove(cls) { this._classes.delete(cls); },
+      contains(cls) { return this._classes.has(cls); },
+      toggle(cls) { this._classes.has(cls) ? this._classes.delete(cls) : this._classes.add(cls); },
+    },
+    _children: [],
+    _listeners: {},
+    querySelector(sel) {
+      // Simple mock: return a new mock element for any selector
+      return createMockElement();
+    },
+    querySelectorAll(sel) { return []; },
+    appendChild(child) { 
+      this._children.push(child);
+      child.parentElement = this;
+      return child; 
+    },
+    removeChild(child) { 
+      const idx = this._children.indexOf(child);
+      if (idx >= 0) this._children.splice(idx, 1);
+    },
+    addEventListener(event, handler) {
+      if (!this._listeners[event]) this._listeners[event] = [];
+      this._listeners[event].push(handler);
+    },
+    removeEventListener(event, handler) {
+      if (this._listeners[event]) {
+        const idx = this._listeners[event].indexOf(handler);
+        if (idx >= 0) this._listeners[event].splice(idx, 1);
+      }
+    },
+    closest(sel) { return null; },
+    getElementsByClassName() { return []; },
+    getElementsByTagName() { return []; },
+    focus() {},
+    blur() {},
+    click() {},
+    scrollIntoView() {},
+    offsetWidth: 0,
+    offsetHeight: 0,
+    parentElement: null,
+    children: [],
+    firstElementChild: null,
+    lastElementChild: null,
+    nextElementSibling: null,
+    previousElementSibling: null,
+    dataset: {},
+    insertAdjacentHTML() {},
+    tagName: 'DIV',
+  };
+  return element;
+}
+
 globalThis.window = {
   localStorage: {
     store: {},
@@ -26,19 +109,16 @@ globalThis.window = {
 globalThis.document = {
   activeElement: null,
   getElementById() { return null; },
-  createElement() {
-    return {
-      setAttribute() {},
-      id: '',
-      className: '',
-      style: {},
-      textContent: ''
-    };
-  },
+  createElement() { return createMockElement(); },
+  createTextNode() { return { textContent: '', nodeType: 3 }; },
   elementsFromPoint() { return []; },
-  body: {
-    appendChild() {}
-  }
+  body: createMockElement(),
+  documentElement: createMockElement(),
+  head: createMockElement(),
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+  removeEventListener() {},
 };
 globalThis.Node = {
   ELEMENT_NODE: 1,
@@ -126,6 +206,15 @@ import {
   renderRankingDecomposition,
   resetSearchFilterCatalogsCache,
 } from '../src/views/search.js';
+
+/* ==========================================================================
+   Test Cleanup: Pause operationManager polling after each test to prevent
+   async activity after test completion.
+   ========================================================================== */
+
+test.afterEach(() => {
+  operationManager.reset();
+});
 
 /* ==========================================================================
    1. API Client Contracts
@@ -1904,9 +1993,18 @@ test('Phase 8: Unsave action dispatches DELETE /saved/{savedId} with SavedItem I
     await h({ target: unsaveBtn, preventDefault() {}, closest: (sel) => sel.includes('unsave') ? unsaveBtn : null });
   }
 
+  // Wait for card removal animation (setTimeout in click handler) to complete
+  await new Promise(r => setTimeout(r, 300));
+
   assert.ok(deleteUrl !== null);
   assert.ok(deleteUrl.includes('/saved/saved%3Acl_test_del') || deleteUrl.includes('/saved/saved:cl_test_del'));
   assert.strictEqual(deleteMethod, 'DELETE');
+
+  // Clean up view to stop operationManager polling
+  if (container._viewCleanup) {
+    container._viewCleanup();
+  }
+  operationManager.reset();
 
   fetchMock = null;
 });
@@ -2894,7 +2992,12 @@ test('Phase 10: Initial Today load sends one /inbox request and zero /stories re
   const inboxRequests = capturedUrls.filter(u => u.includes('/inbox'));
   const storyRequests = capturedUrls.filter(u => u.includes('/stories/'));
 
+  // Today view makes exactly one /inbox call (feed, limit=40); freshness
+  // groups are sourced from that same response's freshness_counts.
   assert.strictEqual(inboxRequests.length, 1);
+  assert.strictEqual(storyRequests.length, 0);
+
+  fetchMock = null;
   assert.strictEqual(storyRequests.length, 0);
 
   fetchMock = null;
@@ -3428,31 +3531,44 @@ test('Phase 10: Stale response protection prevents out-of-order race conditions'
   let resolveSlowReq;
   const slowPromise = new Promise(resolve => { resolveSlowReq = resolve; });
 
-  let reqCount = 0;
+  let slowRequestResolved = false;
+  let mainFeedRequestCount = 0;
   fetchMock = async (url) => {
     if (url.includes('/projects')) return { ok: true, status: 200, json: async () => ({ projects: [] }) };
     if (url.includes('/inbox')) {
-      reqCount++;
-      if (reqCount === 1) {
-        await slowPromise;
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            count: 1,
-            inbox_items: [{ id: 'ib_slow', story_cluster_id: 'cl_slow', title: 'Slow Response Signal', section: 'ai_ml', story_available: true }]
-          })
-        };
-      } else {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            count: 1,
-            inbox_items: [{ id: 'ib_fast', story_cluster_id: 'cl_fast', title: 'Fast Response Signal', section: 'systems_compilers', story_available: true }]
-          })
-        };
+      // Only delay the FIRST main feed request (limit=40 without complex filters)
+      const isMainFeed = url.includes('limit=40') && !url.includes('section=') && !url.includes('project=') && !url.includes('unseen_only');
+      const isMetadata = url.includes('limit=1');
+      
+      if (isMainFeed && !slowRequestResolved) {
+        mainFeedRequestCount++;
+        if (mainFeedRequestCount === 1) {
+          console.log('FETCH MOCK: delaying main feed request');
+          await slowPromise;
+          slowRequestResolved = true;
+          console.log('FETCH MOCK: slow request resolving');
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              count: 1,
+              inbox_items: [{ id: 'ib_slow', story_cluster_id: 'cl_slow', title: 'Slow Response Signal', section: 'ai_ml', story_available: true }]
+            })
+          };
+        }
       }
+      if (isMetadata) {
+        return { ok: true, status: 200, json: async () => ({ count: 1, inbox_items: [], freshness_counts: { new: 0, updated: 0, corrected: 0, carried_forward: 0 } }) };
+      }
+      console.log('FETCH MOCK: fast request resolving for', url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          count: 1,
+          inbox_items: [{ id: 'ib_fast', story_cluster_id: 'cl_fast', title: 'Fast Response Signal', section: 'systems_compilers', story_available: true }]
+        })
+      };
     }
     return { ok: true, status: 200, json: async () => ({}) };
   };
@@ -3470,6 +3586,16 @@ test('Phase 10: Stale response protection prevents out-of-order race conditions'
 
   resolveSlowReq();
   await p1;
+
+  console.log('DEBUG TEST: container.innerHTML:', container.innerHTML);
+  console.log('DEBUG TEST: elements keys:', Object.keys(container.querySelector('#inbox-feed-container') ? { '#inbox-feed-container': container.querySelector('#inbox-feed-container') } : {}));
+  if (container.querySelector('#inbox-feed-container')) {
+    console.log('DEBUG TEST: feedContainer._html:', container.querySelector('#inbox-feed-container')._html);
+  }
+
+  // Also check the requestManager state
+  const { requestManager } = await import('../src/state/request-manager.js');
+  console.log('DEBUG TEST: requestManager generations:', requestManager.generations);
 
   assert.ok(container.innerHTML.includes('Fast Response Signal'));
   assert.ok(!container.innerHTML.includes('Slow Response Signal'));
@@ -6323,9 +6449,30 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
       removeEventListener: () => {},
       querySelector: () => makeMockElement(),
       querySelectorAll: () => [],
+      appendChild: () => {},
+      setAttribute: () => {},
+      getAttribute: () => null,
+      classList: { add: () => {}, remove: () => {}, contains: () => false },
+      dataset: {},
+      closest: () => null,
+      focus: () => {},
     });
+    // Mirror real-DOM semantics: reading innerHTML includes content rendered
+    // into queried child regions (shell-first views paint the header first, then
+    // fill a #<view>-content-region child). Setting innerHTML resets children.
+    let shellHtml = '';
     const c = {
-      innerHTML: '',
+      get innerHTML() {
+        let combined = shellHtml;
+        for (const el of childMap.values()) {
+          if (el.innerHTML) combined += '\n' + el.innerHTML;
+        }
+        return combined;
+      },
+      set innerHTML(v) {
+        shellHtml = v;
+        childMap.clear();
+      },
       querySelector: (sel) => {
         if (!childMap.has(sel)) {
           childMap.set(sel, makeMockElement());
@@ -6335,6 +6482,7 @@ test('Phase 14: Cross-surface rendered fixture matrix covers all eight consuming
       querySelectorAll: () => [],
       addEventListener: () => {},
       removeEventListener: () => {},
+      appendChild: () => {},
     };
     return c;
   };

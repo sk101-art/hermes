@@ -359,6 +359,18 @@ export class OperationManager {
   isActive(scope) {
     return this.activeOperations.has(scope);
   }
+
+  /**
+   * Resets all operation manager state. For testing purposes only.
+   */
+  reset() {
+    this.pauseAllMonitoring();
+    this.activeOperations.clear();
+    this.listeners.clear();
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(OPERATIONS_STORAGE_KEY);
+    }
+  }
 }
 
 export const operationManager = new OperationManager();

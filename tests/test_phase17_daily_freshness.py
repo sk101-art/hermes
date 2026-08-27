@@ -145,7 +145,9 @@ def test_runtime_job_success_and_failure_records(tmp_path, monkeypatch):
     assert saved.runtime_date == "2026-08-26"
     assert saved.runtime_timezone  # populated from effective timezone resolution
     assert saved.run_kind == "daily_refresh"
-    assert saved.status in ("completed", "partial_sources")
+    # completed_empty is a canonical status (schemas.py): a zero-item day with
+    # a valid briefing is a successful cycle, not a failure.
+    assert saved.status in ("completed", "completed_empty", "partial_sources")
     assert saved.briefing_id == "briefing:2026-08-26"
     assert saved.completed_at is not None
     db.close()

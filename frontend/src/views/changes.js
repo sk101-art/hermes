@@ -19,7 +19,7 @@ import {
   ensureArray,
   toTitleCase,
 } from '../utils/adapters.js';
-import { renderRefreshControl } from '../components/refresh-control.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 
 // Canonical ClaimStatus and Maturity taxonomies
@@ -318,17 +318,6 @@ export async function renderChangesView(container, store) {
   let hideSystemMaintenance = false; // noise control toggle
   let selectedEntityType = 'all';
 
-  container.innerHTML = renderLoadingState('Loading longitudinal changes…');
-
-  // Load available projects for context filtering
-  let availableProjects = [];
-  try {
-    const projRes = await api.getProjects();
-    availableProjects = ensureArray(projRes.projects || projRes);
-  } catch {
-    availableProjects = [];
-  }
-
   async function loadAndRender() {
     const reqGen = requestManager.nextGeneration('changes');
     const contentRegion = container.querySelector('#changes-content-region');
@@ -480,17 +469,12 @@ export async function renderChangesView(container, store) {
             </select>
           </div>
 
-          ${availableProjects.length > 0 ? `
-            <div class="form-group" style="margin-bottom:0;">
-              <label for="changes-project-select" class="form-label" style="font-size:var(--text-xs);">Project Relevance</label>
-              <select id="changes-project-select" class="form-control" style="font-size:var(--text-sm);padding:4px 8px;">
-                <option value="" ${currentProject === '' ? 'selected' : ''}>All Projects</option>
-                ${availableProjects.map(p => `
-                  <option value="${escapeHtml(p.id)}" ${currentProject === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>
-                `).join('')}
-              </select>
-            </div>
-          ` : ''}
+          <div class="form-group" style="margin-bottom:0;">
+            <label for="changes-project-select" class="form-label" style="font-size:var(--text-xs);">Project Relevance</label>
+            <select id="changes-project-select" class="form-control" style="font-size:var(--text-sm);padding:4px 8px;">
+              <option value="" ${currentProject === '' ? 'selected' : ''}>All Projects</option>
+            </select>
+          </div>
 
           <div class="form-group" style="margin-bottom:0;">
             <label for="changes-entity-select" class="form-label" style="font-size:var(--text-xs);">Entity Type</label>
@@ -579,15 +563,39 @@ export async function renderChangesView(container, store) {
     });
   }
 
+  // Populate the Project Relevance filter options off the critical render path
+  // so the shell (and its h1) paints immediately.
+  async function populateProjectOptions() {
+    try {
+      const projRes = await api.getProjects();
+      const availableProjects = ensureArray(projRes.projects || projRes);
+      const projSelect = container.querySelector('#changes-project-select');
+      if (!projSelect || !availableProjects.length) return;
+      const optsHtml = availableProjects.map(p => `
+        <option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>
+      `).join('');
+      if (projSelect.insertAdjacentHTML) {
+        projSelect.insertAdjacentHTML('beforeend', optsHtml);
+      }
+      if (currentProject) projSelect.value = currentProject;
+    } catch {
+      // Project filter is optional; never block the view on it.
+    }
+  }
+
   renderViewShell();
 
   const refreshContainer = container.querySelector('#changes-refresh-container');
   if (refreshContainer) {
-    const cleanup = renderRefreshControl(refreshContainer, 'recheck', () => {
-      loadAndRender();
+    const cleanup = renderSurfaceControls(refreshContainer, {
+      scope: 'recheck',
+      onRefresh: () => loadAndRender(),
+      syncLabel: 'Sync Data',
     });
     container._viewCleanup = cleanup;
   }
+
+  populateProjectOptions();
 
   await loadAndRender();
 }

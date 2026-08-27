@@ -18,7 +18,7 @@ import {
   renderInboxRankBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
-import { renderRefreshControl } from '../components/refresh-control.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 
 export const CANONICAL_INBOX_SECTIONS = [
@@ -348,16 +348,160 @@ export function updateInboxHash(params) {
   }
 }
 
-export async function renderTodayView(container, store) {
-  const initialParams = parseInboxHashParams();
-  let availableProjects = [];
+// Freshness group definitions shared by the metadata panel and the feed fetch.
+// Phase 4.7 adds the project_critical group (high project-impact signals).
+const TODAY_FRESHNESS_GROUPS = [
+  { key: 'new', label: 'New Today' },
+  { key: 'updated', label: 'Updated Today' },
+  { key: 'corrected', label: 'Corrections & Revisions' },
+  { key: 'carried_forward', label: 'Carried Forward' },
+  { key: 'project_critical', label: 'Project Critical' },
+];
+
+function buildFreshnessGroupsHtml(freshness) {
+  if (!freshness) return '';
+  return TODAY_FRESHNESS_GROUPS
+    .filter((fg) => Number(freshness[fg.key] || 0) > 0)
+    .map((fg) => `
+      <div class="metadata-group" style="min-width:140px;">
+        <div class="stat-label text-muted text-xs" style="margin-bottom:2px;">${escapeHtml(fg.label)}</div>
+        <div style="font-weight:600;font-size:var(--text-sm);">${Number(freshness[fg.key] || 0)}</div>
+      </div>
+    `).join('');
+}
+
+/**
+ * Renders the freshness groups (sourced from the main /inbox feed response's
+ * freshness_counts) into the metadata panel. Safe to call before or after
+ * loadTodayMetadata completes.
+ */
+function updateFreshnessGroups(container, freshness) {
+  container._pendingFreshness = freshness || {};
+  const panel = container.querySelector('#today-metadata-panel');
+  if (!panel) return;
+  const html = buildFreshnessGroupsHtml(freshness);
+  if (!html) return;
+  const target = container.querySelector('#today-freshness-groups');
+  if (target && target.innerHTML !== undefined && container.querySelector('#today-metadata-panel .metadata-groups')) {
+    target.innerHTML = html;
+  } else {
+    panel.innerHTML = `<div class="metadata-groups" style="display:flex;flex-wrap:wrap;gap:var(--space-4);">${html}</div>`;
+  }
+  panel.style.display = '';
+}
+
+/**
+ * Loads and renders the Today metadata groups panel.
+ * Data sources: /daily/status (run status, checked-through, source
+ * contributions) + /health/ready (runtime date/tz). Freshness groups are NOT
+ * fetched here — they come from the primary /inbox feed response to keep the
+ * Today view to a single /inbox request.
+ * Empty groups are omitted.
+ */
+async function loadTodayMetadata(container) {
+  const panel = container.querySelector('#today-metadata-panel');
+  if (!panel) return;
+
+  let ready = {};
+  let dailyRun = null;
 
   try {
-    const projRes = await api.getProjects();
-    availableProjects = ensureArray(projRes.projects || projRes);
+    const [readyRes, dailyRes] = await Promise.all([
+      api.raw('/health/ready').catch(() => null),
+      api.getDailyStatus().catch(() => null),
+    ]);
+    ready = readyRes || {};
+    const runs = ensureArray((dailyRes && dailyRes.runs) || []);
+    dailyRun = runs.length ? runs[0] : null;
   } catch (e) {
-    availableProjects = [];
+    return; // Metadata is best-effort; never block the primary feed.
   }
+
+  const groups = [];
+
+  // Runtime date + timezone
+  if (ready.runtime_date || ready.runtime_timezone) {
+    groups.push({
+      label: 'Runtime Date',
+      value: `${ready.runtime_date || '—'}${ready.runtime_timezone ? ` (${escapeHtml(ready.runtime_timezone)})` : ''}`,
+    });
+  }
+
+  // Checked-through absolute time (data cutoff of the latest daily run)
+  if (dailyRun && dailyRun.data_cutoff_at) {
+    groups.push({ label: 'Checked Through', value: `${formatDate(dailyRun.data_cutoff_at)} ${formatTime(dailyRun.data_cutoff_at)}` });
+  }
+
+  // Daily-run status
+  if (dailyRun && dailyRun.status) {
+    groups.push({ label: 'Daily Run', value: toTitleCase(String(dailyRun.status).replace(/_/g, ' ')) });
+  }
+
+  // Source contribution counts
+  if (dailyRun && dailyRun.source_status_json) {
+    try {
+      const srcStatus = JSON.parse(dailyRun.source_status_json);
+      const entries = Object.entries(srcStatus || {});
+      if (entries.length) {
+        const okCount = entries.filter(([, v]) => String(v).toLowerCase() === 'ok' || String(v).toLowerCase() === 'healthy').length;
+        groups.push({ label: 'Sources Reporting', value: `${okCount} / ${entries.length} healthy` });
+      }
+    } catch (e) {
+      // ignore malformed source status
+    }
+  }
+
+  // Render the panel with the non-freshness groups plus a placeholder for the
+  // freshness groups (filled by updateFreshnessGroups from the feed response).
+  panel.innerHTML = `
+    <div class="metadata-groups" style="display:flex;flex-wrap:wrap;gap:var(--space-4);">
+      ${groups.map((g) => `
+        <div class="metadata-group" style="min-width:140px;">
+          <div class="stat-label text-muted text-xs" style="margin-bottom:2px;">${escapeHtml(g.label)}</div>
+          <div style="font-weight:600;font-size:var(--text-sm);">${g.value}</div>
+        </div>
+      `).join('')}
+      <div id="today-freshness-groups" style="display:contents;"></div>
+    </div>
+  `;
+
+  // If the feed fetch already delivered freshness counts, apply them now.
+  if (container._pendingFreshness) {
+    updateFreshnessGroups(container, container._pendingFreshness);
+  } else if (!groups.length) {
+    panel.style.display = 'none';
+  } else {
+    panel.style.display = '';
+  }
+}
+
+/**
+ * Populates the Project Context filter options asynchronously, off the
+ * critical render path, so the Today shell (and its h1) paints immediately.
+ */
+async function populateProjectOptions(container, initialParams) {
+  try {
+    const projRes = await api.getProjects();
+    const availableProjects = ensureArray(projRes.projects || projRes);
+    const selProject = container.querySelector('#sel-inbox-project');
+    if (!selProject || !availableProjects.length) return;
+    const optsHtml = availableProjects.map((p) => {
+      const pid = typeof p === 'string' ? p : (p.id || p.name);
+      const pname = typeof p === 'string' ? p : (p.name || p.id);
+      return `<option value="${escapeHtml(pid)}">${escapeHtml(pname)}</option>`;
+    }).join('');
+    if (selProject.insertAdjacentHTML) {
+      selProject.insertAdjacentHTML('beforeend', optsHtml);
+    }
+    const desired = initialParams.project || selProject.value;
+    if (desired) selProject.value = desired;
+  } catch (e) {
+    // Project filter is optional; never block the view on it.
+  }
+}
+
+export async function renderTodayView(container, store) {
+  const initialParams = parseInboxHashParams();
 
   const todayDateStr = formatDate(new Date().toISOString());
 
@@ -392,6 +536,8 @@ export async function renderTodayView(container, store) {
       </div>
     </div>
 
+    <div id="today-metadata-panel" class="panel" role="region" aria-label="Today Metadata" style="display:none;"></div>
+
     <div class="inbox-toolbar" role="region" aria-label="Inbox Filters">
       <div class="inbox-toolbar-row">
         <div class="inbox-filter-control">
@@ -408,11 +554,6 @@ export async function renderTodayView(container, store) {
           <label for="sel-inbox-project" class="filter-label">Project Context:</label>
           <select id="sel-inbox-project" class="form-select filter-select" aria-label="Filter by Project Context">
             <option value="">All Projects</option>
-            ${availableProjects.map((p) => {
-              const pid = typeof p === 'string' ? p : (p.id || p.name);
-              const pname = typeof p === 'string' ? p : (p.name || p.id);
-              return `<option value="${escapeHtml(pid)}" ${initialParams.project === pid ? 'selected' : ''}>${escapeHtml(pname)}</option>`;
-            }).join('')}
           </select>
         </div>
 
@@ -438,11 +579,21 @@ export async function renderTodayView(container, store) {
 
   const refreshContainer = container.querySelector('#today-refresh-container');
   if (refreshContainer) {
-    const cleanup = renderRefreshControl(refreshContainer, 'daily_refresh', () => {
-      executeFetch(getCurrentFilterState());
+    const cleanup = renderSurfaceControls(refreshContainer, {
+      scope: 'daily_refresh',
+      onRefresh: () => executeFetch(getCurrentFilterState()),
+      syncLabel: 'Sync Data',
     });
     container._viewCleanup = cleanup;
   }
+
+  // Populate the project filter options off the critical path.
+  populateProjectOptions(container, initialParams);
+
+  // Load Today metadata groups (runtime date/timezone, checked-through,
+  // daily-run status, source contributions). Freshness groups arrive from the
+  // primary feed fetch below.
+  loadTodayMetadata(container);
 
   async function executeFetch(filterState) {
     const reqGen = requestManager.nextGeneration('today');
@@ -464,6 +615,11 @@ export async function renderTodayView(container, store) {
 
       store.setViewData('today', payload);
       store.setConnection('healthy');
+
+      // Feed the metadata panel's freshness groups from this single response.
+      if (payload && payload.freshness_counts) {
+        updateFreshnessGroups(container, payload.freshness_counts);
+      }
 
       const rawItems = ensureArray(payload.inbox_items || payload.items || payload);
       const { consolidatedList, sections } = consolidateInboxItems(rawItems);

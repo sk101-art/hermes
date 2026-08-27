@@ -21,7 +21,7 @@ import {
 } from '../components/badges.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, ensureArray, formatDate } from '../utils/adapters.js';
-import { renderRefreshControl } from '../components/refresh-control.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 
 // Cached dynamic sources and projects
@@ -175,10 +175,14 @@ export async function renderSearchView(container, store, routeParams = {}) {
 
   const refreshContainer = container.querySelector('#search-refresh-container');
   if (refreshContainer) {
-    const cleanup = renderRefreshControl(refreshContainer, 'search_refresh', () => {
-      if (isSearched) {
-        executeSearch();
-      }
+    const cleanup = renderSurfaceControls(refreshContainer, {
+      scope: 'search_refresh',
+      onRefresh: () => {
+        if (isSearched) {
+          executeSearch();
+        }
+      },
+      syncLabel: 'Sync Data',
     });
     container._viewCleanup = cleanup;
   }

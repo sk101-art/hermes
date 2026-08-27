@@ -36,7 +36,7 @@ import {
   ensureArray,
   formatScorePercentage,
 } from '../utils/adapters.js';
-import { renderRefreshControl } from '../components/refresh-control.js';
+import { renderSurfaceControls } from '../components/surface-controls.js';
 
 
 // In-memory session cache for progressive ClaimDetail objects
@@ -564,8 +564,10 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
 
     const refreshContainer = container.querySelector('#story-refresh-container');
     if (refreshContainer) {
-      const cleanup = renderRefreshControl(refreshContainer, 'story_recheck', () => {
-        renderStoryDetailView(container, store, routeParams);
+      const cleanup = renderSurfaceControls(refreshContainer, {
+        scope: 'story_recheck',
+        onRefresh: () => renderStoryDetailView(container, store, routeParams),
+        syncLabel: 'Sync Data',
       });
       container._viewCleanup = cleanup;
     }
@@ -768,6 +770,9 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
     }
 
   } catch (err) {
+    // Navigation aborted the in-flight fetch: the container now belongs to
+    // the next view, so never write a stale error state into it.
+    if (err && err.isAborted && !err.isTimeout) return;
     if (err.isNetworkError) {
       store.setConnection('offline', err.message);
       container.innerHTML = renderOfflineState(undefined, err.message);

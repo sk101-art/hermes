@@ -217,7 +217,15 @@ def get_inbox(
     # Freshness counts describe the FULL date-specific snapshot, not the
     # filtered page: new / updated / corrected / carried_forward.
     snapshot_items = db.get_inbox_items_by_surface_date(target_date)
-    freshness_counts = {"new": 0, "updated": 0, "corrected": 0, "carried_forward": 0}
+    freshness_counts = {"new": 0, "updated": 0, "corrected": 0, "carried_forward": 0, "project_critical": 0}
+
+    # Phase 4.7: Project Critical group — snapshot items whose project impact
+    # meets the carry-forward project-impact threshold (config-driven, 0.70).
+    from app.inbox.generator import load_inbox_config
+    project_critical_threshold = float(
+        load_inbox_config().get("carry_forward_min_project_impact", 0.70)
+    )
+
     for it in snapshot_items:
         if it.freshness_kind == "new":
             freshness_counts["new"] += 1
@@ -227,6 +235,8 @@ def get_inbox(
             freshness_counts["carried_forward"] += 1
         if it.section == "corrections_updates":
             freshness_counts["corrected"] += 1
+        if (it.project_impact_score or 0) >= project_critical_threshold:
+            freshness_counts["project_critical"] += 1
 
     return {
         "count": len(items),

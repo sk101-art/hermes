@@ -1064,6 +1064,70 @@ class Database:
                 raise
             raise DatabaseMigrationError(f"Migration internal step failed: {e}") from e
 
+        # 16b. Phase 4.5 briefing-revision tables. schema.sql defines these, but
+        # init_db() skips schema.sql on databases that already have
+        # daily_briefings, and the column migrations above never created the
+        # tables. Pre-Phase-4.5 databases therefore lack them entirely, which
+        # breaks the combined briefing-metadata read path. Create them
+        # idempotently with their full column set (so the column-add steps
+        # below are no-ops for freshly created tables).
+        try:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_briefing_revisions (
+                    id TEXT PRIMARY KEY,
+                    briefing_id TEXT NOT NULL,
+                    revision_number INTEGER NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    data_cutoff_at TEXT,
+                    source_status_json TEXT,
+                    content_hash TEXT NOT NULL,
+                    generation_status TEXT NOT NULL,
+                    item_count INTEGER NOT NULL DEFAULT 0,
+                    daily_run_id TEXT,
+                    runtime_timezone TEXT,
+                    created_at TEXT,
+                    UNIQUE(briefing_id, revision_number)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_briefing_revision_items (
+                    revision_id TEXT NOT NULL,
+                    inbox_item_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    section TEXT NOT NULL,
+                    title TEXT,
+                    summary TEXT,
+                    story_cluster_id TEXT,
+                    item_type TEXT,
+                    reason_codes_json TEXT,
+                    inbox_score REAL,
+                    rank_score REAL,
+                    project_impact_score REAL,
+                    matched_project_ids_json TEXT,
+                    snapshot_version TEXT,
+                    source_published_at TEXT,
+                    source_updated_at TEXT,
+                    first_seen_at TEXT,
+                    last_changed_at TEXT,
+                    last_evaluated_at TEXT,
+                    surfaced_at TEXT,
+                    snapshot_date TEXT,
+                    daily_run_id TEXT,
+                    freshness_kind TEXT,
+                    freshness_reason TEXT,
+                    content_hash TEXT,
+                    source_name TEXT,
+                    PRIMARY KEY (revision_id, inbox_item_id)
+                )
+            """)
+        except Exception as e:
+            sanitized = str(e).split("\n")[0]
+            raise DatabaseMigrationError(f"Failed creating briefing revision tables: {sanitized}") from e
+
+        # Refresh the table set so the column-add steps below see the tables
+        # created above.
+        all_tables = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
         # 17. daily_briefing_revisions new columns
         if "daily_briefing_revisions" in all_tables:
             dbr_info = cursor.execute("PRAGMA table_info(daily_briefing_revisions)").fetchall()
@@ -3410,6 +3474,84 @@ class Database:
         if not row:
             return None
         return self._row_to_daily_briefing(row)
+
+    def get_briefing_with_metadata(
+        self, briefing_date: str
+    ) -> Tuple[Optional[DailyBriefing], Optional[DailySignalRun], int, Optional[str]]:
+        """Loads a briefing plus its Phase 4 display metadata in ONE query.
+
+        Returns (briefing, daily_run, revision_count, last_successful_date).
+        Batches what used to be get_daily_briefing + get_daily_signal_run_by_date
+        + count_briefing_revisions + get_last_successful_briefing_date so the
+        Morning Brief read path stays at a constant, minimal query count.
+        The run join uses a LIMIT-1 subquery because (runtime_date,
+        runtime_timezone, run_kind) is the uniqueness key, so a date can have
+        more than one run row.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT b.*,
+                   r.id AS run_id,
+                   r.runtime_date AS run_runtime_date,
+                   r.runtime_timezone AS run_runtime_timezone,
+                   r.run_kind AS run_run_kind,
+                   r.started_at AS run_started_at,
+                   r.completed_at AS run_completed_at,
+                   r.data_cutoff_at AS run_data_cutoff_at,
+                   r.status AS run_status,
+                   r.new_signal_count AS run_new_signal_count,
+                   r.updated_signal_count AS run_updated_signal_count,
+                   r.carried_signal_count AS run_carried_signal_count,
+                   r.retry_count AS run_retry_count,
+                   r.briefing_id AS run_briefing_id,
+                   r.source_status_json AS run_source_status_json,
+                   r.error_summary AS run_error_summary,
+                   r.content_hash AS run_content_hash,
+                   (SELECT COUNT(*) FROM daily_briefing_revisions rev
+                     WHERE rev.briefing_id = b.id) AS revision_count,
+                   (SELECT MAX(b2.briefing_date) FROM daily_briefings b2
+                     WHERE b2.briefing_date < b.briefing_date
+                       AND b2.generation_status IN ('completed', 'completed_empty')
+                   ) AS last_successful_date
+            FROM daily_briefings b
+            LEFT JOIN (
+                SELECT * FROM daily_signal_runs WHERE runtime_date = ? LIMIT 1
+            ) r ON 1 = 1
+            WHERE b.briefing_date = ?
+            """,
+            (briefing_date, briefing_date),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None, None, 0, None
+        d = dict(row)
+        briefing = self._row_to_daily_briefing(row)
+
+        daily_run: Optional[DailySignalRun] = None
+        if d.get("run_id") is not None:
+            daily_run = DailySignalRun(
+                id=d["run_id"],
+                runtime_date=d["run_runtime_date"],
+                runtime_timezone=d["run_runtime_timezone"],
+                run_kind=d.get("run_run_kind") or "daily_refresh",
+                started_at=datetime.fromisoformat(d["run_started_at"]),
+                completed_at=datetime.fromisoformat(d["run_completed_at"]) if d.get("run_completed_at") else None,
+                data_cutoff_at=datetime.fromisoformat(d["run_data_cutoff_at"]) if d.get("run_data_cutoff_at") else None,
+                status=d["run_status"],
+                new_signal_count=d.get("run_new_signal_count") or 0,
+                updated_signal_count=d.get("run_updated_signal_count") or 0,
+                carried_signal_count=d.get("run_carried_signal_count") or 0,
+                retry_count=d.get("run_retry_count") or 0,
+                briefing_id=d.get("run_briefing_id"),
+                source_status_json=d.get("run_source_status_json"),
+                error_summary=d.get("run_error_summary"),
+                content_hash=d.get("run_content_hash") or "",
+            )
+
+        revision_count = int(d.get("revision_count") or 0)
+        last_successful_date = d.get("last_successful_date")
+        return briefing, daily_run, revision_count, last_successful_date
 
     def get_latest_daily_briefing(self) -> Optional[DailyBriefing]:
         cursor = self.conn.cursor()

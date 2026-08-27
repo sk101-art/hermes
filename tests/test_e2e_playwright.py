@@ -1560,6 +1560,10 @@ def test_playwright_phase16_user_journeys_and_lazy_claim_policy(test_servers):
         # Step 7: Briefing -> Story Dossier
         page.goto(f"{BASE_URL}/#/briefing", wait_until="networkidle")
         page.wait_for_selector("h1:has-text('Morning Briefing')", timeout=15000)
+        # Shell-first rendering paints the h1 before data loads; wait for the
+        # briefing's story links to appear before counting so the click below
+        # is not skipped by a fetch race.
+        page.wait_for_selector("a[href*='#/story/']", timeout=15000)
         briefing_story_link = page.locator("a[href*='#/story/']").first
         if briefing_story_link.count() > 0:
             briefing_story_link.click()
