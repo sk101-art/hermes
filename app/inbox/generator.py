@@ -388,6 +388,9 @@ def generate_daily_inbox(
     runtime_config = load_runtime_config()
     today_local_date = surface_date or runtime_date_string(now, runtime_config)
     today_local_date_clean = today_local_date.replace("-", "")
+    # Phase 4 Req 4: runtime-day bounds (UTC) used to decide whether a source
+    # publication/update actually qualifies for the current runtime day.
+    day_start_utc, day_end_utc = runtime_day_bounds_utc(today_local_date, runtime_config)
 
     if not preview:
         if rebuild_today:
@@ -448,6 +451,10 @@ def generate_daily_inbox(
                     ev_time = ev_time.replace(tzinfo=timezone.utc)
                 if latest_event_dt is None or ev_time > latest_event_dt:
                     latest_event_dt = ev_time
+        # Phase 4 Req 4: keep the pure source-evidence time separate from the
+        # bookkeeping fallback. Provenance fields must never use the cluster
+        # created_at fallback; it is only used for age/scoring math.
+        latest_source_evidence_dt = latest_event_dt
         if latest_event_dt is None:
             latest_event_dt = cluster.created_at
         if latest_event_dt.tzinfo is None:
@@ -456,6 +463,26 @@ def generate_daily_inbox(
         age_hours = max(0.0, (now - latest_event_dt).total_seconds() / 3600.0)
         repo_id = extract_repository_identity(events)
         is_dup_repo = bool(repo_id and repo_id in seen_repos)
+
+        # Phase 4 Req 4: provenance must come from SOURCE / discovery / content
+        # evidence, never cluster bookkeeping timestamps. The actual source
+        # publication time stays null when no source provides one, and the first
+        # discovery by HERMES is the earliest event discovered_at.
+        source_published_dt = None
+        first_discovered_dt = None
+        for ev in events:
+            pub = ev.published_at
+            if pub:
+                if pub.tzinfo is None:
+                    pub = pub.replace(tzinfo=timezone.utc)
+                if source_published_dt is None or pub > source_published_dt:
+                    source_published_dt = pub
+            disc = getattr(ev, "discovered_at", None)
+            if disc:
+                if disc.tzinfo is None:
+                    disc = disc.replace(tzinfo=timezone.utc)
+                if first_discovered_dt is None or disc < first_discovered_dt:
+                    first_discovered_dt = disc
 
         score, reasons, item_type, breakdown = calculate_inbox_score(
             cluster=cluster,
@@ -533,6 +560,9 @@ def generate_daily_inbox(
             "match_type": match_type_str,
             "repo_id": repo_id,
             "latest_event_dt": latest_event_dt,
+            "latest_source_evidence_dt": latest_source_evidence_dt,
+            "source_published_dt": source_published_dt,
+            "first_discovered_dt": first_discovered_dt,
             "user_facing_changes": user_facing_changes,
         })
 
@@ -549,7 +579,12 @@ def generate_daily_inbox(
 
     for c in eligible_candidates:
         existing_inbox = c["existing_inbox"]
-        first_seen_dt = existing_inbox.first_seen_at if (existing_inbox and existing_inbox.first_seen_at) else now
+        first_seen_dt = existing_inbox.first_seen_at if (existing_inbox and existing_inbox.first_seen_at) else None
+        if first_seen_dt is None:
+            # Phase 4 Req 4: first discovery by HERMES is the earliest event
+            # discovered_at; fall back to the materialization time only when
+            # no discovery evidence exists.
+            first_seen_dt = c.get("first_discovered_dt") or now
         if first_seen_dt.tzinfo is None:
             first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
         c["first_seen_dt"] = first_seen_dt
@@ -577,16 +612,24 @@ def generate_daily_inbox(
                 has_change_today = True
 
         c["last_changed_dt"] = last_changed_dt
+        # Phase 4 Req 4: freshness is derived from source / discovery / content
+        # evidence (first-seen, event publication/discovery, change times), never
+        # from cluster bookkeeping timestamps. freshness_reason records the
+        # specific evidence basis for auditability.
         if existing_inbox is None:
             # Never surfaced before: this item is new to the inbox regardless
             # of the wall-clock relationship between now and the surface date.
             c["freshness_kind"] = "new"
+            c["freshness_reason"] = "new_to_inbox"
         elif is_first_seen_today:
             c["freshness_kind"] = "new"
+            c["freshness_reason"] = "first_seen_today"
         elif has_new_event_today or has_change_today:
             c["freshness_kind"] = "updated"
+            c["freshness_reason"] = "new_source_evidence_today"
         else:
             c["freshness_kind"] = "carried_forward"
+            c["freshness_reason"] = "no_new_source_evidence_today"
 
     # Active vs Suppressed selection with section caps + carry-forward gate.
     # A quiet day may contain zero items: nothing is ever padded to a target.
@@ -601,6 +644,9 @@ def generate_daily_inbox(
         existing_inbox = c["existing_inbox"]
         saved_item = c["saved_item"]
         latest_event_dt = c["latest_event_dt"]
+        latest_source_evidence_dt = c.get("latest_source_evidence_dt")
+        source_published_dt = c.get("source_published_dt")
+        first_discovered_dt = c.get("first_discovered_dt")
         freshness_kind = c["freshness_kind"]
         first_seen_dt = c["first_seen_dt"]
         last_changed_dt = c["last_changed_dt"]
@@ -663,6 +709,43 @@ def generate_daily_inbox(
         if is_carried and item_type in ("new_release", "new_story"):
             item_type = "story_update"
 
+        # Phase 4 Req 4: "new_release" is only truthful when an actual release
+        # publication/update qualifies for the current runtime day. An old
+        # publication discovered today is shown as "Newly discovered today",
+        # never "New Release". A missing publication timestamp can never qualify
+        # as a same-day release. Evidence: a same-day github release published_at,
+        # or a same-day supersede change (release-update).
+        if item_type == "new_release" and not is_carried:
+            release_pub_dt = None
+            for ev in c["events"]:
+                if ev.source == "github" and ev.event_type == "release" and ev.published_at:
+                    pub = ev.published_at
+                    if pub.tzinfo is None:
+                        pub = pub.replace(tzinfo=timezone.utc)
+                    if release_pub_dt is None or pub > release_pub_dt:
+                        release_pub_dt = pub
+            release_change_today = False
+            for ch in c["user_facing_changes"]:
+                if "supersede" in ch.change_type:
+                    ch_created = ch.created_at
+                    if ch_created.tzinfo is None:
+                        ch_created = ch_created.replace(tzinfo=timezone.utc)
+                    if day_start_utc <= ch_created <= day_end_utc:
+                        release_change_today = True
+                        break
+            qualifies_same_day = (
+                (release_pub_dt is not None and day_start_utc <= release_pub_dt <= day_end_utc)
+                or release_change_today
+            )
+            if not qualifies_same_day:
+                item_type = "newly_discovered"
+                if release_pub_dt is not None:
+                    if "old_release_discovered_today" not in item_reasons:
+                        item_reasons.append("old_release_discovered_today")
+                else:
+                    if "release_publication_time_missing" not in item_reasons:
+                        item_reasons.append("release_publication_time_missing")
+
         item = InboxItem(
             id=inbox_item_id,
             entity_type="cluster",
@@ -686,15 +769,17 @@ def generate_daily_inbox(
             matched_project_ids=matched_pids,
             reason_codes=item_reasons,
             surface_date=today_local_date,
-            latest_event_at=latest_event_dt.isoformat() if latest_event_dt else None,
+            latest_event_at=latest_source_evidence_dt.isoformat() if latest_source_evidence_dt else None,
             last_materialized_at=now.isoformat(),
             data_cutoff_at=(data_cutoff_at or now).isoformat(),
             freshness_kind=freshness_kind,
+            freshness_reason=c.get("freshness_reason"),
             daily_run_id=daily_run_id or f"daily-run:{today_local_date}",
-            # Provenance: source timestamps come from the newest SOURCE event
-            # (published_at or discovered_at), never internal bookkeeping times.
-            source_published_at=latest_event_dt,
-            source_updated_at=latest_event_dt,
+            # Phase 4 Req 4: provenance fields come from SOURCE / discovery /
+            # content evidence only. The actual source publication time stays
+            # null when no source provides one (never a bookkeeping fallback).
+            source_published_at=source_published_dt,
+            source_updated_at=source_published_dt,
             last_changed_at=last_changed_dt,
             last_evaluated_at=now,
             surfaced_at=now,

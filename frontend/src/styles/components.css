@@ -1569,6 +1569,12 @@
   border: 1px solid #a5f3fc;
 }
 
+.type-discovered {
+  background-color: #f0fdfa;
+  color: #0f766e;
+  border: 1px solid #99f6e4;
+}
+
 .type-maturity {
   background-color: #fdf4ff;
   color: #a21caf;
@@ -1631,6 +1637,27 @@
   background-color: #f3e8ff;
   color: #7e22ce;
   border: 1px solid #e9d5ff;
+}
+
+.inbox-provenance-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background-color: var(--bg-neutral-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.inbox-provenance-box .provenance-item {
+  font-size: var(--text-xs);
+  color: var(--ink-secondary);
+}
+
+.inbox-provenance-box .provenance-missing {
+  color: #b45309;
+  font-style: italic;
 }
 
 .inbox-expiry-tag {

@@ -12,7 +12,7 @@
 import { api } from '../api/endpoints.js';
 import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
-import { escapeHtml, formatDate, ensureArray, toTitleCase } from '../utils/adapters.js';
+import { escapeHtml, formatDate, formatTime, ensureArray, toTitleCase } from '../utils/adapters.js';
 import {
   renderInboxPriorityBadge,
   renderInboxRankBadge,
@@ -41,6 +41,7 @@ export const ITEM_TYPE_META = {
   claim_strengthened: { label: 'Corroboration Added', classModifier: 'type-corroboration' },
   claim_weakened: { label: 'Contradiction / Weakened', classModifier: 'type-caution type-weakened' },
   new_release: { label: 'New Release', classModifier: 'type-release' },
+  newly_discovered: { label: 'Newly Discovered Today', classModifier: 'type-discovered' },
   new_risk: { label: 'Risk Change', classModifier: 'type-caution type-risk' },
   maturity_change: { label: 'Maturity Shift', classModifier: 'type-maturity' },
   correction: { label: 'Correction', classModifier: 'type-caution type-correction' },
@@ -212,6 +213,13 @@ export function renderInboxCard(item) {
   const secondaryTypes = ensureArray(item.secondaryItemTypes);
   const expiryHtml = formatExpiryLifecycle(item.expires_at);
 
+  // Phase 4 Req 4: truthful provenance timestamps. A missing source publication
+  // time is never fabricated; it is displayed as an explicit notice.
+  const formatAbsolute = (value) => (value ? `${formatDate(value)} ${formatTime(value)}` : null);
+  const publishedText = formatAbsolute(item.source_published_at) || 'Source publication time not provided';
+  const firstSeenText = formatAbsolute(item.first_seen_at) || '—';
+  const lastEvaluatedText = formatAbsolute(item.last_evaluated_at) || '—';
+
   const typeHtml = formatItemType(itemType);
   const stateBadge = state === 'unseen'
     ? '<span class="inbox-state-badge state-unseen" data-state="unseen">Unseen</span>'
@@ -293,6 +301,12 @@ export function renderInboxCard(item) {
       ` : ''}
 
       ${projectContextHtml}
+
+      <div class="inbox-provenance-box" data-testid="inbox-provenance-${escapeHtml(id)}">
+        <span class="provenance-item provenance-published${item.source_published_at ? '' : ' provenance-missing'}" data-provenance="source_published_at">Published: ${escapeHtml(publishedText)}</span>
+        <span class="provenance-item" data-provenance="first_seen_at">First seen: ${escapeHtml(firstSeenText)}</span>
+        <span class="provenance-item" data-provenance="last_evaluated_at">Last evaluated: ${escapeHtml(lastEvaluatedText)}</span>
+      </div>
 
       <div class="inbox-card-bottom">
         <div class="inbox-action-group">

@@ -921,6 +921,15 @@ def get_today_inbox(
             "data_cutoff_at": it.data_cutoff_at,
             "freshness_kind": it.freshness_kind,
             "daily_run_id": it.daily_run_id,
+            # Phase 4 Req 4: full provenance so the UI can show truthful
+            # source publication / discovery / evaluation timestamps.
+            "source_published_at": it.source_published_at.isoformat() if it.source_published_at else None,
+            "source_updated_at": it.source_updated_at.isoformat() if it.source_updated_at else None,
+            "first_seen_at": it.first_seen_at.isoformat() if it.first_seen_at else None,
+            "last_changed_at": it.last_changed_at.isoformat() if it.last_changed_at else None,
+            "last_evaluated_at": it.last_evaluated_at.isoformat() if it.last_evaluated_at else None,
+            "surfaced_at": it.surfaced_at.isoformat() if it.surfaced_at else None,
+            "freshness_reason": it.freshness_reason,
         })
     return out
 

@@ -1232,6 +1232,7 @@ class Database:
             metadata=m,
             raw_payload=json.loads(r["raw_payload_json"]) if r["raw_payload_json"] else {},
             published_at=datetime.fromisoformat(r["published_at"]) if r["published_at"] else None,
+            discovered_at=disc_at,
             trust_score=r["trust_score"] or 0.0,
             relevance_score=r["relevance_score"] or 0.0,
             novelty_score=r["novelty_score"] or 0.0,
