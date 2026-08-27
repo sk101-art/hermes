@@ -7,6 +7,7 @@ import './styles/index.css';
 import { api } from './api/endpoints.js';
 import { getApiBaseUrl } from './api/client.js';
 import { router } from './state/router.js';
+import { operationManager } from './state/operation-manager.js';
 import { store } from './state/store.js';
 import { renderShell } from './components/shell.js';
 import { mountErrorBoundary } from './components/error-boundary.js';
@@ -72,6 +73,16 @@ export function initApp() {
 
   // Check initial backend health
   checkBackendHealth();
+
+  // Resume monitoring any background operations that survived a page reload
+  // (operation IDs are persisted in localStorage keyed by scope).
+  operationManager.resumePersistedOperations();
+
+  // On route transitions, pause operation polling WITHOUT cancelling backend
+  // work; views re-attach monitoring when their refresh control renders.
+  router.subscribe(() => {
+    operationManager.pauseAllMonitoring();
+  });
 
   // Initialize router
   router.init();

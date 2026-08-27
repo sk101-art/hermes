@@ -112,9 +112,11 @@ export const api = {
 
   // Refresh Operations
   enqueueRefresh: (scope, idempotencyKey = null, options = {}) => {
+    const body = { scope, idempotency_key: idempotencyKey };
+    if (options.targetId) body.target_id = options.targetId;
     return requestManager.request('/runtime/refresh', {
       method: 'POST',
-      body: { scope, idempotency_key: idempotencyKey },
+      body,
       viewKey: options.viewKey || 'runtime',
       ...options,
     });
@@ -142,10 +144,18 @@ export const api = {
       ...options,
     });
   },
+  updateProject: (projectId, data, options = {}) => {
+    return requestManager.request(`/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PUT',
+      body: data,
+      viewKey: 'projects',
+      ...options,
+    });
+  },
   archiveProject: (projectId, reason = null, options = {}) => {
     const params = reason ? { reason } : {};
-    return requestManager.request(`/projects/${encodeURIComponent(projectId)}/archive`, {
-      method: 'POST',
+    return requestManager.request(`/projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE',
       params,
       viewKey: 'projects',
       ...options,
@@ -158,9 +168,17 @@ export const api = {
       ...options,
     });
   },
-  scanProject: (projectId, options = {}) => {
-    return requestManager.request(`/projects/${encodeURIComponent(projectId)}/scan`, {
+  // Targeted project scan: enqueued as a project_scan refresh operation that
+  // scans ONLY this project (never all projects). Returns a RefreshOperation
+  // (202) whose id can be tracked via getOperation.
+  scanProject: (projectId, idempotencyKey = null, options = {}) => {
+    return requestManager.request('/runtime/refresh', {
       method: 'POST',
+      body: {
+        scope: 'project_scan',
+        target_id: projectId,
+        idempotency_key: idempotencyKey,
+      },
       viewKey: 'projects',
       ...options,
     });

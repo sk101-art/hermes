@@ -17,27 +17,56 @@ export class ApiError extends Error {
   }
 }
 
+export const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765';
+
+/**
+ * Validate a stored API base URL. A stale/corrupt hermes_api_url value
+ * (e.g. "undefined", "null", a bare path, or a non-http scheme) would
+ * otherwise silently break every request with a confusing error.
+ * Must be http(s)://host[:port][/path] with a non-empty host.
+ */
+export function isValidApiBaseUrl(url) {
+  if (typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!/^https?:\/\/[^\s/]+(:\d{1,5})?(\/[^\s]*)?$/i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function getApiBaseUrl() {
   if (typeof window !== 'undefined') {
     try {
       const urlParams = new URLSearchParams(window.location.search);
-      if (urlParams.get('api_url')) return urlParams.get('api_url');
-      if (urlParams.get('api_port')) return `http://127.0.0.1:${urlParams.get('api_port')}`;
+      const paramUrl = urlParams.get('api_url');
+      if (paramUrl && isValidApiBaseUrl(paramUrl)) return paramUrl.trim();
+      const paramPort = urlParams.get('api_port');
+      if (paramPort && /^\d{1,5}$/.test(paramPort)) return `http://127.0.0.1:${paramPort}`;
     } catch {}
     if (window.localStorage) {
       try {
         const stored = window.localStorage.getItem('hermes_api_url');
-        if (stored) return stored;
+        if (stored) {
+          if (isValidApiBaseUrl(stored)) {
+            return stored.trim();
+          }
+          // Stale/corrupt stored URL: discard it and fall back to the
+          // canonical default instead of failing every request.
+          window.localStorage.removeItem('hermes_api_url');
+        }
       } catch {}
     }
   }
-  return 'http://127.0.0.1:8765';
+  return DEFAULT_API_BASE_URL;
 }
 
 export function setApiBaseUrl(url) {
   if (typeof window !== 'undefined' && window.localStorage) {
-    if (url) {
-      window.localStorage.setItem('hermes_api_url', url);
+    if (url && isValidApiBaseUrl(url)) {
+      window.localStorage.setItem('hermes_api_url', url.trim());
     } else {
       window.localStorage.removeItem('hermes_api_url');
     }
@@ -174,5 +203,7 @@ export default {
   request,
   getApiBaseUrl,
   setApiBaseUrl,
+  isValidApiBaseUrl,
+  DEFAULT_API_BASE_URL,
   ApiError,
 };

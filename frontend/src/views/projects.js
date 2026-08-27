@@ -12,7 +12,6 @@ import {
   renderProjectRelevanceBadge,
   renderProjectImpactBadge,
 } from '../components/badges.js';
-import { renderRefreshControl } from '../components/refresh-control.js';
 
 
 /**
@@ -121,7 +120,6 @@ async function renderProjectIndexView(container, store) {
           <p class="lead">HERMES processes local repository source code, configuration, manifests, and documentation to build technology profiles and relevant engineering context.</p>
         </div>
         <div class="page-header-meta" style="display:flex; flex-direction:column; align-items:flex-end; gap:var(--space-2);">
-          <div id="projects-refresh-container"></div>
           <div>
             <strong>${activeProjects.length}</strong>
             <span>active project${activeProjects.length === 1 ? '' : 's'}</span>
@@ -253,14 +251,9 @@ async function renderProjectIndexView(container, store) {
 
     container.innerHTML = html;
 
-    // Bind refresh control
-    const refreshContainer = container.querySelector('#projects-refresh-container');
-    if (refreshContainer) {
-      const cleanup = renderRefreshControl(refreshContainer, 'project_scan', () => {
-        renderProjectIndexView(container, store);
-      });
-      container._viewCleanup = cleanup;
-    }
+    // Note: project scans are targeted operations (project_scan + target_id),
+    // so there is no index-level Sync control — use "Rescan Project" on each
+    // project's detail view instead.
 
     // Bind add project form submit
     const addForm = container.querySelector('#add-project-form');

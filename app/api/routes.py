@@ -478,6 +478,9 @@ class ProjectUpdate(BaseModel):
 class RefreshRequest(BaseModel):
     scope: str
     idempotency_key: Optional[str] = None
+    # Optional target for targeted operations (e.g. project_scan scans ONLY
+    # the project named here — never all projects).
+    target_id: Optional[str] = None
 
 # Scopes the daemon worker knows how to execute (must mirror runner dispatch).
 VALID_REFRESH_SCOPES = {
@@ -562,6 +565,14 @@ def enqueue_refresh(req: RefreshRequest, response: Response, db: Database = Depe
             detail=f"Unknown refresh scope '{scope}'. Valid scopes: {sorted(VALID_REFRESH_SCOPES)}",
         )
 
+    target_id = (req.target_id or "").strip() or None
+    # project_scan is a targeted operation: it must name exactly one project.
+    if scope == "project_scan" and not target_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Scope 'project_scan' requires target_id (the project to scan).",
+        )
+
     cursor = db.conn.cursor()
     cursor.execute(
         "SELECT * FROM refresh_operations WHERE scope = ? AND status IN ('queued', 'running') LIMIT 1",
@@ -584,6 +595,7 @@ def enqueue_refresh(req: RefreshRequest, response: Response, db: Database = Depe
     op = RefreshOperation(
         id=f"refresh:{scope}:{now.timestamp()}",
         scope=scope,
+        target_id=target_id,
         status="queued",
         requested_at=now,
         idempotency_key=idempotency_key,

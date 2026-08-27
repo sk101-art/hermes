@@ -6,8 +6,9 @@ import { operationManager } from '../state/operation-manager.js';
  * @param {string} scope - The operation scope ('daily_refresh', 'project_scan', etc.)
  * @param {Function} [onComplete] - Callback triggered when the refresh finishes successfully
  * @param {string} [label] - Button label (default "Sync Data"; e.g. "Run Daily Refresh")
+ * @param {Object} [options] - Extra startRefresh options (e.g. { targetId } for project_scan)
  */
-export function renderRefreshControl(parentElement, scope, onComplete = null, label = 'Sync Data') {
+export function renderRefreshControl(parentElement, scope, onComplete = null, label = 'Sync Data', options = {}) {
   if (!parentElement) return () => {};
 
   const btnId = `btn-refresh-${scope}`;
@@ -34,11 +35,21 @@ export function renderRefreshControl(parentElement, scope, onComplete = null, la
     if (state.status === 'queued') {
       btn.disabled = true;
       statusEl.style.color = 'var(--warning-color, #d97706)';
-      statusEl.textContent = 'Queued in background...';
+      statusEl.textContent = state.message || (state.daemonWarning
+        ? 'Queued — waiting for the background daemon to pick it up...'
+        : 'Queued in background...');
     } else if (state.status === 'running') {
       btn.disabled = true;
       statusEl.style.color = 'var(--info-color, #2563eb)';
       statusEl.textContent = 'Syncing data...';
+    } else if (state.status === 'partial') {
+      btn.disabled = true;
+      statusEl.style.color = 'var(--warning-color, #d97706)';
+      statusEl.textContent = 'Syncing (partial results so far)...';
+    } else if (state.status === 'reconnecting') {
+      btn.disabled = true;
+      statusEl.style.color = 'var(--warning-color, #d97706)';
+      statusEl.textContent = state.message || 'Reconnecting to the API...';
     } else if (state.status === 'completed') {
       btn.disabled = false;
       statusEl.style.color = 'var(--success-color, #16a34a)';
@@ -62,13 +73,16 @@ export function renderRefreshControl(parentElement, scope, onComplete = null, la
   const unsubscribe = operationManager.subscribe(scope, updateStatus);
 
   if (initiallyActive) {
+    // Resume monitoring if it was paused by a route transition — the backend
+    // operation kept running; we only re-attach polling here.
+    operationManager.resumeMonitoring(scope);
     updateStatus({ status: 'running' });
   }
 
   btn.addEventListener('click', async () => {
     try {
       btn.disabled = true;
-      await operationManager.startRefresh(scope);
+      await operationManager.startRefresh(scope, null, options);
     } catch (err) {
       console.error("Failed to start refresh:", err);
       updateStatus({ status: 'failed', error: err.message || String(err) });
