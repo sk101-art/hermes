@@ -31,6 +31,12 @@ SUPERVISOR_LOCK_PATH = "data/supervisor.lock"
 SUPERVISOR_STATE_PATH = "data/supervisor_state.json"
 MAX_RESTART_ATTEMPTS = 5
 RESTART_BACKOFF_BASE_SECONDS = 5
+# Repository root derived from this file's location. Used as a defense-in-
+# depth working directory: the launcher script already cd /d's here, but if
+# the supervisor is ever started from another directory, every relative path
+# (config/, data/, logs/) in this process and its children would otherwise
+# resolve against the wrong location.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _resolve_python() -> str:
@@ -86,6 +92,14 @@ def run_supervisor(dry_run: bool = False) -> int:
         print(f"Restart:   max {MAX_RESTART_ATTEMPTS} attempts, backoff {RESTART_BACKOFF_BASE_SECONDS}s base")
         print("=" * 65)
         return 0
+
+    # Defense in depth: the launcher script already cd /d's into the repo,
+    # but if the supervisor is ever started from another directory, correct
+    # the working directory here so every relative path (config/, data/,
+    # logs/) in this process and its children resolves correctly.
+    if Path.cwd().resolve() != PROJECT_ROOT:
+        os.chdir(PROJECT_ROOT)
+        print(f"[Supervisor] Working directory corrected to {PROJECT_ROOT}")
 
     # Prevent duplicate supervisors
     lock = SingleInstanceLock(lock_path=SUPERVISOR_LOCK_PATH)

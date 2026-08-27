@@ -1,7 +1,11 @@
 import argparse
 import sys
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from app.api.routes import router
@@ -24,6 +28,30 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+# Serve the built frontend (frontend/dist) from the API server itself so the
+# entire product lives at a single URL (http://127.0.0.1:8765) with no
+# separate web server to manage. The SPA uses hash-based routing, so it only
+# needs the index document at "/" plus the hashed build assets under /assets.
+#
+# We deliberately do NOT mount StaticFiles at "/" — a root mount would
+# intercept every path and return 405 for POST/PUT/DELETE to removed API
+# endpoints instead of the truthful 404 the API contract requires. Instead:
+#   - "/"            -> serves index.html explicitly
+#   - "/assets/*"    -> serves the hashed build assets
+# API routes are registered first, so they always take precedence, and any
+# unknown API path still falls through to the router's 404 handling.
+FRONTEND_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if FRONTEND_DIST_DIR.is_dir():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")),
+        name="frontend-assets",
+    )
+
+    @app.get("/", include_in_schema=False)
+    def serve_frontend_index():
+        return FileResponse(str(FRONTEND_DIST_DIR / "index.html"))
 
 
 def validate_api_host(host: str, allow_external: bool = False) -> str:
@@ -57,6 +85,10 @@ def main():
     print("=" * 70)
     print(f"Host:       {safe_host}")
     print(f"Port:       {port}")
+    if FRONTEND_DIST_DIR.is_dir():
+        print(f"UI:         http://{safe_host}:{port}/  (built frontend served here)")
+    else:
+        print(f"UI:         frontend/dist not built — run 'npm run build' in frontend/")
     print(f"Swagger:    http://{safe_host}:{port}/docs")
     print(f"Endpoints:  /health, /search, /inbox, /stories, /claims, /projects, /saved")
     print("=" * 70)

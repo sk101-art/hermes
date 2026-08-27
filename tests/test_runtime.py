@@ -274,7 +274,15 @@ def test_windows_install_parameters_and_dry_run():
     assert task_name == "HERMES-Tech-Intelligence"
     assert "python" in python_exe.lower()
     assert Path(working_dir).exists()
-    assert python_exe in action_cmd
+    # The task action is the generated launcher script, which cd /d's into
+    # the repository root before starting the supervisor.
+    assert action_cmd.endswith("hermes_startup.bat")
+
+    from app.runtime.install_windows import launcher_script_body
+    body = launcher_script_body()
+    assert python_exe in body
+    assert "app.runtime.supervisor" in body
+    assert f'cd /d "{working_dir}"' in body
 
     # Test dry run without modifying OS Task Scheduler
     success, msg = install_scheduled_task(dry_run=True)

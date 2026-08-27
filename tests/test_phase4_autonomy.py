@@ -512,7 +512,12 @@ def test_windows_installer_dry_run_targets_supervisor(tmp_path, monkeypatch, cap
 
     task_name, py_exe, wd, action_cmd = install_windows.build_task_parameters()
     assert task_name == install_windows.TASK_NAME
-    assert "app.runtime.supervisor" in action_cmd  # supervisor, not bare runner
+    # The task action is the generated launcher script; the launcher body
+    # cd /d's into the repo and starts the supervisor (not the bare runner).
+    assert action_cmd.endswith("hermes_startup.bat")
+    body = install_windows.launcher_script_body()
+    assert "app.runtime.supervisor" in body
+    assert f'cd /d "{wd}"' in body
 
     ok, msg = install_windows.install_scheduled_task(dry_run=True)
     assert ok is True
