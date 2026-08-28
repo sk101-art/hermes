@@ -39,8 +39,11 @@ def _completed(returncode, stdout="", stderr=""):
 
 
 def _pick_stdout(path):
-    """Emits the exact marker line the PowerShell dialog prints on success."""
-    return "HERMES_PICK:" + json.dumps({"path": str(path)}) + "\n"
+    """Emits the exact marker line the native dialog prints on success."""
+    import sys
+    if sys.platform == "win32":
+        return "HERMES_PICK:" + json.dumps({"path": str(path)}) + "\n"
+    return str(path) + "\n"
 
 
 def _make_launcher(result):
