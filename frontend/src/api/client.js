@@ -20,6 +20,59 @@ export class ApiError extends Error {
 export const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765';
 
 /**
+ * Custom client header required by the sensitive /local/* endpoints. A
+ * cross-origin page cannot set arbitrary headers without passing a CORS
+ * preflight, which the locked-down CORS policy denies — so this header is a
+ * real barrier against drive-by webpages hitting the folder-picker API.
+ */
+export const HERMES_CLIENT_HEADER = 'X-Hermes-Client';
+export const HERMES_CLIENT_HEADER_VALUE = 'hermes-ui';
+export const HERMES_SESSION_HEADER = 'X-Hermes-Session';
+
+/**
+ * Local session token cache. Issued by POST /local/session and attached to
+ * every request so picker selection tokens stay tied to this UI session.
+ */
+let _sessionToken = null;
+let _sessionPromise = null;
+
+export function setSessionToken(token) {
+  _sessionToken = token || null;
+}
+
+export function getSessionToken() {
+  return _sessionToken;
+}
+
+/**
+ * Lazily obtains (and caches) a local session token from the backend.
+ * Failures are non-fatal: endpoints that require it will surface 401.
+ */
+export async function ensureSessionToken() {
+  if (_sessionToken) return _sessionToken;
+  if (_sessionPromise) return _sessionPromise;
+  _sessionPromise = (async () => {
+    try {
+      const baseUrl = getApiBaseUrl();
+      const resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/local/session`, {
+        method: 'POST',
+        headers: { [HERMES_CLIENT_HEADER]: HERMES_CLIENT_HEADER_VALUE },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.session_token) _sessionToken = data.session_token;
+      }
+    } catch {
+      // Non-fatal; sensitive endpoints will report 401 if needed.
+    } finally {
+      _sessionPromise = null;
+    }
+    return _sessionToken;
+  })();
+  return _sessionPromise;
+}
+
+/**
  * Validate a stored API base URL. A stale/corrupt hermes_api_url value
  * (e.g. "undefined", "null", a bare path, or a non-http scheme) would
  * otherwise silently break every request with a confusing error.
@@ -133,12 +186,18 @@ export async function request(endpoint, options = {}) {
     const isJsonBody = fetchOptions.body && typeof fetchOptions.body === 'object' && (typeof FormData === 'undefined' || !(fetchOptions.body instanceof FormData));
     const serializedBody = isJsonBody ? JSON.stringify(fetchOptions.body) : fetchOptions.body;
 
+    // Attach the client identity header (required by /local/* endpoints) and
+    // the local session token when one has been issued.
+    const securityHeaders = { [HERMES_CLIENT_HEADER]: HERMES_CLIENT_HEADER_VALUE };
+    if (_sessionToken) securityHeaders[HERMES_SESSION_HEADER] = _sessionToken;
+
     const response = await fetch(url, {
       ...fetchOptions,
       body: serializedBody,
       headers: {
         'Accept': 'application/json',
         ...(isJsonBody ? { 'Content-Type': 'application/json' } : {}),
+        ...securityHeaders,
         ...fetchOptions.headers,
       },
       signal: controller.signal,
@@ -148,6 +207,9 @@ export async function request(endpoint, options = {}) {
 
     // Handle non-2xx HTTP responses
     if (!response.ok) {
+      // A 401 means our session token expired — drop it so the next call
+      // re-issues a fresh one.
+      if (response.status === 401) setSessionToken(null);
       let errorData = null;
       let errorMsg = `HTTP ${response.status}: ${response.statusText}`;
       try {
@@ -204,6 +266,12 @@ export default {
   getApiBaseUrl,
   setApiBaseUrl,
   isValidApiBaseUrl,
+  ensureSessionToken,
+  getSessionToken,
+  setSessionToken,
+  HERMES_CLIENT_HEADER,
+  HERMES_CLIENT_HEADER_VALUE,
+  HERMES_SESSION_HEADER,
   DEFAULT_API_BASE_URL,
   ApiError,
 };

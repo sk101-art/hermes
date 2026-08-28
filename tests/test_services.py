@@ -1697,7 +1697,9 @@ def test_get_project_risks_canonical_risk_and_separation(temp_db):
         reason_codes=["security_vulnerability"],
     ))
 
-    # Cluster 2: High impact score (>= 0.70) with tech state but no claims/events -> insufficient_data, high_project_impact concern
+    # Cluster 2: High impact score (>= 0.70) with tech state but no claims/events
+    # -> insufficient_data. Per the explanation-upgrade spec, a high impact score
+    # alone is NEVER an engineering concern, so this cluster must NOT appear.
     cl2 = StoryCluster(id="cl_sec_2", canonical_title="CUDA 13 High Impact Release", event_ids=[], sources=[], cluster_score=0.75, created_at=now, updated_at=now)
     db.save_cluster(cl2)
     db.save_technology_state(TechnologyState(
@@ -1739,7 +1741,9 @@ def test_get_project_risks_canonical_risk_and_separation(temp_db):
     ))
 
     risks = projects_service.get_project_risks(proj_id, db=db)
-    assert len(risks) == 3
+    # Cluster 2 (high impact score only) is no longer a concern, so only
+    # clusters 1 and 3 remain.
+    assert len(risks) == 2
 
     by_cid = {r["cluster_id"]: r for r in risks}
 
@@ -1750,12 +1754,8 @@ def test_get_project_risks_canonical_risk_and_separation(temp_db):
     assert r1["risk_level"] is None
     assert r1["risk_score"] is None
 
-    # Cluster 2: High project impact (>= 0.70) does NOT become assessed risk; stays insufficient_data
-    r2 = by_cid["cl_sec_2"]
-    assert r2["concern_type"] == "high_project_impact"
-    assert r2["risk_status"] == "insufficient_data"
-    assert r2["risk_level"] is None
-    assert r2["risk_score"] == 0.65  # Raw score preserved under insufficient_data
+    # Cluster 2: High project impact alone is NOT a concern (spec change).
+    assert "cl_sec_2" not in by_cid
 
     # Cluster 3: Assessed canonical risk
     r3 = by_cid["cl_sec_3"]

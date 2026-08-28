@@ -129,6 +129,35 @@ EXPLICIT_DEPRECATION_PREFIXES = (
     "eol:",
 )
 
+# Additional audited concern criteria (explanation-upgrade spec).
+EXPLICIT_INCOMPATIBLE_DEP_REASON_CODES = frozenset({
+    "incompatible_dependency",
+})
+EXPLICIT_INCOMPATIBLE_DEP_PREFIXES = (
+    "incompatible_dependency:",
+)
+
+EXPLICIT_REMOVED_FEATURE_REASON_CODES = frozenset({
+    "removed_feature",
+})
+EXPLICIT_REMOVED_FEATURE_PREFIXES = (
+    "removed_feature:",
+)
+
+EXPLICIT_OPERATIONAL_INCOMPAT_REASON_CODES = frozenset({
+    "operational_incompat",
+})
+EXPLICIT_OPERATIONAL_INCOMPAT_PREFIXES = (
+    "operational_incompat:",
+)
+
+EXPLICIT_EVIDENCE_REGRESSION_REASON_CODES = frozenset({
+    "evidence_regression",
+})
+EXPLICIT_EVIDENCE_REGRESSION_PREFIXES = (
+    "evidence_regression:",
+)
+
 
 def _matches_explicit_codes(codes: List[str], exact_set: frozenset, prefixes: tuple) -> bool:
     for code in codes:
@@ -218,9 +247,15 @@ def get_project_risks(
     db: Optional[Database] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Retrieves breaking changes, deprecations, vulnerabilities, canonical assessed risks,
-    or high project impact matches for a project with batch-resolved inputs.
-    Strictly separates high project impact from canonical assessed risk.
+    Retrieves engineering concerns for a project with batch-resolved inputs.
+
+    A match becomes a concern ONLY when one of these concrete criteria is met:
+    vulnerability/CVE, breaking API/ABI change, deprecation/EOL, incompatible
+    dependency version, removed/changed feature in use, verified high/critical
+    canonical risk, operational incompatibility, or evidence-backed regression.
+
+    A high impact score alone is NEVER a concern (removed by the
+    explanation-upgrade spec).
     """
     if db is None:
         db = Database()
@@ -260,16 +295,38 @@ def get_project_risks(
             m.reason_codes, EXPLICIT_DEPRECATION_REASON_CODES, EXPLICIT_DEPRECATION_PREFIXES
         )
         is_assessed_risk = risk_status == "assessed" and risk_level in ("high", "critical")
-        is_high_impact = m.impact_score is not None and m.impact_score >= 0.70
+        is_incompat_dep = _matches_explicit_codes(
+            m.reason_codes, EXPLICIT_INCOMPATIBLE_DEP_REASON_CODES, EXPLICIT_INCOMPATIBLE_DEP_PREFIXES
+        )
+        is_removed_feature = _matches_explicit_codes(
+            m.reason_codes, EXPLICIT_REMOVED_FEATURE_REASON_CODES, EXPLICIT_REMOVED_FEATURE_PREFIXES
+        )
+        is_operational_incompat = _matches_explicit_codes(
+            m.reason_codes, EXPLICIT_OPERATIONAL_INCOMPAT_REASON_CODES, EXPLICIT_OPERATIONAL_INCOMPAT_PREFIXES
+        )
+        is_evidence_regression = _matches_explicit_codes(
+            m.reason_codes, EXPLICIT_EVIDENCE_REGRESSION_REASON_CODES, EXPLICIT_EVIDENCE_REGRESSION_PREFIXES
+        )
 
-        if not (is_vuln or is_breaking or is_deprec or is_assessed_risk or is_high_impact):
+        # NOTE: high impact score alone is deliberately NOT a concern criterion.
+        if not (
+            is_vuln or is_breaking or is_deprec or is_assessed_risk
+            or is_incompat_dep or is_removed_feature or is_operational_incompat
+            or is_evidence_regression
+        ):
             continue
 
         concern_type = (
             "vulnerability" if is_vuln else (
                 "breaking_change" if is_breaking else (
                     "deprecation" if is_deprec else (
-                        "assessed_risk" if is_assessed_risk else "high_project_impact"
+                        "assessed_risk" if is_assessed_risk else (
+                            "incompatible_dependency" if is_incompat_dep else (
+                                "removed_feature" if is_removed_feature else (
+                                    "operational_incompat" if is_operational_incompat else "evidence_regression"
+                                )
+                            )
+                        )
                     )
                 )
             )
@@ -355,6 +412,8 @@ def get_project_intelligence(
             "match_type": m.match_type,
             "recommendation": m.recommendation,
             "reason_codes": list(m.reason_codes),
+            "explanation": m.explanation.model_dump() if m.explanation else None,
+            "explanation_version": m.explanation_version or "legacy_unexplained",
             "story_available": bool(cl is not None),
         })
 
@@ -364,6 +423,7 @@ def get_project_intelligence(
         project_id=project.id,
         name=project.name,
         description=project.description,
+        narrative=project.narrative.model_dump() if project.narrative else None,
         is_active=bool(project.is_active),
         last_indexed_at=project.last_indexed_at.isoformat() if project.last_indexed_at else None,
         technology_profile=prof or {},
@@ -373,6 +433,67 @@ def get_project_intelligence(
         recent_changes=changes,
         intelligence_available=intel_available,
     )
+
+
+def get_project_match_comparison(
+    project_id_or_name: str,
+    cluster_id: str,
+    db: Optional[Database] = None,
+) -> Optional[Dict[str, Any]]:
+    """Canonical {project, subject, match} payload for one project/cluster match.
+
+    Used by every surface that explains why an intelligence item matched a
+    project (project detail cards, story-detail comparison table). Returns
+    None when the project or the match does not exist.
+    """
+    if db is None:
+        db = Database()
+
+    project = resolve_project(project_id_or_name, db)
+    if not project:
+        return None
+
+    match = db.get_project_match(project.id, cluster_id)
+    if not match:
+        return None
+
+    cluster = db.get_cluster(cluster_id)
+    events = db.get_cluster_events(cluster_id) if cluster else []
+    claims = db.get_claims_by_cluster(cluster_id) if cluster else []
+
+    subject = {
+        "cluster_id": cluster_id,
+        "title": cluster.canonical_title if cluster else cluster_id,
+        "story_available": bool(cluster is not None),
+        "event_count": len(events),
+        "claim_count": len(claims),
+        "sources": list(cluster.sources) if cluster else [],
+    }
+
+    return {
+        "project": {
+            "project_id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "narrative": project.narrative.model_dump() if project.narrative else None,
+            "languages": list(project.languages),
+            "frameworks": list(project.frameworks),
+            "databases": list(project.databases),
+            "topics": list(project.topics),
+        },
+        "subject": subject,
+        "match": {
+            "cluster_id": match.entity_id,
+            "match_type": match.match_type,
+            "relevance_score": round(match.relevance_score, 4) if match.relevance_score is not None else None,
+            "impact_score": round(match.impact_score, 4) if match.impact_score is not None else None,
+            "recommendation": match.recommendation,
+            "reason_codes": list(match.reason_codes),
+            "explanation": match.explanation.model_dump() if match.explanation else None,
+            "explanation_version": match.explanation_version or "legacy_unexplained",
+            "evaluated_at": match.evaluated_at.isoformat() if match.evaluated_at else None,
+        },
+    }
 
 
 def enqueue_project_scan(project_id: str, db: Database) -> RefreshOperation:
@@ -399,12 +520,18 @@ def add_project(
     path: str,
     description: Optional[str] = None,
     db: Optional[Database] = None,
+    approved_via_picker: bool = False,
 ) -> Project:
     """Adds a new project and enqueues an asynchronous initial scan.
 
     The scan runs as a background 'project_scan' refresh operation so the API
     call returns promptly; last_scan_status tracks progress ('pending' until
     the worker picks it up).
+
+    ``approved_via_picker=True`` marks paths already validated by the
+    native-picker approval flow (safety + policy ceiling + approvals ledger);
+    such paths are exempt from the legacy allowed-roots check, which only
+    gates manually supplied paths.
     """
     if db is None:
         db = Database()
@@ -418,7 +545,7 @@ def add_project(
 
     from app.context.scanner import is_path_safe_and_inside_allowed_roots
     p_path = Path(path).resolve()
-    if not is_path_safe_and_inside_allowed_roots(p_path):
+    if not approved_via_picker and not is_path_safe_and_inside_allowed_roots(p_path):
         raise ValueError(f"Project path '{path}' is not an existing directory within allowed workspace roots.")
 
     proj = Project(
@@ -445,12 +572,16 @@ def update_project(
     path: Optional[str] = None,
     description: Optional[str] = None,
     db: Optional[Database] = None,
+    approved_via_picker: bool = False,
 ) -> Project:
     """Updates a project's mutable fields and enqueues an asynchronous re-scan.
 
     Raises ValueError when the project does not exist or the new path fails
     path-safety validation. Like add_project, the follow-up scan is queued so
     the API call returns promptly (202 at the HTTP layer).
+
+    ``approved_via_picker=True`` exempts the path from the legacy allowed-roots
+    check (see add_project); manually supplied paths are still gated by it.
     """
     if db is None:
         db = Database()
@@ -469,7 +600,7 @@ def update_project(
 
     if path is not None:
         p_path = Path(path).resolve()
-        if not is_path_safe_and_inside_allowed_roots(p_path):
+        if not approved_via_picker and not is_path_safe_and_inside_allowed_roots(p_path):
             raise ValueError(f"Project path '{path}' is not an existing directory within allowed workspace roots.")
         proj.path = str(p_path).replace("\\", "/")
 
@@ -556,8 +687,13 @@ def scan_single_project(
     if proj.status == "archived":
         raise ValueError(f"Project '{project_id}' is archived and cannot be scanned.")
 
+    from app.services.folder_access import is_folder_access_revoked
+    if is_folder_access_revoked(proj.path):
+        raise ValueError(f"Folder access for project '{project_id}' has been revoked.")
+
     from app.context.scanner import scan_project_files, compute_project_context_hash
     from app.context.profiler import build_project_technology_profile
+    from app.context.narrative import extract_narrative_from_docs
     from app.context.embeddings import get_or_create_project_embedding, unload_embedder
     from app.context.matcher import match_project_with_cluster
     import numpy as np
@@ -587,7 +723,11 @@ def scan_single_project(
             db.save_project_file(pf)
 
         profile, meta = build_project_technology_profile(proj.id, proj.name, files)
-        
+
+        # Structured narrative extraction (persisted independently from tags)
+        narrative = extract_narrative_from_docs(files, user_description=proj.description)
+        proj.narrative = narrative
+
         # Save project fields
         proj.languages = list(meta.get("languages", []))
         proj.frameworks = list(meta.get("frameworks", []))

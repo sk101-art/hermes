@@ -21,7 +21,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Loopback origins only: the built UI is served same-origin, and the Vite
+    # dev server runs on 127.0.0.1/localhost. Any other origin (e.g. a
+    # malicious webpage) is denied CORS, so it cannot call the sensitive
+    # /local/* endpoints from browser code.
+    allow_origin_regex=r"https?://(127\.0\.0\.1|localhost)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,6 +83,11 @@ def main():
     allow_external = args.allow_external or api_cfg.get("allow_external", False)
 
     safe_host = validate_api_host(host, allow_external=allow_external)
+
+    # Sensitive local-machine endpoints (native folder picker, approvals) are
+    # disabled entirely when the API is externally exposed.
+    from app.api.security import set_external_exposure
+    set_external_exposure(safe_host not in {"127.0.0.1", "localhost", "::1"})
 
     print("=" * 70)
     print("HERMES — LOCAL TECHNOLOGY INTELLIGENCE API")

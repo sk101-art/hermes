@@ -2,6 +2,7 @@ import ast
 import hashlib
 import json
 import re
+import sys
 try:
     import tomllib
 except ImportError:
@@ -13,6 +14,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.models.schemas import Project, ProjectFile, ProjectTechnologyProfile
+
+# Python stdlib module names ship with the interpreter, not with the project.
+# They must never be reported as project dependencies (a raw AST import scan
+# would otherwise list modules like "re", "os", "json" as dependencies).
+_STDLIB_MODULE_NAMES: Set[str] = {
+    name.lower() for name in getattr(sys, "stdlib_module_names", frozenset())
+}
+
+
+def is_stdlib_module(name: str) -> bool:
+    """True if the given top-level module name is part of the Python stdlib."""
+    return name.lower() in _STDLIB_MODULE_NAMES
 
 # Extension to Language mapping
 EXTENSION_LANGUAGE_MAP: Dict[str, str] = {
@@ -347,6 +360,8 @@ def build_project_technology_profile(
         if pf.file_type == ".py" and content:
             imports = extract_python_ast_imports(content)
             for imp in imports:
+                if is_stdlib_module(imp):
+                    continue
                 norm_imp = imp.replace("_", "-")
                 if norm_imp not in dependencies:
                     dependencies[norm_imp] = ""

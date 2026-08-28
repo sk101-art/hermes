@@ -2,9 +2,14 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
+from app.api.security import (
+    require_client_header,
+    require_loopback,
+    validate_session_or_401,
+)
 from app.runtime.sanitization import sanitize_error_summary
 from app.runtime.state import load_runtime_config
 from app.runtime.timezone import runtime_date_string
@@ -380,6 +385,23 @@ def get_project_intel(
     return intel.model_dump()
 
 
+@router.get("/projects/{project_id}/matches/{cluster_id}", summary="Canonical explanation payload for one project/intelligence match")
+def get_project_match_comparison(
+    project_id: str,
+    cluster_id: str,
+    db: Database = Depends(get_db),
+):
+    payload = projects_service.get_project_match_comparison(
+        project_id_or_name=project_id, cluster_id=cluster_id, db=db
+    )
+    if payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No match found between project '{project_id}' and cluster '{cluster_id}'",
+        )
+    return payload
+
+
 @router.get("/saved", summary="Saved personal library items", response_model=SavedResponse)
 def get_saved(
     limit: int = Query(20, ge=1, le=50, description="Max items (1-50)"),
@@ -477,13 +499,27 @@ def search(
 
 class ProjectCreate(BaseModel):
     name: str
-    path: str
+    path: Optional[str] = None
     description: Optional[str] = None
+    # Preferred flow: opaque token from POST /local/folder-selection. The
+    # backend resolves it to the folder chosen in the native OS dialog; a
+    # browser-supplied path is never trusted.
+    folder_selection_token: Optional[str] = None
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     path: Optional[str] = None
     description: Optional[str] = None
+
+class FolderReplaceRequest(BaseModel):
+    project_id: str
+    folder_selection_token: str
+
+class RevokeFolderRequest(BaseModel):
+    project_id: str
+
+class OpenFolderRequest(BaseModel):
+    project_id: str
 
 class RefreshRequest(BaseModel):
     scope: str
@@ -506,19 +542,43 @@ VALID_REFRESH_SCOPES = {
 }
 
 @router.post("/projects", summary="Add a new project and enqueue async initial scan", status_code=202, response_model=Project)
-def create_project(req: ProjectCreate, response: Response, db: Database = Depends(get_db)):
+def create_project(req: ProjectCreate, request: Request, response: Response, db: Database = Depends(get_db)):
     """Creates the project profile and queues a targeted background scan.
 
     Returns 202 Accepted immediately; scan progress is tracked on the project
     (last_scan_status) and via /runtime/operations/{operation_id}.
+
+    Preferred input is ``folder_selection_token`` (opaque token from the
+    native folder picker). With a token the handler atomically: consumes the
+    single-use token, persists an approval for the EXACT selected directory in
+    the runtime approved_project_roots store, creates the project, and enqueues
+    the targeted scan. A raw ``path`` is only accepted when it passes the
+    legacy allowed-roots validation — browser-supplied paths can never bypass
+    the native-picker approval flow.
     """
+    from app.services import folder_access
+
     try:
-        proj = projects_service.add_project(
-            name=req.name,
-            path=req.path,
-            description=req.description,
-            db=db
-        )
+        if req.folder_selection_token:
+            require_loopback(request)
+            require_client_header(request)
+            session_token = validate_session_or_401(request)
+            proj = folder_access.add_project_with_approved_folder(
+                name=req.name,
+                description=req.description,
+                folder_selection_token=req.folder_selection_token,
+                session_token=session_token,
+                db=db,
+            )
+        else:
+            if not req.path:
+                raise ValueError("Provide folder_selection_token (native picker) or a path.")
+            proj = projects_service.add_project(
+                name=req.name,
+                path=req.path,
+                description=req.description,
+                db=db
+            )
         response.status_code = status.HTTP_202_ACCEPTED
         return proj.model_dump()
     except ValueError as e:
@@ -561,6 +621,134 @@ def restore_project(project_id: str, response: Response, db: Database = Depends(
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
     response.status_code = status.HTTP_202_ACCEPTED
     return op.model_dump()
+
+
+# --- Local folder access (native picker + approvals) --------------------------
+
+@router.post("/local/session", summary="Issue a local session token", include_in_schema=False)
+def issue_local_session(request: Request):
+    """Issues a short-lived session token that ties picker selections to this
+    local UI session. Loopback + custom-header protected."""
+    require_loopback(request)
+    require_client_header(request)
+    from app.services.folder_access import get_token_stores
+    return get_token_stores().issue_session_token()
+
+
+@router.post("/local/folder-selection", summary="Open the native folder picker", include_in_schema=False)
+def select_local_folder(request: Request, db: Database = Depends(get_db)):
+    """Opens the native OS folder dialog and returns an opaque selection token.
+
+    Protections: loopback-only, custom client header, valid session token,
+    rate limiting, and a single-open-picker rule (409 when busy). Cancellation
+    returns 200 with ``{"cancelled": true}`` — never an error.
+    """
+    require_loopback(request)
+    require_client_header(request)
+    session_token = validate_session_or_401(request)
+
+    from app.services import folder_access
+    if not folder_access.picker_rate_limiter.allow():
+        raise HTTPException(status_code=429, detail="Too many folder picker requests. Try again shortly.")
+
+    from app.platform.folder_picker import (
+        PickerBusy, PickerCancelled, PickerUnavailable, get_default_picker,
+    )
+    picker = get_default_picker()
+    if picker.busy:
+        raise HTTPException(status_code=409, detail="A folder picker is already open.")
+    try:
+        result = picker.pick_folder()
+    except PickerBusy:
+        raise HTTPException(status_code=409, detail="A folder picker is already open.")
+    except PickerCancelled:
+        return {"cancelled": True}
+    except PickerUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # Safety validation (exists/readable/not a root/no symlink escape/no
+    # overlap) plus the explicit admin-policy ceiling happen BEFORE the token
+    # is issued. Legacy/default allowed roots are NOT a restriction here: the
+    # trusted native picker IS the approval. Only the exact chosen directory
+    # is ever tokenized — never a parent such as Downloads.
+    try:
+        return folder_access.issue_selection_token(result, session_token, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/local/folder-approvals", summary="List approved project folders", include_in_schema=False)
+def list_folder_approvals(request: Request, db: Database = Depends(get_db)):
+    """Lists approved project folders with live status (ok/missing/unreadable/revoked)."""
+    require_loopback(request)
+    require_client_header(request)
+    from app.services import folder_access
+    records = folder_access.list_approvals_with_status(db)
+    return {"count": len(records), "approvals": records}
+
+
+@router.post("/local/folder-approvals/replace", summary="Replace a project's folder via native picker", status_code=202, include_in_schema=False)
+def replace_folder_approval(req: FolderReplaceRequest, request: Request, response: Response, db: Database = Depends(get_db)):
+    """Consumes a fresh selection token and re-points the project to the new folder."""
+    require_loopback(request)
+    require_client_header(request)
+    session_token = validate_session_or_401(request)
+    from app.services import folder_access
+    project_id = (req.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required.")
+    try:
+        proj = folder_access.replace_project_folder(
+            project_id=project_id,
+            folder_selection_token=req.folder_selection_token,
+            session_token=session_token,
+            db=db,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {"status": "success", "project": proj.model_dump()}
+
+
+@router.post("/local/folder-approvals/revoke", summary="Revoke folder access for a project", include_in_schema=False)
+def revoke_folder_approval(req: RevokeFolderRequest, request: Request, db: Database = Depends(get_db)):
+    """Revokes folder access: future scans stop, project + history are preserved."""
+    require_loopback(request)
+    require_client_header(request)
+    from app.services import folder_access
+    try:
+        revoked = folder_access.revoke_project_folder(req.project_id, db)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"status": "success", "revoked": len(revoked)}
+
+
+@router.post("/local/folder-approvals/open", summary="Reveal an approved folder in the OS file manager", include_in_schema=False)
+def open_folder_in_explorer(req: OpenFolderRequest, request: Request, db: Database = Depends(get_db)):
+    """Opens the project's folder in Explorer/Finder. Only folders that exist
+    and are still approved can be opened."""
+    require_loopback(request)
+    require_client_header(request)
+    proj = db.get_project(req.project_id)
+    if proj is None:
+        raise HTTPException(status_code=404, detail=f"Project '{req.project_id}' not found")
+    from pathlib import Path
+    import subprocess, sys
+    p = Path(proj.path)
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(status_code=400, detail="Folder is missing or unreadable.")
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", str(p)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Could not open folder: {e}")
+    return {"status": "success", "path": str(p)}
 
 @router.post("/runtime/refresh", summary="Enqueue background refresh operation", status_code=202, response_model=RefreshOperation)
 def enqueue_refresh(req: RefreshRequest, response: Response, db: Database = Depends(get_db)):

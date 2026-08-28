@@ -5,6 +5,7 @@
  */
 
 import { api } from '../api/endpoints.js';
+import { ensureSessionToken } from '../api/client.js';
 import { requestManager } from '../state/request-manager.js';
 import { renderLoadingState, renderEmptyState, renderErrorState, renderOfflineState } from '../components/ui-states.js';
 import { escapeHtml, formatDate, ensureArray } from '../utils/adapters.js';
@@ -38,48 +39,328 @@ function formatMatchType(type) {
 }
 
 /**
- * Format reason code into human-readable chip text.
+ * Map a backend relationship_label to a human-readable relationship badge.
+ * Weak relationships must be stated as weak — never dressed up.
  */
-function formatReasonCode(code) {
-  if (!code) return '';
-  const clean = String(code).trim().toLowerCase();
+function formatRelationshipLabel(label) {
   const map = {
-    direct_dependency_match: 'Direct Dependency',
-    technology_overlap: 'Technology Overlap',
-    framework_match: 'Framework Match',
-    language_match: 'Language Match',
-    database_match: 'Database Match',
-    infrastructure_match: 'Infrastructure Match',
-    model_match: 'Model Match',
-    topic_match: 'Topic Match',
-    keyword_match: 'Keyword Match',
-    high_impact: 'High Impact',
-    breaking_change: 'Breaking Change',
-    security_vulnerability: 'Security Vulnerability',
-    deprecation_warning: 'Deprecation',
+    direct_match: ['badge-primary', 'Direct match'],
+    architectural_similarity: ['badge-neutral', 'Architectural similarity'],
+    potential_alternative: ['badge-neutral', 'Potential alternative'],
+    weak_contextual: ['badge-subtle', 'Weak contextual relationship'],
+    insufficient_evidence: ['badge-subtle', 'Insufficient evidence'],
   };
-  if (map[clean]) return map[clean];
-  return clean.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  const [cls, text] = map[label] || ['badge-subtle', 'Insufficient evidence'];
+  return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
 }
 
 /**
- * Format heuristic recommendation token cautiously as advisory note.
+ * Render a list of evidence references (file:line pointers, URLs, claims).
  */
-function formatAdvisory(rec) {
-  if (!rec) return '';
-  const clean = String(rec).trim().toLowerCase();
-  const map = {
-    potential_risk: 'Potential Risk — Investigate impact on current project implementation.',
-    upgrade_candidate: 'Upgrade Candidate — New release or major improvements available.',
-    optimization_candidate: 'Optimization Candidate — Potential performance or efficiency gains.',
-    consider: 'Consider — Relevant tool or technique for evaluation.',
-    evaluate: 'Evaluate — Assess compatibility with project architecture.',
-    watch: 'Watch — Emerging technology in project ecosystem.',
-    not_recommended_yet: 'Not Recommended Yet — Early stage or unverified stability.',
+function renderEvidenceRefs(refs) {
+  const list = ensureArray(refs);
+  if (!list.length) return '';
+  return `
+    <ul class="evidence-ref-list text-xs text-muted" style="margin:var(--space-1) 0 0 0;padding-left:var(--space-4);">
+      ${list.map((ref) => {
+        const label = ref.label || 'evidence';
+        const detail = ref.detail ? ` — ${escapeHtml(ref.detail)}` : '';
+        if (ref.url) {
+          return `<li><a href="${escapeHtml(ref.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);">${escapeHtml(label)}</a>${detail}</li>`;
+        }
+        return `<li><span class="mono">${escapeHtml(label)}</span>${detail}</li>`;
+      }).join('')}
+    </ul>
+  `;
+}
+
+/**
+ * Render the structured backend advisory (replaces the old formatAdvisory lookup).
+ */
+function renderRecommendedAction(action) {
+  if (!action || !action.action) return '';
+  const urgency = action.urgency || 'low';
+  const urgencyBadge = urgency === 'high'
+    ? '<span class="badge badge-danger">High urgency</span>'
+    : urgency === 'medium'
+      ? '<span class="badge badge-warning">Medium urgency</span>'
+      : '<span class="badge badge-subtle">Low urgency</span>';
+  return `
+    <div class="recommended-action-box" style="margin-top:var(--space-3);padding:var(--space-3);background:var(--bg-panel-subtle);border-radius:var(--radius-sm);border-left:3px solid var(--accent-primary);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1);">
+        <span class="text-xs" style="font-weight:600;color:var(--ink-secondary);">Suggested next step</span>
+        ${urgencyBadge}
+      </div>
+      <p class="text-sm" style="margin:0 0 var(--space-1) 0;font-weight:600;">${escapeHtml(action.action)}</p>
+      ${action.rationale ? `<p class="text-xs text-muted" style="margin:0 0 var(--space-2) 0;">${escapeHtml(action.rationale)}</p>` : ''}
+      ${ensureArray(action.validation_steps).length ? `
+        <div class="text-xs text-muted" style="margin-top:var(--space-1);">
+          <strong>Validate:</strong>
+          <ul style="margin:var(--space-1) 0 0 0;padding-left:var(--space-4);">
+            ${ensureArray(action.validation_steps).map((s) => `<li>${escapeHtml(s)}</li>`).join('')}
+          </ul>
+        </div>
+      ` : ''}
+      ${ensureArray(action.caveats).length ? `
+        <div class="text-xs text-faint" style="margin-top:var(--space-1);">
+          ${ensureArray(action.caveats).map((c) => `<span>⚠ ${escapeHtml(c)}</span>`).join('<br>')}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+/**
+ * Render a full 9-part explanation match card.
+ * Order: What it is → What happened → Why matched → Possible effect →
+ * Suggested next step → Evidence (+ limitations).
+ */
+function renderExplainedMatchCard(m, canonicalId) {
+  const expl = m.explanation;
+  const isLegacy = !expl || m.explanation_version === 'legacy_unexplained';
+
+  const titleHtml = m.story_available && m.cluster_id
+    ? `<a href="#/story/${encodeURIComponent(m.cluster_id)}?project=${encodeURIComponent(canonicalId)}" class="match-title-link" data-testid="projects-match-link-${escapeHtml(m.cluster_id)}" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(m.title)}</a>`
+    : `<span style="font-weight:600;">${escapeHtml(m.title)}</span> <span class="badge badge-subtle">Story unavailable</span>`;
+
+  if (isLegacy) {
+    // Legacy rows have no explanation and must not be presented as actionable.
+    return `
+      <div class="match-card match-card-legacy" style="padding:var(--space-4);background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--radius-md);opacity:0.85;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
+          <span class="chip match-type-chip" style="font-weight:500;">${escapeHtml(formatMatchType(m.match_type))}</span>
+          <div style="display:flex;gap:var(--space-2);align-items:center;">
+            ${formatRelationshipLabel('insufficient_evidence')}
+            ${renderProjectRelevanceBadge(m.relevance_score)}
+            ${renderProjectImpactBadge(m.impact_score)}
+          </div>
+        </div>
+        <h3 class="match-title" style="margin:0 0 var(--space-2) 0;font-size:var(--text-md);font-weight:inherit;">${titleHtml}</h3>
+        <p class="text-xs text-muted" style="margin:0;">
+          This match predates the explanation system and has no grounded explanation yet.
+          It is shown for reference only and is not presented as actionable. Rescan the project to regenerate it.
+        </p>
+      </div>
+    `;
+  }
+
+  const dims = ensureArray(expl.matched_dimensions);
+  const effects = ensureArray(expl.potential_effects);
+  const limitations = ensureArray(expl.limitations);
+  const evidence = ensureArray(expl.evidence_references);
+
+  return `
+    <div class="match-card" style="padding:var(--space-4);background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--radius-md);">
+      <!-- 1. What it is -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
+        <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;">
+          <span class="chip match-type-chip" style="font-weight:500;">${escapeHtml(formatMatchType(m.match_type))}</span>
+          ${formatRelationshipLabel(expl.relationship_label)}
+        </div>
+        <div style="display:flex;gap:var(--space-2);align-items:center;">
+          ${renderProjectRelevanceBadge(m.relevance_score)}
+          ${renderProjectImpactBadge(m.impact_score)}
+        </div>
+      </div>
+      <h3 class="match-title" style="margin:0 0 var(--space-1) 0;font-size:var(--text-md);font-weight:inherit;">${titleHtml}</h3>
+      ${expl.subject_kind ? `<div class="mono text-xs text-faint" style="margin-bottom:var(--space-2);">${escapeHtml(expl.subject_kind)}</div>` : ''}
+
+      <!-- 2. What happened -->
+      ${expl.what_happened ? `
+        <div class="match-part" style="margin-bottom:var(--space-2);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">What happened</div>
+          <p class="text-sm" style="margin:0;">${escapeHtml(expl.what_happened)}</p>
+        </div>
+      ` : ''}
+
+      <!-- 3. Why matched -->
+      <div class="match-part" style="margin-bottom:var(--space-2);">
+        <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Why this was matched</div>
+        ${expl.relevance_summary ? `<p class="text-sm" style="margin:0 0 var(--space-2) 0;">${escapeHtml(expl.relevance_summary)}</p>` : ''}
+        ${dims.length ? `
+          <div style="display:flex;flex-direction:column;gap:var(--space-1);">
+            ${dims.map((d) => `
+              <div class="dimension-row text-xs" style="padding:var(--space-2);background:var(--bg-panel-subtle);border-radius:var(--radius-sm);">
+                <strong>${escapeHtml(d.dimension)}</strong>: ${escapeHtml(d.project_value)} ↔ ${escapeHtml(d.intelligence_value)}
+                <span class="text-muted"> — ${escapeHtml(d.connection)}</span>
+                <span class="badge badge-subtle" style="margin-left:var(--space-1);">${escapeHtml(d.evidence_strength || 'weak')} evidence</span>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- 4. Possible effect -->
+      ${effects.length ? `
+        <div class="match-part" style="margin-bottom:var(--space-2);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Possible effect</div>
+          <ul style="margin:0;padding-left:var(--space-4);">
+            ${effects.map((e) => `
+              <li class="text-sm">
+                ${escapeHtml(e.effect)}
+                <span class="badge badge-subtle" style="margin-left:var(--space-1);">${escapeHtml(e.likelihood || 'possible')} · ${escapeHtml(e.severity || 'low')}</span>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      ` : ''}
+
+      <!-- 5. Suggested next step -->
+      ${renderRecommendedAction(expl.recommended_action)}
+
+      <!-- Limitations -->
+      ${limitations.length ? `
+        <div class="match-part" style="margin-top:var(--space-2);">
+          <div class="text-xs text-faint">
+            <strong>Limitations:</strong> ${limitations.map(escapeHtml).join(' · ')}
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- 6. Evidence -->
+      ${evidence.length ? `
+        <div class="match-part" style="margin-top:var(--space-2);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Evidence</div>
+          ${renderEvidenceRefs(evidence)}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+/**
+ * Render a severity-oriented engineering concern card using the structured
+ * backend advisory (never the removed formatAdvisory lookup).
+ */
+function renderConcernCard(r, canonicalId) {
+  const concernType = r.concern_type || 'unknown';
+  const severityMap = {
+    vulnerability: ['badge-danger', 'Vulnerability'],
+    breaking_change: ['badge-warning', 'Breaking Change'],
+    deprecation: ['badge-neutral', 'Deprecation'],
+    assessed_risk: ['badge-danger', `Assessed Risk · ${r.risk_level || 'high'}`],
+    incompatible_dependency: ['badge-warning', 'Incompatible Dependency'],
+    removed_feature: ['badge-warning', 'Removed / Changed Feature'],
+    operational_incompat: ['badge-danger', 'Operational Incompatibility'],
+    evidence_regression: ['badge-warning', 'Evidence-Backed Regression'],
   };
-  if (map[clean]) return map[clean];
-  const humanized = clean.replace(/_/g, ' ');
-  return `${humanized.charAt(0).toUpperCase() + humanized.slice(1)}`;
+  const [badgeCls, badgeText] = severityMap[concernType] || ['badge-subtle', concernType];
+
+  const titleHtml = r.story_available && r.cluster_id
+    ? `<a href="#/story/${encodeURIComponent(r.cluster_id)}?project=${encodeURIComponent(canonicalId)}" class="concern-title-link" data-testid="projects-concern-link-${escapeHtml(r.cluster_id)}" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(r.title)}</a>`
+    : `<span style="font-weight:600;">${escapeHtml(r.title)}</span> <span class="badge badge-subtle">Story unavailable</span>`;
+
+  return `
+    <div class="concern-card" style="padding:var(--space-4);background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--radius-md);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2);margin-bottom:var(--space-2);">
+        <div><span class="badge ${badgeCls}">${escapeHtml(badgeText)}</span></div>
+        <div style="display:flex;gap:var(--space-2);align-items:center;">
+          ${renderProjectImpactBadge(r.impact_score)}
+          ${renderProjectRelevanceBadge(r.relevance_score)}
+        </div>
+      </div>
+
+      <h3 class="concern-title" style="margin:0 0 var(--space-2) 0;font-size:inherit;font-weight:inherit;">${titleHtml}</h3>
+
+      ${r.risk_status ? `
+        <div class="mono text-xs text-muted" style="margin-bottom:var(--space-2);">
+          Canonical Risk Status: <strong>${escapeHtml(r.risk_status)}</strong>
+          ${typeof r.risk_score === 'number' ? ` · Score: ${(r.risk_score * 100).toFixed(0)}%` : ''}
+        </div>
+      ` : ''}
+
+      <p class="text-xs text-faint" style="margin:0;">
+        Surfaced because a concrete concern criterion was met (never from impact score alone).
+      </p>
+    </div>
+  `;
+}
+
+/**
+ * Render the structured project narrative overview (what it does, capabilities,
+ * architecture, components) with evidence references.
+ */
+function renderNarrativeSection(narrative) {
+  if (!narrative) {
+    return `
+      <section class="project-section" style="margin-bottom:var(--space-6);">
+        <h2 style="font-size:var(--text-lg);margin-bottom:var(--space-2);">Project Overview</h2>
+        <p class="text-sm text-muted">No structured documentation narrative could be extracted for this project yet. Rescan the project after adding a README.</p>
+      </section>
+    `;
+  }
+
+  const status = narrative.extraction_status || 'unknown';
+  const statusBadge = status === 'extracted'
+    ? '<span class="badge badge-neutral">Documentation extracted</span>'
+    : status === 'partial'
+      ? '<span class="badge badge-subtle">Partial extraction</span>'
+      : '<span class="badge badge-subtle">No documentation narrative</span>';
+
+  const purpose = narrative.purpose_summary;
+  const capabilities = ensureArray(narrative.capability_summaries);
+  const architecture = narrative.architecture_summary;
+  const components = ensureArray(narrative.primary_components);
+  const refs = ensureArray(narrative.evidence_references);
+  const userDesc = narrative.user_description;
+
+  return `
+    <section class="project-section project-narrative-section" style="margin-bottom:var(--space-6);">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
+        <h2 style="font-size:var(--text-lg);margin:0;">Project Overview</h2>
+        ${statusBadge}
+      </div>
+      <p class="text-sm text-muted" style="margin-bottom:var(--space-4);">
+        What this project does, extracted from its documentation with source references.
+      </p>
+
+      ${userDesc ? `
+        <div class="narrative-part" style="margin-bottom:var(--space-3);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Your description</div>
+          <p class="text-sm" style="margin:0;">${escapeHtml(userDesc)}</p>
+        </div>
+      ` : ''}
+
+      ${purpose ? `
+        <div class="narrative-part" style="margin-bottom:var(--space-3);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">What it does</div>
+          <p class="text-sm" style="margin:0;">${escapeHtml(purpose)}</p>
+        </div>
+      ` : ''}
+
+      ${capabilities.length ? `
+        <div class="narrative-part" style="margin-bottom:var(--space-3);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Capabilities</div>
+          <ul style="margin:0;padding-left:var(--space-4);">
+            ${capabilities.map((c) => `<li class="text-sm">${escapeHtml(c)}</li>`).join('')}
+          </ul>
+        </div>
+      ` : ''}
+
+      ${architecture ? `
+        <div class="narrative-part" style="margin-bottom:var(--space-3);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Architecture</div>
+          <p class="text-sm" style="margin:0;">${escapeHtml(architecture)}</p>
+        </div>
+      ` : ''}
+
+      ${components.length ? `
+        <div class="narrative-part" style="margin-bottom:var(--space-3);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Primary components</div>
+          <div class="chip-group" style="margin-top:0;">
+            ${components.map((c) => `<span class="chip">${escapeHtml(c)}</span>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      ${refs.length ? `
+        <div class="narrative-part" style="margin-top:var(--space-2);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Source references</div>
+          ${renderEvidenceRefs(refs)}
+        </div>
+      ` : ''}
+    </section>
+  `;
 }
 
 /**
@@ -92,6 +373,106 @@ export async function renderProjectsView(container, store, routeParams = {}) {
     await renderProjectDetailView(container, store, projectId);
   } else {
     await renderProjectIndexView(container, store);
+  }
+}
+
+/**
+ * Renders the Project Folder Access section: approved directories with live
+ * status, plus replace / revoke / open-in-Explorer actions.
+ */
+async function renderFolderAccessSection(container, store) {
+  const region = container.querySelector('#folder-access-content');
+  if (!region) return;
+
+  try {
+    const response = await api.listFolderApprovals();
+    const approvals = ensureArray(response.approvals || []);
+
+    if (!approvals.length) {
+      region.innerHTML = '<p class="text-sm text-muted">No folders have been approved yet. Use “Add Local Project” above.</p>';
+      return;
+    }
+
+    const statusBadge = (status) => {
+      const map = {
+        ok: ['badge-neutral', 'Accessible'],
+        missing: ['badge-warning', 'Missing'],
+        unreadable: ['badge-warning', 'Unreadable'],
+        revoked: ['badge-subtle', 'Revoked'],
+      };
+      const [cls, label] = map[status] || ['badge-neutral', status || 'Unknown'];
+      return `<span class="badge ${cls}">${escapeHtml(label)}</span>`;
+    };
+
+    region.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:var(--space-3);">
+        ${approvals.map((a, idx) => `
+          <div class="folder-access-row" data-path="${escapeHtml(a.path || '')}" data-project-id="${escapeHtml(a.project_id || '')}" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:var(--space-2);padding:var(--space-3);border:1px solid var(--border-subtle);border-radius:var(--radius-md);background:var(--bg-panel-subtle);">
+            <div style="min-width:0;flex:1;">
+              <div class="mono text-sm" style="word-break:break-all;">${escapeHtml(a.path || '')}</div>
+              <div class="text-xs text-muted" style="margin-top:2px;">
+                ${a.project_name ? `Project: ${escapeHtml(a.project_name)}` : ''}
+                ${a.approved_at ? ` · Approved ${formatDate(a.approved_at)}` : ''}
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;">
+              ${statusBadge(a.status)}
+              ${a.state === 'active' ? `
+                <button type="button" class="btn btn-xs btn-outline btn-folder-open" data-project-id="${escapeHtml(a.project_id || '')}">Open</button>
+                <button type="button" class="btn btn-xs btn-outline btn-folder-replace" data-project-id="${escapeHtml(a.project_id || '')}">Replace…</button>
+                <button type="button" class="btn btn-xs btn-outline btn-folder-revoke" data-project-id="${escapeHtml(a.project_id || '')}" style="color:#b91c1c;">Revoke</button>
+              ` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    // Bind actions
+    region.querySelectorAll('.btn-folder-open').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await api.openFolderInExplorer(btn.dataset.projectId);
+        } catch (err) {
+          alert(`Could not open folder: ${err.message || String(err)}`);
+        }
+      });
+    });
+
+    region.querySelectorAll('.btn-folder-replace').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = 'Waiting for dialog…';
+        try {
+          await ensureSessionToken();
+          const sel = await api.selectFolder();
+          if (sel && sel.selection_token) {
+            await api.replaceFolderApproval(btn.dataset.projectId, sel.selection_token);
+          }
+          renderProjectIndexView(container, store);
+        } catch (err) {
+          alert(`Failed to replace folder: ${err.message || String(err)}`);
+          btn.disabled = false;
+          btn.textContent = 'Replace…';
+        }
+      });
+    });
+
+    region.querySelectorAll('.btn-folder-revoke').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Revoke folder access? Future scans of this folder will stop. The project and its stored history are preserved.')) return;
+        btn.disabled = true;
+        try {
+          await api.revokeFolderApproval(btn.dataset.projectId);
+          renderProjectIndexView(container, store);
+        } catch (err) {
+          alert(`Failed to revoke access: ${err.message || String(err)}`);
+          btn.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    region.innerHTML = `<p class="text-sm text-danger">Failed to load folder approvals: ${escapeHtml(err.message || String(err))}</p>`;
   }
 }
 
@@ -160,12 +541,16 @@ async function renderProjectIndexView(container, store) {
         <summary style="font-weight:bold;cursor:pointer;user-select:none;">+ Add Local Project</summary>
         <form id="add-project-form" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);max-width:560px;">
           <div>
-            <label for="proj-name" style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Project Name</label>
-            <input type="text" id="proj-name" required placeholder="e.g. My Awesome Web App" class="form-input" style="width:100%;padding:var(--space-2);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);" />
+            <label style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Project Folder</label>
+            <div style="display:flex;gap:var(--space-2);align-items:center;">
+              <button type="button" id="proj-choose-folder" class="btn btn-sm btn-secondary">Choose Folder…</button>
+              <output id="proj-path-display" class="mono text-sm" aria-live="polite" style="flex:1;padding:var(--space-2);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--bg-panel-subtle);min-height:20px;color:var(--text-muted);">No folder selected</output>
+            </div>
+            <p class="text-xs text-faint" style="margin-top:var(--space-1);">The folder is chosen through the native Windows dialog. HERMES indexes only the exact folder you approve — never all of Downloads.</p>
           </div>
           <div>
-            <label for="proj-path" style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Absolute Path on Filesystem</label>
-            <input type="text" id="proj-path" required placeholder="e.g. C:/Users/sujay/Downloads/hermes" class="form-input" style="width:100%;padding:var(--space-2);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);" />
+            <label for="proj-name" style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Project Name</label>
+            <input type="text" id="proj-name" required placeholder="e.g. My Awesome Web App" class="form-input" style="width:100%;padding:var(--space-2);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);" />
           </div>
           <div>
             <label for="proj-desc" style="display:block;font-size:var(--text-sm);font-weight:bold;margin-bottom:var(--space-1);">Description</label>
@@ -173,7 +558,7 @@ async function renderProjectIndexView(container, store) {
           </div>
           <div id="add-project-error" class="text-sm text-danger" style="display:none;color:var(--danger-color, #dc2626);margin-bottom:var(--space-2);"></div>
           <div>
-            <button type="submit" class="btn btn-sm btn-primary">Add & Index Project</button>
+            <button type="submit" id="proj-submit" class="btn btn-sm btn-primary" disabled>Add & Index Project</button>
           </div>
         </form>
       </details>
@@ -272,6 +657,18 @@ async function renderProjectIndexView(container, store) {
       `;
     }
 
+    // Project Folder Access management section (approved roots, revoke,
+    // replace, open in Explorer). Filled asynchronously below.
+    html += `
+      <section class="folder-access-section" style="margin-top:var(--space-8);padding-top:var(--space-6);border-top:1px solid var(--border-subtle);">
+        <h2 style="font-size:var(--text-lg);margin-bottom:var(--space-2);">Project Folder Access</h2>
+        <p class="text-sm text-muted" style="margin-bottom:var(--space-4);">
+          Folders you have explicitly approved for indexing. Revoking access stops future scans but preserves all stored intelligence.
+        </p>
+        <div id="folder-access-content">${renderLoadingState('Loading approved folders…')}</div>
+      </section>
+    `;
+
     const contentRegion = container.querySelector('#projects-content-region');
     if (contentRegion) {
       contentRegion.innerHTML = html;
@@ -279,24 +676,79 @@ async function renderProjectIndexView(container, store) {
       container.innerHTML = html;
     }
 
-    // Bind add project form submit
+    // Bind add project form: native folder picker + token-based submission.
     const addForm = container.querySelector('#add-project-form');
     if (addForm) {
+      let selectionToken = null;
+
+      const chooseBtn = container.querySelector('#proj-choose-folder');
+      const pathDisplay = container.querySelector('#proj-path-display');
+      const submitBtn = container.querySelector('#proj-submit');
+      const nameInput = container.querySelector('#proj-name');
+      const errorEl = container.querySelector('#add-project-error');
+
+      const updateSubmitState = () => {
+        if (submitBtn) submitBtn.disabled = !(selectionToken && nameInput && nameInput.value.trim());
+      };
+
+      if (nameInput) nameInput.addEventListener('input', updateSubmitState);
+
+      if (chooseBtn) {
+        chooseBtn.addEventListener('click', async () => {
+          if (errorEl) errorEl.style.display = 'none';
+          chooseBtn.disabled = true;
+          chooseBtn.textContent = 'Waiting for dialog…';
+          try {
+            await ensureSessionToken();
+            const result = await api.selectFolder();
+            if (result && result.cancelled) {
+              // Clean cancellation: no mutation, keep previous state.
+              if (pathDisplay && !selectionToken) pathDisplay.textContent = 'No folder selected';
+            } else if (result && result.selection_token) {
+              selectionToken = result.selection_token;
+              if (pathDisplay) {
+                pathDisplay.textContent = result.display_path || result.folder_name || '';
+                pathDisplay.style.color = 'var(--ink-primary)';
+              }
+              // Pre-fill an empty name with the folder name for convenience.
+              if (nameInput && !nameInput.value.trim() && result.folder_name) {
+                nameInput.value = result.folder_name;
+              }
+            }
+          } catch (err) {
+            console.error('Folder selection failed:', err);
+            if (errorEl) {
+              errorEl.style.display = 'block';
+              errorEl.textContent = `Folder selection failed: ${err.message || String(err)}`;
+            }
+          } finally {
+            chooseBtn.disabled = false;
+            chooseBtn.textContent = 'Choose Folder…';
+            updateSubmitState();
+          }
+        });
+      }
+
       addForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const name = container.querySelector('#proj-name').value.trim();
-        const path = container.querySelector('#proj-path').value.trim();
+        const name = nameInput ? nameInput.value.trim() : '';
         const description = container.querySelector('#proj-desc').value.trim();
-        const errorEl = container.querySelector('#add-project-error');
 
         if (errorEl) errorEl.style.display = 'none';
+        if (!selectionToken) {
+          if (errorEl) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = 'Choose a project folder first.';
+          }
+          return;
+        }
 
         try {
-          const submitBtn = addForm.querySelector('button[type="submit"]');
           submitBtn.disabled = true;
           submitBtn.textContent = 'Adding & Scanning...';
 
-          await api.addProject({ name, path, description });
+          await api.addProject({ name, description, folder_selection_token: selectionToken });
+          selectionToken = null;
           renderProjectIndexView(container, store);
         } catch (err) {
           console.error("Failed to add project:", err);
@@ -304,8 +756,13 @@ async function renderProjectIndexView(container, store) {
             errorEl.style.display = 'block';
             errorEl.textContent = `Error: ${err.message || String(err)}`;
           }
-          const submitBtn = addForm.querySelector('button[type="submit"]');
-          submitBtn.disabled = false;
+          // Token is single-use: force a fresh selection on retry.
+          selectionToken = null;
+          if (pathDisplay) {
+            pathDisplay.textContent = 'No folder selected';
+            pathDisplay.style.color = 'var(--text-muted)';
+          }
+          submitBtn.disabled = true;
           submitBtn.textContent = 'Add & Index Project';
         }
       });
@@ -356,6 +813,9 @@ async function renderProjectIndexView(container, store) {
         }
       });
     });
+
+    // Load the Project Folder Access section asynchronously.
+    renderFolderAccessSection(container, store);
 
   } catch (err) {
     if (!requestManager.isCurrent('projects', reqGen) || (err && err.isAborted && !err.isTimeout)) return;
@@ -408,6 +868,7 @@ async function renderProjectDetailView(container, store, projectId) {
     const desc = intel.description || 'Local engineering project profile';
     const isActive = intel.is_active !== false;
     const lastIndexed = intel.last_indexed_at;
+    const narrative = intel.narrative || null;
     const techProf = intel.technology_profile || {};
     const topMatches = ensureArray(intel.top_matches);
     const risks = ensureArray(intel.risks);
@@ -482,7 +943,10 @@ async function renderProjectDetailView(container, store, projectId) {
         </div>
       </header>
 
-      <!-- Structured Technology Profile -->
+      <!-- 1. Structured Project Narrative Overview (what it does) -->
+      ${renderNarrativeSection(narrative)}
+
+      <!-- 2. Structured Technology Profile -->
       <section class="project-section" style="margin-bottom:var(--space-6);">
         <h2 style="font-size:var(--text-lg);margin-bottom:var(--space-2);">Detected Technology Profile</h2>
         <p class="text-sm text-muted" style="margin-bottom:var(--space-4);">
@@ -507,79 +971,38 @@ async function renderProjectDetailView(container, store, projectId) {
         }
       </section>
 
-      <!-- Potential Engineering Concerns -->
+      <!-- 3. Potential Engineering Concerns (severity-oriented) -->
       <section class="project-section" style="margin-bottom:var(--space-6);">
         <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
           <h2 style="font-size:var(--text-lg);margin:0;">Potential Engineering Concerns</h2>
           <span class="mono text-xs text-muted">${risks.length} detected</span>
         </div>
         <p class="text-sm text-muted" style="margin-bottom:var(--space-4);">
-          Deprecations, breaking changes, vulnerabilities, canonical assessed risks, and high-impact changes affecting this project.
+          Vulnerabilities, breaking changes, deprecations, incompatible dependencies, removed features,
+          operational incompatibilities, evidence-backed regressions, and verified canonical risks.
+          High impact score alone is never treated as a concern.
         </p>
 
         ${
           risks.length === 0
-            ? '<div class="empty-sub-section" style="padding:var(--space-4);background:var(--bg-panel-subtle);border:1px solid var(--border-subtle);border-radius:var(--radius-md);"><p class="text-sm text-muted" style="margin:0;">No high-risk concerns or breaking changes detected for this project profile.</p></div>'
+            ? '<div class="empty-sub-section" style="padding:var(--space-4);background:var(--bg-panel-subtle);border:1px solid var(--border-subtle);border-radius:var(--radius-md);"><p class="text-sm text-muted" style="margin:0;">No verified engineering concerns detected for this project profile.</p></div>'
             : `
               <div class="concerns-list" style="display:flex;flex-direction:column;gap:var(--space-3);">
-                ${risks.map((r) => {
-                  const concernType = r.concern_type || 'high_project_impact';
-                  let badgeHtml = '<span class="badge badge-primary">High Project Impact</span>';
-                  if (concernType === 'vulnerability') {
-                    badgeHtml = '<span class="badge badge-danger">Vulnerability</span>';
-                  } else if (concernType === 'breaking_change') {
-                    badgeHtml = '<span class="badge badge-warning">Breaking Change</span>';
-                  } else if (concernType === 'deprecation') {
-                    badgeHtml = '<span class="badge badge-neutral">Deprecation</span>';
-                  } else if (concernType === 'assessed_risk') {
-                    badgeHtml = `<span class="badge badge-danger">Assessed Risk · ${escapeHtml(r.risk_level || 'high')}</span>`;
-                  }
-
-                  const titleHtml = r.story_available && r.cluster_id
-                    ? `<a href="#/story/${encodeURIComponent(r.cluster_id)}" class="concern-title-link" data-testid="projects-concern-link-${escapeHtml(r.cluster_id)}" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(r.title)}</a>`
-                    : `<span style="font-weight:600;">${escapeHtml(r.title)}</span> <span class="badge badge-subtle">Story unavailable</span>`;
-
-                  return `
-                    <div class="concern-card" style="padding:var(--space-4);background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--radius-md);">
-                      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2);margin-bottom:var(--space-2);">
-                        <div>${badgeHtml}</div>
-                        <div style="display:flex;gap:var(--space-2);align-items:center;">
-                          ${renderProjectImpactBadge(r.impact_score)}
-                          ${renderProjectRelevanceBadge(r.relevance_score)}
-                        </div>
-                      </div>
-
-                      <h3 class="concern-title" style="margin:0 0 var(--space-2) 0;font-size:inherit;font-weight:inherit;">${titleHtml}</h3>
-
-                      ${r.risk_status ? `
-                        <div class="mono text-xs text-muted" style="margin-bottom:var(--space-2);">
-                          Canonical Risk Status: <strong>${escapeHtml(r.risk_status)}</strong>
-                          ${typeof r.risk_score === 'number' ? ` · Score: ${(r.risk_score * 100).toFixed(0)}%` : ''}
-                        </div>
-                      ` : ''}
-
-                      ${r.recommendation ? `
-                        <div class="advisory-box" style="margin-top:var(--space-2);padding:var(--space-2) var(--space-3);background:var(--bg-panel-subtle);border-radius:var(--radius-sm);border-left:3px solid var(--accent-primary);">
-                          <span class="advisory-label text-xs" style="font-weight:600;color:var(--ink-secondary);">Advisory Context:</span>
-                          <span class="advisory-text text-xs text-muted">${escapeHtml(formatAdvisory(r.recommendation))}</span>
-                        </div>
-                      ` : ''}
-                    </div>
-                  `;
-                }).join('')}
+                ${risks.map((r) => renderConcernCard(r, canonicalId)).join('')}
               </div>
             `
         }
       </section>
 
-      <!-- Relevant Intelligence Story Matches -->
+      <!-- 4. Relevant Intelligence Story Matches (explained) -->
       <section class="project-section" style="margin-bottom:var(--space-6);">
         <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
           <h2 style="font-size:var(--text-lg);margin:0;">Relevant Intelligence Matches</h2>
           <span class="mono text-xs text-muted">${topMatches.length} matches</span>
         </div>
         <p class="text-sm text-muted" style="margin-bottom:var(--space-4);">
-          Current intelligence stories matching this project's technology stack and engineering context.
+          Current intelligence stories matching this project's technology stack and engineering context,
+          each with a grounded explanation of why it was matched.
         </p>
 
         ${
@@ -587,40 +1010,7 @@ async function renderProjectDetailView(container, store, projectId) {
             ? '<div class="empty-sub-section" style="padding:var(--space-4);background:var(--bg-panel-subtle);border:1px solid var(--border-subtle);border-radius:var(--radius-md);"><p class="text-sm text-muted" style="margin:0;">No intelligence matches currently recorded for this project profile.</p></div>'
             : `
               <div class="matches-list" style="display:flex;flex-direction:column;gap:var(--space-3);">
-                ${topMatches.map((m) => {
-                  const titleHtml = m.story_available && m.cluster_id
-                    ? `<a href="#/story/${encodeURIComponent(m.cluster_id)}" class="match-title-link" data-testid="projects-match-link-${escapeHtml(m.cluster_id)}" style="color:var(--ink-primary);font-weight:600;text-decoration:none;">${escapeHtml(m.title)}</a>`
-                    : `<span style="font-weight:600;">${escapeHtml(m.title)}</span> <span class="badge badge-subtle">Story unavailable</span>`;
-
-                  const reasons = ensureArray(m.reason_codes);
-
-                  return `
-                    <div class="match-card" style="padding:var(--space-4);background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--radius-md);">
-                      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-2);">
-                        <span class="chip match-type-chip" style="font-weight:500;">${escapeHtml(formatMatchType(m.match_type))}</span>
-                        <div style="display:flex;gap:var(--space-2);align-items:center;">
-                          ${renderProjectRelevanceBadge(m.relevance_score)}
-                          ${renderProjectImpactBadge(m.impact_score)}
-                        </div>
-                      </div>
-
-                      <h3 class="match-title" style="margin:0 0 var(--space-2) 0;font-size:var(--text-md);font-weight:inherit;">${titleHtml}</h3>
-
-                      ${reasons.length > 0 ? `
-                        <div class="chip-group" style="margin-top:var(--space-2);margin-bottom:var(--space-2);">
-                          ${reasons.map((r) => `<span class="chip chip-reason text-xs" data-reason-code="${escapeHtml(r)}">${escapeHtml(formatReasonCode(r))}</span>`).join('')}
-                        </div>
-                      ` : ''}
-
-                      ${m.recommendation ? `
-                        <div class="advisory-box" style="margin-top:var(--space-2);padding:var(--space-2) var(--space-3);background:var(--bg-panel-subtle);border-radius:var(--radius-sm);border-left:3px solid var(--border-strong);">
-                          <span class="advisory-label text-xs" style="font-weight:600;color:var(--ink-secondary);">Advisory Context:</span>
-                          <span class="advisory-text text-xs text-muted">${escapeHtml(formatAdvisory(m.recommendation))}</span>
-                        </div>
-                      ` : ''}
-                    </div>
-                  `;
-                }).join('')}
+                ${topMatches.map((m) => renderExplainedMatchCard(m, canonicalId)).join('')}
               </div>
             `
         }

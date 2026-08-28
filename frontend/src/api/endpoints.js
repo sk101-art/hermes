@@ -76,6 +76,15 @@ export const api = {
       ...options,
     });
   },
+  getProjectMatchComparison: (projectId, clusterId, options = {}) => {
+    return requestManager.request(
+      `/projects/${encodeURIComponent(projectId)}/matches/${encodeURIComponent(clusterId)}`,
+      {
+        viewKey: 'story',
+        ...options,
+      }
+    );
+  },
 
   // Saved Library
   getSavedItems: (params = { limit: 50, include_current: false }, options = {}) => {
@@ -179,6 +188,48 @@ export const api = {
         target_id: projectId,
         idempotency_key: idempotencyKey,
       },
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+
+  // Local folder access (native picker + approvals)
+  // Opens the native OS folder dialog; resolves to an opaque selection token.
+  // Long timeout: the user may take a while to browse.
+  selectFolder: (options = {}) => {
+    return requestManager.request('/local/folder-selection', {
+      method: 'POST',
+      timeoutMs: 320000,
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+  listFolderApprovals: (options = {}) => {
+    return requestManager.request('/local/folder-approvals', {
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+  replaceFolderApproval: (projectId, selectionToken, options = {}) => {
+    return requestManager.request('/local/folder-approvals/replace', {
+      method: 'POST',
+      body: { project_id: projectId, folder_selection_token: selectionToken },
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+  revokeFolderApproval: (projectId, options = {}) => {
+    return requestManager.request('/local/folder-approvals/revoke', {
+      method: 'POST',
+      body: { project_id: projectId },
+      viewKey: 'projects',
+      ...options,
+    });
+  },
+  openFolderInExplorer: (projectId, options = {}) => {
+    return requestManager.request('/local/folder-approvals/open', {
+      method: 'POST',
+      body: { project_id: projectId },
       viewKey: 'projects',
       ...options,
     });

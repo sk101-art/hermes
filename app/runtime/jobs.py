@@ -378,9 +378,14 @@ def run_context_scan(
     scanned_files = 0
     profiles_updated = 0
 
+    from app.services.folder_access import is_folder_access_revoked
+
     for p in projects:
         p_dir = Path(p.path)
         if not p_dir.exists():
+            continue
+        # Revoked folder access stops future scans but preserves history.
+        if is_folder_access_revoked(p.path):
             continue
 
         files, stats = scan_project_files(p.id, p_dir)

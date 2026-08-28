@@ -29,6 +29,8 @@ from app.models.schemas import (
     ProjectFile,
     ProjectTechnologyProfile,
     ProjectMatch,
+    ProjectMatchExplanation,
+    ProjectNarrative,
     InboxItem,
     SavedItem,
     UserFeedback,
@@ -723,6 +725,7 @@ class Database:
                     ("last_scan_started_at", "TEXT"),
                     ("last_scan_completed_at", "TEXT"),
                     ("last_scan_error", "TEXT"),
+                    ("narrative_json", "TEXT"),
                 ]:
                     _safe_add_column("projects", col_name, col_def, existing_p_cols)
 
@@ -735,6 +738,9 @@ class Database:
                     ("recommendation", "TEXT"),
                     ("reason_codes_json", "TEXT"),
                     ("updated_at", "TEXT"),
+                    ("explanation_json", "TEXT"),
+                    ("explanation_version", "TEXT"),
+                    ("evaluated_at", "TEXT"),
                 ]:
                     _safe_add_column("project_matches", col_name, col_def, existing_pm_cols)
                 if "cluster_id" in existing_pm_cols and "entity_id" in existing_pm_cols:
@@ -2583,8 +2589,8 @@ class Database:
             tools_json, topics_json, keywords_json, is_active, context_hash,
             created_at, updated_at, last_indexed_at, status, archived_at,
             archive_reason, last_scan_status, last_scan_started_at,
-            last_scan_completed_at, last_scan_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_scan_completed_at, last_scan_error, narrative_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -2614,6 +2620,7 @@ class Database:
                 project.last_scan_started_at.isoformat() if project.last_scan_started_at else None,
                 project.last_scan_completed_at.isoformat() if project.last_scan_completed_at else None,
                 project.last_scan_error,
+                project.narrative.model_dump_json() if project.narrative else None,
             ),
         )
         self.conn.commit()
@@ -2626,11 +2633,19 @@ class Database:
             val = d.get(k)
             return datetime.fromisoformat(val) if val else None
 
+        narrative = None
+        if d.get("narrative_json"):
+            try:
+                narrative = ProjectNarrative.model_validate_json(d["narrative_json"])
+            except Exception:
+                narrative = None
+
         return Project(
             id=d["id"],
             name=d["name"],
             path=d["path"],
             description=d.get("description"),
+            narrative=narrative,
             languages=json.loads(d["languages_json"]) if d.get("languages_json") else [],
             frameworks=json.loads(d["frameworks_json"]) if d.get("frameworks_json") else [],
             libraries=json.loads(d["libraries_json"]) if d.get("libraries_json") else [],
@@ -2841,8 +2856,9 @@ class Database:
         INSERT OR REPLACE INTO project_matches (
             id, project_id, entity_type, entity_id, match_type,
             relevance_score, impact_score, recommendation, reason_codes_json,
+            explanation_json, explanation_version, evaluated_at,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
@@ -2856,6 +2872,9 @@ class Database:
                 match.impact_score,
                 match.recommendation,
                 json.dumps(match.reason_codes),
+                match.explanation.model_dump_json() if match.explanation else None,
+                match.explanation_version,
+                match.evaluated_at.isoformat() if match.evaluated_at else None,
                 match.created_at.isoformat(),
                 match.updated_at.isoformat(),
             ),
@@ -2863,48 +2882,53 @@ class Database:
         self.conn.commit()
         return True
 
+    @staticmethod
+    def _row_to_project_match(r: sqlite3.Row) -> ProjectMatch:
+        d = dict(r)
+        explanation = None
+        if d.get("explanation_json"):
+            try:
+                explanation = ProjectMatchExplanation.model_validate_json(d["explanation_json"])
+            except Exception:
+                explanation = None
+        return ProjectMatch(
+            id=d["id"],
+            project_id=d["project_id"],
+            entity_type=d["entity_type"],
+            entity_id=d["entity_id"],
+            match_type=d["match_type"],
+            relevance_score=d["relevance_score"] if d["relevance_score"] is not None else None,
+            impact_score=d["impact_score"] if d["impact_score"] is not None else None,
+            recommendation=d["recommendation"],
+            reason_codes=json.loads(d["reason_codes_json"]) if d.get("reason_codes_json") else [],
+            explanation=explanation,
+            explanation_version=d.get("explanation_version"),
+            evaluated_at=datetime.fromisoformat(d["evaluated_at"]) if d.get("evaluated_at") else None,
+            created_at=datetime.fromisoformat(d["created_at"]),
+            updated_at=datetime.fromisoformat(d["updated_at"]),
+        )
+
     def get_project_matches(self, project_id: str) -> List[ProjectMatch]:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT * FROM project_matches WHERE project_id = ? ORDER BY impact_score DESC, relevance_score DESC",
             (project_id,),
         )
-        return [
-            ProjectMatch(
-                id=r["id"],
-                project_id=r["project_id"],
-                entity_type=r["entity_type"],
-                entity_id=r["entity_id"],
-                match_type=r["match_type"],
-                relevance_score=r["relevance_score"] if r["relevance_score"] is not None else None,
-                impact_score=r["impact_score"] if r["impact_score"] is not None else None,
-                recommendation=r["recommendation"],
-                reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
-                created_at=datetime.fromisoformat(r["created_at"]),
-                updated_at=datetime.fromisoformat(r["updated_at"]),
-            )
-            for r in cursor.fetchall()
-        ]
+        return [self._row_to_project_match(r) for r in cursor.fetchall()]
 
     def get_all_project_matches(self) -> List[ProjectMatch]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM project_matches ORDER BY impact_score DESC, relevance_score DESC")
-        return [
-            ProjectMatch(
-                id=r["id"],
-                project_id=r["project_id"],
-                entity_type=r["entity_type"],
-                entity_id=r["entity_id"],
-                match_type=r["match_type"],
-                relevance_score=r["relevance_score"] if r["relevance_score"] is not None else None,
-                impact_score=r["impact_score"] if r["impact_score"] is not None else None,
-                recommendation=r["recommendation"],
-                reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
-                created_at=datetime.fromisoformat(r["created_at"]),
-                updated_at=datetime.fromisoformat(r["updated_at"]),
-            )
-            for r in cursor.fetchall()
-        ]
+        return [self._row_to_project_match(r) for r in cursor.fetchall()]
+
+    def get_project_match(self, project_id: str, entity_id: str) -> Optional[ProjectMatch]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM project_matches WHERE project_id = ? AND entity_id = ? LIMIT 1",
+            (project_id, entity_id),
+        )
+        row = cursor.fetchone()
+        return self._row_to_project_match(row) if row else None
 
     def get_project_match_counts(self) -> Dict[str, int]:
         cursor = self.conn.cursor()
@@ -2930,21 +2954,7 @@ class Database:
             """
             cursor.execute(sql, chunk)
             for r in cursor.fetchall():
-                out[r["entity_id"]].append(
-                    ProjectMatch(
-                        id=r["id"],
-                        project_id=r["project_id"],
-                        entity_type=r["entity_type"],
-                        entity_id=r["entity_id"],
-                        match_type=r["match_type"],
-                        relevance_score=r["relevance_score"] if r["relevance_score"] is not None else None,
-                        impact_score=r["impact_score"] if r["impact_score"] is not None else None,
-                        recommendation=r["recommendation"],
-                        reason_codes=json.loads(r["reason_codes_json"]) if r["reason_codes_json"] else [],
-                        created_at=datetime.fromisoformat(r["created_at"]),
-                        updated_at=datetime.fromisoformat(r["updated_at"]),
-                    )
-                )
+                out[r["entity_id"]].append(self._row_to_project_match(r))
         return dict(out)
 
     def get_claim_counts_by_cluster_ids(self, cluster_ids: List[str]) -> Dict[str, int]:

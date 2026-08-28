@@ -143,27 +143,60 @@ def discover_projects(reference_dir: str = "reference") -> List[Path]:
     return projects
 
 
-def get_allowed_project_roots() -> List[Path]:
-    """Returns the configured allow-list of project root directories.
+def get_admin_policy_roots() -> List[Path]:
+    """Returns the hard administrator policy ceiling, if one is explicitly set.
 
-    Precedence:
+    ONLY the ``HERMES_ALLOWED_PROJECT_ROOTS`` environment variable acts as a
+    hard policy ceiling, and only when it is explicitly set (non-empty). When
+    it is unset there is no ceiling: native-picker approvals may grant access
+    to any otherwise-safe folder. Config-file and default roots are legacy
+    seed approvals, never a restriction on new picker approvals.
+    """
+    env_roots = os.environ.get("HERMES_ALLOWED_PROJECT_ROOTS", "").strip()
+    if not env_roots:
+        return []
+    roots = []
+    for part in env_roots.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            roots.append(Path(part).resolve())
+        except Exception:
+            continue
+    return roots
+
+
+def is_inside_admin_policy(path: Path) -> bool:
+    """True when no explicit policy ceiling exists, or the path is inside it."""
+    roots = get_admin_policy_roots()
+    if not roots:
+        return True
+    try:
+        resolved = path.resolve()
+    except Exception:
+        return False
+    for root in roots:
+        r_str = str(root).lower().replace("\\", "/")
+        path_str = str(resolved).lower().replace("\\", "/")
+        if path_str == r_str or path_str.startswith(r_str + "/"):
+            return True
+    return False
+
+
+def get_allowed_project_roots() -> List[Path]:
+    """Returns the legacy/seeded allow-list of project root directories.
+
+    These roots gate *manually supplied* paths and seed already-trusted
+    locations; they do NOT restrict native-picker approvals (the approvals
+    ledger grants those). Precedence:
     1. ``HERMES_ALLOWED_PROJECT_ROOTS`` env var (os.pathsep-separated paths)
     2. ``allowed_project_roots`` list in ``config/context.yaml``
     3. Defaults: repository root, current working directory, OS temp directory.
     """
-    env_roots = os.environ.get("HERMES_ALLOWED_PROJECT_ROOTS", "").strip()
-    if env_roots:
-        roots = []
-        for part in env_roots.split(os.pathsep):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                roots.append(Path(part).resolve())
-            except Exception:
-                continue
-        if roots:
-            return roots
+    policy_roots = get_admin_policy_roots()
+    if policy_roots:
+        return policy_roots
 
     try:
         import yaml
@@ -222,6 +255,29 @@ def is_subpath(child: Path, parent: Path) -> bool:
         return False
 
 
+def is_path_scannable(path: Path) -> bool:
+    """Scan gate for project folders.
+
+    A folder is scannable when it is an existing directory inside the legacy
+    allowed roots (env policy / config seeds / defaults) OR when it is (or is
+    nested inside) a directory explicitly approved through the native-picker
+    approvals ledger. Revoked approvals never grant access.
+    """
+    if is_path_safe_and_inside_allowed_roots(path):
+        return True
+    try:
+        resolved = path.resolve()
+        if not resolved.is_dir():
+            return False
+        from app.services.folder_access import get_approval_store
+        for approved in get_approval_store().active_paths():
+            if is_subpath(resolved, approved):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def scan_project_files(
     project_id: str,
     project_path: Path,
@@ -249,7 +305,7 @@ def scan_project_files(
     except Exception:
         resolved_proj_path = project_path
 
-    if not is_path_safe_and_inside_allowed_roots(resolved_proj_path):
+    if not is_path_scannable(resolved_proj_path):
         return [], stats
 
     resolved_excludes = []

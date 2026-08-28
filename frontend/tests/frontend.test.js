@@ -4014,6 +4014,43 @@ test('Phase 11: Project Detail View renders aggregated intelligence in single re
           recommendation: 'upgrade_candidate',
           reason_codes: ['framework_match', 'technology_overlap'],
           story_available: true,
+          explanation_version: '1',
+          explanation: {
+            subject_kind: 'release',
+            subject_name: 'LLVM 19 NVPTX Codegen Improvements',
+            subject_description: 'LLVM 19 release with NVPTX codegen improvements',
+            what_happened: 'LLVM 19 shipped NVPTX codegen improvements.',
+            relevance_summary: 'Your compiler pipeline is built on LLVM, and this release changes the NVPTX backend you target.',
+            matched_dimensions: [
+              {
+                dimension: 'Framework',
+                project_value: 'LLVM',
+                intelligence_value: 'LLVM 19',
+                connection: 'Same compiler framework lineage',
+                evidence_strength: 'strong',
+                evidence_references: [],
+              },
+            ],
+            potential_effects: [
+              { effect: 'Codegen output may change for NVPTX targets', likelihood: 'likely', severity: 'medium', evidence_references: [] },
+            ],
+            recommended_action: {
+              action: 'Evaluate LLVM 19 against your NVPTX test suite',
+              rationale: 'Direct framework overlap with codegen changes',
+              urgency: 'medium',
+              conditions: [],
+              validation_steps: ['Run NVPTX codegen regression tests'],
+              caveats: [],
+            },
+            limitations: ['Benchmark impact not independently verified'],
+            comparison_rows: [
+              { dimension: 'Framework', project_value: 'LLVM', intelligence_value: 'LLVM 19', why_relevant: 'Same compiler framework lineage' },
+            ],
+            evidence_references: [{ label: 'release notes', kind: 'url', url: 'https://llvm.org/releases', detail: null }],
+            relationship_label: 'direct_match',
+            explanation_version: '1',
+            generated_at: '2026-08-21T00:00:00Z',
+          },
         },
         {
           cluster_id: 'cl_missing_story_2',
@@ -4024,6 +4061,8 @@ test('Phase 11: Project Detail View renders aggregated intelligence in single re
           recommendation: 'consider',
           reason_codes: ['direct_dependency_match'],
           story_available: false,
+          explanation_version: null,
+          explanation: null,
         },
         {
           cluster_id: 'cl_zero_score_3',
@@ -4034,23 +4073,26 @@ test('Phase 11: Project Detail View renders aggregated intelligence in single re
           recommendation: 'watch',
           reason_codes: ['tool_match'],
           story_available: true,
+          explanation_version: '1',
+          explanation: {
+            subject_kind: 'release',
+            subject_name: 'CMake 3.30 Ninja Multi-Config Update',
+            subject_description: 'CMake 3.30 update',
+            what_happened: 'CMake 3.30 updated Ninja multi-config behavior.',
+            relevance_summary: 'Your build system uses CMake and Ninja.',
+            matched_dimensions: [],
+            potential_effects: [],
+            recommended_action: null,
+            limitations: ['Weak contextual relationship only'],
+            comparison_rows: [],
+            evidence_references: [],
+            relationship_label: 'weak_contextual',
+            explanation_version: '1',
+            generated_at: '2026-08-21T00:00:00Z',
+          },
         },
       ],
       risks: [
-        {
-          cluster_id: 'cl_cuda_1',
-          title: 'LLVM 19 NVPTX Codegen Improvements',
-          concern_type: 'high_project_impact',
-          match_type: 'technology_overlap',
-          impact_score: 0.7935,
-          relevance_score: 0.8437,
-          risk_status: 'insufficient_data',
-          risk_level: null,
-          risk_score: 0.35,
-          recommendation: 'upgrade_candidate',
-          reason_codes: ['framework_match'],
-          story_available: true,
-        },
         {
           cluster_id: 'cl_vuln_4',
           title: 'Critical Buffer Overflow in NVPTX Driver Parser',
@@ -4131,11 +4173,16 @@ test('Phase 11: Project Detail View renders aggregated intelligence in single re
     // Score labeling and rounding
     assert.ok(html.includes('Project relevance: 84%'));
     assert.ok(html.includes('Project impact: 79%'));
-    assert.ok(html.includes('data-reason-code="framework_match"'));
 
-    // Advisory context provenance
-    assert.ok(html.includes('Advisory Context:'));
-    assert.ok(html.includes('Upgrade Candidate — New release or major improvements available.'));
+    // Explanation card structure (replaces old Advisory Context lookup)
+    assert.ok(html.includes('What happened'));
+    assert.ok(html.includes('Why this was matched'));
+    assert.ok(html.includes('Suggested next step'));
+    assert.ok(html.includes('Evaluate LLVM 19 against your NVPTX test suite'));
+    assert.ok(html.includes('Direct match'));
+
+    // Legacy/unexplained match is not presented as actionable
+    assert.ok(html.includes('not presented as actionable'));
 
     // Missing score omission (null)
     assert.ok(!html.includes('Project relevance: null%'));
@@ -4145,14 +4192,13 @@ test('Phase 11: Project Detail View renders aggregated intelligence in single re
     assert.ok(html.includes('Project relevance: 0%'));
     assert.ok(html.includes('Project impact: 0%'));
 
-    // Story availability
-    assert.ok(html.includes('href="#/story/cl_cuda_1"'));
+    // Story availability (links now carry ?project= for comparison deep-link)
+    assert.ok(html.includes('href="#/story/cl_cuda_1?project=project%3Acuda-compiler-lab"'));
     assert.ok(html.includes('Story unavailable'));
-    assert.ok(!html.includes('href="#/story/cl_missing_story_2"'));
+    assert.ok(!html.includes('href="#/story/cl_missing_story_2'));
 
-    // Concerns separation: High Project Impact != Assessed Risk
-    assert.ok(html.includes('High Project Impact'));
-    assert.ok(html.includes('Canonical Risk Status: <strong>insufficient_data</strong>'));
+    // Concerns: high impact alone is never a concern; only verified criteria surface
+    assert.ok(!html.includes('High Project Impact'));
     assert.ok(html.includes('Assessed Risk · critical'));
     assert.ok(html.includes('Vulnerability'));
 
@@ -4238,7 +4284,7 @@ test('Phase 11: Project Detail View renders truthful empty intelligence state wh
   }
 });
 
-test('Phase 11: Missing advisory recommendation produces no Advisory Context in DOM, genuine tokens humanized, unknown degraded neutrally', async () => {
+test('Phase 11: Matches without explanations render as non-actionable legacy cards; structured advisory renders action, rationale, and validation steps', async () => {
   const { renderProjectsView } = await import('../src/views/projects.js');
   const { api } = await import('../src/api/endpoints.js');
 
@@ -4271,26 +4317,42 @@ test('Phase 11: Missing advisory recommendation produces no Advisory Context in 
           recommendation: null,
           reason_codes: ['tech_overlap'],
           story_available: true,
+          explanation_version: null,
+          explanation: null,
         },
         {
-          cluster_id: 'cl_watch_rec',
-          title: 'Watch Recommendation Item',
+          cluster_id: 'cl_explained_rec',
+          title: 'Explained Recommendation Item',
           match_type: 'technology_overlap',
           relevance_score: 0.8,
           impact_score: 0.7,
           recommendation: 'watch',
           reason_codes: ['tech_overlap'],
           story_available: true,
-        },
-        {
-          cluster_id: 'cl_unknown_rec',
-          title: 'Unknown Custom Recommendation Item',
-          match_type: 'compatible_tool',
-          relevance_score: 0.6,
-          impact_score: 0.5,
-          recommendation: 'custom_experimental_tag',
-          reason_codes: ['tool_overlap'],
-          story_available: true,
+          explanation_version: '1',
+          explanation: {
+            subject_kind: 'release',
+            subject_name: 'Explained Recommendation Item',
+            subject_description: 'A release',
+            what_happened: 'A release happened.',
+            relevance_summary: 'Overlapping technology.',
+            matched_dimensions: [],
+            potential_effects: [],
+            recommended_action: {
+              action: 'Watch this release',
+              rationale: 'Emerging technology in project ecosystem',
+              urgency: 'low',
+              conditions: [],
+              validation_steps: ['Check compatibility notes'],
+              caveats: ['Early stage'],
+            },
+            limitations: [],
+            comparison_rows: [],
+            evidence_references: [],
+            relationship_label: 'weak_contextual',
+            explanation_version: '1',
+            generated_at: '2026-08-21T00:00:00Z',
+          },
         },
       ],
       risks: [],
@@ -4302,17 +4364,22 @@ test('Phase 11: Missing advisory recommendation produces no Advisory Context in 
     await renderProjectsView(container, testStore, { projectId: 'project:rec_test' });
     const html = container.innerHTML;
 
-    // cl_null_rec must NOT have an advisory box
+    // cl_null_rec has no explanation -> legacy card, not actionable, no advisory box
     const nullIdx = html.indexOf('Null Recommendation Item');
-    const watchIdx = html.indexOf('Watch Recommendation Item');
-    const nullSection = html.slice(nullIdx, watchIdx);
+    const explainedIdx = html.indexOf('Explained Recommendation Item');
+    const nullSection = html.slice(nullIdx, explainedIdx);
     assert.ok(!nullSection.includes('Advisory Context:'));
+    assert.ok(nullSection.includes('not presented as actionable'));
 
-    // cl_watch_rec must be humanized cautiously
-    assert.ok(html.includes('Watch — Emerging technology in project ecosystem.'));
+    // Explained match renders the structured backend advisory
+    assert.ok(html.includes('Watch this release'));
+    assert.ok(html.includes('Emerging technology in project ecosystem'));
+    assert.ok(html.includes('Check compatibility notes'));
+    assert.ok(html.includes('Early stage'));
+    assert.ok(html.includes('Weak contextual relationship'));
 
-    // cl_unknown_rec must degrade neutrally without throwing or fabricating advice
-    assert.ok(html.includes('Custom experimental tag'));
+    // The removed formatAdvisory lookup must not appear anywhere
+    assert.ok(!html.includes('Advisory Context:'));
 
   } finally {
     api.getProjectIntelligence = originalGetIntel;

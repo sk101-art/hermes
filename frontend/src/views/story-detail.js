@@ -43,6 +43,107 @@ import { renderSurfaceControls } from '../components/surface-controls.js';
 const dossierClaimCache = new Map();
 
 /**
+ * Map a backend relationship_label to a human-readable label + badge class.
+ * Weak relationships are stated as weak — never dressed up.
+ */
+function relationshipLabelMeta(label) {
+  const map = {
+    direct_match: ['badge-primary', 'Direct match'],
+    architectural_similarity: ['badge-neutral', 'Architectural similarity'],
+    potential_alternative: ['badge-neutral', 'Potential alternative'],
+    weak_contextual: ['badge-subtle', 'Weak contextual relationship'],
+    insufficient_evidence: ['badge-subtle', 'Insufficient evidence'],
+  };
+  return map[label] || ['badge-subtle', 'Insufficient evidence'];
+}
+
+/**
+ * Render the "Why this matters to {Project}" comparison table for a single
+ * project/intelligence match, using the canonical comparison payload.
+ * Rows: Dimension / Your engine / Matched tech / Why relevant.
+ */
+export function renderProjectComparisonTable(payload) {
+  if (!payload || !payload.match) {
+    return `<p class="text-sm text-muted">No match explanation is available for this project.</p>`;
+  }
+
+  const project = payload.project || {};
+  const match = payload.match || {};
+  const expl = match.explanation || null;
+  const isLegacy = !expl || match.explanation_version === 'legacy_unexplained';
+  const projectName = project.name || project.project_id || 'this project';
+
+  if (isLegacy) {
+    return `
+      <p class="text-sm text-muted">
+        This match predates the explanation system and has no grounded explanation yet.
+        It is shown for reference only and is not presented as actionable. Rescan the project to regenerate it.
+      </p>
+    `;
+  }
+
+  const [labelCls, labelText] = relationshipLabelMeta(expl.relationship_label);
+  const rows = ensureArray(expl.comparison_rows && expl.comparison_rows.length
+    ? expl.comparison_rows
+    : ensureArray(expl.matched_dimensions).map((d) => ({
+        dimension: d.dimension,
+        project_value: d.project_value,
+        intelligence_value: d.intelligence_value,
+        why_relevant: d.connection,
+      })));
+
+  return `
+    <div class="project-comparison" data-testid="story-project-comparison">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:var(--space-2);margin-bottom:var(--space-3);">
+        <h3 style="margin:0;font-size:var(--text-md);">Why this matters to ${escapeHtml(projectName)}</h3>
+        <span class="badge ${labelCls}">${escapeHtml(labelText)}</span>
+      </div>
+
+      ${expl.relevance_summary ? `<p class="text-sm text-secondary" style="margin:0 0 var(--space-3) 0;">${escapeHtml(expl.relevance_summary)}</p>` : ''}
+
+      ${rows.length ? `
+        <div style="overflow-x:auto;">
+          <table class="comparison-table" style="width:100%;border-collapse:collapse;font-size:var(--text-sm);">
+            <thead>
+              <tr style="text-align:left;border-bottom:1px solid var(--border-strong);">
+                <th style="padding:var(--space-2);color:var(--ink-secondary);">Dimension</th>
+                <th style="padding:var(--space-2);color:var(--ink-secondary);">Your engine</th>
+                <th style="padding:var(--space-2);color:var(--ink-secondary);">Matched tech</th>
+                <th style="padding:var(--space-2);color:var(--ink-secondary);">Why relevant</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => `
+                <tr style="border-bottom:1px solid var(--border-subtle);">
+                  <td style="padding:var(--space-2);font-weight:600;">${escapeHtml(row.dimension || '')}</td>
+                  <td style="padding:var(--space-2);">${escapeHtml(row.project_value || '—')}</td>
+                  <td style="padding:var(--space-2);">${escapeHtml(row.intelligence_value || '—')}</td>
+                  <td style="padding:var(--space-2);color:var(--ink-secondary);">${escapeHtml(row.why_relevant || '')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : '<p class="text-sm text-muted">No dimension-level comparison available.</p>'}
+
+      ${expl.recommended_action && expl.recommended_action.action ? `
+        <div style="margin-top:var(--space-3);padding:var(--space-3);background:var(--bg-panel-subtle);border-radius:var(--radius-sm);border-left:3px solid var(--accent-primary);">
+          <div class="text-xs" style="font-weight:600;color:var(--ink-secondary);margin-bottom:var(--space-1);">Suggested next step</div>
+          <p class="text-sm" style="margin:0;font-weight:600;">${escapeHtml(expl.recommended_action.action)}</p>
+          ${expl.recommended_action.rationale ? `<p class="text-xs text-muted" style="margin:var(--space-1) 0 0 0;">${escapeHtml(expl.recommended_action.rationale)}</p>` : ''}
+        </div>
+      ` : ''}
+
+      ${ensureArray(expl.limitations).length ? `
+        <p class="text-xs text-faint" style="margin:var(--space-2) 0 0 0;">
+          <strong>Limitations:</strong> ${ensureArray(expl.limitations).map(escapeHtml).join(' · ')}
+        </p>
+      ` : ''}
+    </div>
+  `;
+}
+
+/**
  * Render interactive grounding reference pills.
  * @param {Array<{entity_type: string, entity_id: string}>} refs 
  * @returns {string} HTML string
@@ -468,6 +569,21 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
           </section>
         ` : ''}
 
+        <!-- Project Match Comparison (Explanation Upgrade: #/story/{id}?project={pid}) -->
+        ${routeParams.project ? `
+          <section class="panel" style="padding:var(--space-6);margin-bottom:var(--space-6);" id="section-project-comparison" aria-labelledby="section-comparison-heading">
+            <div class="section-header" style="margin-bottom:var(--space-4);">
+              <div>
+                <h2 id="section-comparison-heading" style="font-size:var(--text-lg);margin:0;">Project Match Explanation</h2>
+                <p class="text-muted text-xs" style="margin:2px 0 0 0;">Grounded, dimension-level explanation of why this intelligence matched the selected project.</p>
+              </div>
+            </div>
+            <div id="project-comparison-container">
+              ${renderLoadingState('Loading match explanation…')}
+            </div>
+          </section>
+        ` : ''}
+
         <!-- Extracted Claims & Progressive Evidence Investigation Section -->
         <section class="panel" style="padding:var(--space-6);margin-bottom:var(--space-6);" id="section-claims" aria-labelledby="section-claims-heading">
           <div class="section-header" style="margin-bottom:var(--space-4);">
@@ -561,6 +677,31 @@ export async function renderStoryDetailView(container, store, routeParams = {}) 
     }
 
     container.innerHTML = renderDossierHtml();
+
+    // Fetch and render the project match comparison when ?project= is present.
+    const comparisonContainer = container.querySelector('#project-comparison-container');
+    if (comparisonContainer && routeParams.project) {
+      const projectId = routeParams.project;
+      api.getProjectMatchComparison(projectId, storyId)
+        .then((payload) => {
+          comparisonContainer.innerHTML = renderProjectComparisonTable(payload);
+        })
+        .catch((err) => {
+          if (err && err.status === 404) {
+            comparisonContainer.innerHTML = `
+              <p class="text-sm text-muted">
+                No recorded match exists between this story and project
+                <span class="mono">${escapeHtml(projectId)}</span>. The relationship is not presented as actionable.
+              </p>
+            `;
+          } else {
+            comparisonContainer.innerHTML = renderErrorState(
+              'Failed to Load Match Explanation',
+              (err && err.message) || 'The match explanation could not be retrieved.'
+            );
+          }
+        });
+    }
 
     const refreshContainer = container.querySelector('#story-refresh-container');
     if (refreshContainer) {

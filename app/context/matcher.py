@@ -1,6 +1,8 @@
 import hashlib
+import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -16,7 +18,20 @@ from app.models.schemas import (
 )
 from app.semantic.clustering import cosine_similarity
 from app.context.embeddings import get_embedder
+from app.context.explanation import (
+    EXPLANATION_VERSION,
+    detect_concern_reason_codes,
+    generate_match_explanation,
+)
 from app.storage.db import Database
+
+# --- Relevance score caps (explanation-upgrade spec) ---
+# These caps prevent weak evidence from being presented as strong relevance.
+CAP_SEMANTIC_ONLY = 0.39      # semantic similarity only, no concrete overlap
+CAP_BROAD_TOPIC = 0.44        # broad topic overlap only
+CAP_SPECIFIC_TECH = 0.64      # specific technology/framework overlap
+CAP_VERIFIED_ARCHITECTURAL = 0.79  # verified architectural relevance
+# Direct dependency matches may reach up to 1.0.
 
 # Maturity score lookup
 MATURITY_FACTORS: Dict[str, float] = {
@@ -45,6 +60,21 @@ BROAD_TECHNOLOGY_TERMS: Set[str] = {
     "python", "rust", "go", "java", "inference", "quantization", "compiler",
     "kernel", "ai", "ml", "embeddings", "agent", "agents", "docker", "storage",
     "kv-cache", "attention", "transformer", "models"
+}
+
+# Python stdlib modules are never real third-party dependencies. They can
+# appear in profiles built from AST import scans and must not produce
+# direct-dependency matches (e.g. "re" matching "/releases" URLs).
+STDLIB_MODULE_NAMES: Set[str] = {
+    name.lower().replace("_", "-") for name in getattr(sys, "stdlib_module_names", frozenset())
+}
+
+# Generic URL path segments that must never count as a repository/package
+# identity signal when matching dependency names against event URLs.
+GENERIC_URL_SEGMENTS: Set[str] = {
+    "releases", "release", "tag", "tags", "blob", "tree", "commit", "commits",
+    "issues", "pull", "pulls", "wiki", "compare", "archive", "releases.atom",
+    "www.github.com", "github.com", "api.github.com",
 }
 
 
@@ -93,6 +123,9 @@ def match_project_with_cluster(
         # Ignore broad terms from direct dependency matching
         if dep in BROAD_TECHNOLOGY_TERMS:
             continue
+        # Ignore Python stdlib modules and degenerate single-char names
+        if dep in STDLIB_MODULE_NAMES or len(dep) < 2:
+            continue
 
         eco_info = ecosystem_map.get(dep)
         if eco_info:
@@ -122,9 +155,20 @@ def match_project_with_cluster(
             if repo_match or claim_match:
                 matched_deps.append(dep)
         else:
-            # For dependencies not explicitly in ecosystem map, require exact repo or release event
+            # For dependencies not explicitly in ecosystem map, require an
+            # exact repository/package identity match. The dependency name
+            # must equal a full URL path segment (e.g. ".../vllm/releases"
+            # matches "vllm") or a full event-id segment — substring matches
+            # like "/re" inside "/releases" are false positives.
             for e in cluster_events:
-                if e.source == "github" and (f"/{dep}" in (e.url or "").lower() or f":{dep}:" in e.id.lower()):
+                if e.source != "github":
+                    continue
+                url_segments = {
+                    seg for seg in urlparse(e.url or "").path.lower().split("/") if seg
+                }
+                url_segments -= GENERIC_URL_SEGMENTS
+                id_segments = {seg for seg in e.id.lower().split(":") if seg}
+                if dep in url_segments or dep in id_segments:
                     matched_deps.append(dep)
                     break
 
@@ -192,6 +236,10 @@ def match_project_with_cluster(
             + 0.15 * lang_overlap_score
         )
 
+    # Language-only overlap is never a match.
+    if matched_langs and not (matched_deps or matched_techs or matched_topics):
+        return None
+
     # Direct dependency or explicit technology/topic match override
     if matched_deps:
         relevance = max(relevance, 0.75 + (0.20 * semantic_sim))
@@ -238,6 +286,24 @@ def match_project_with_cluster(
         match_type = "compatible_tool"
     else:
         match_type = "general_related"
+
+    # 6b. Apply relevance caps based on the strongest available evidence.
+    has_verified_claim = any(
+        c.status in ("strongly_supported", "supported") and (c.verification_score or 0) >= 0.60
+        for c in cluster_claims
+    )
+    if matched_deps:
+        cap = 1.0  # direct dependency: up to 100%
+    elif match_type == "architecture_relevant" and has_verified_claim:
+        cap = CAP_VERIFIED_ARCHITECTURAL
+    elif matched_techs:
+        cap = CAP_SPECIFIC_TECH
+    elif matched_topics:
+        cap = CAP_BROAD_TOPIC
+    else:
+        cap = CAP_SEMANTIC_ONLY  # semantic-only or general_related
+    if relevance > cap:
+        relevance = round(cap, 4)
 
     # 7. Impact Score Formula
     dep_directness = 1.0 if matched_deps else (0.50 if matched_techs else 0.20)
@@ -288,8 +354,31 @@ def match_project_with_cluster(
     reason_codes.append(f"maturity:{stage}")
     reason_codes.append(f"risk:{risk_score:.2f}")
 
+    # Audited concern signals (vulnerability, breaking change, deprecation, ...)
+    # These are the ONLY basis for engineering concerns — never impact score.
+    reason_codes.extend(detect_concern_reason_codes(cluster_events, cluster_claims))
+
     match_id = f"match:{project.id}:{cluster.id}"
     now = datetime.now(timezone.utc)
+
+    # 10. Generate the versioned, evidence-grounded explanation.
+    explanation = generate_match_explanation(
+        project=project,
+        profile=profile,
+        cluster=cluster,
+        cluster_events=cluster_events,
+        cluster_claims=cluster_claims,
+        assessment=assessment,
+        tech_state=tech_state,
+        matched_deps=matched_deps,
+        matched_techs=matched_techs,
+        matched_langs=matched_langs,
+        matched_topics=matched_topics,
+        semantic_sim=semantic_sim,
+        match_type=match_type,
+        relevance_score=relevance,
+        recommendation=recommendation,
+    )
 
     return ProjectMatch(
         id=match_id,
@@ -301,6 +390,9 @@ def match_project_with_cluster(
         impact_score=impact,
         recommendation=recommendation,
         reason_codes=reason_codes,
+        explanation=explanation,
+        explanation_version=EXPLANATION_VERSION,
+        evaluated_at=now,
         created_at=now,
         updated_at=now,
     )

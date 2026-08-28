@@ -254,7 +254,8 @@ CREATE TABLE IF NOT EXISTS projects (
     last_scan_status TEXT,
     last_scan_started_at TEXT,
     last_scan_completed_at TEXT,
-    last_scan_error TEXT
+    last_scan_error TEXT,
+    narrative_json TEXT
 );
 
 
@@ -317,6 +318,9 @@ CREATE TABLE IF NOT EXISTS project_matches (
     impact_score REAL,
     recommendation TEXT,
     reason_codes_json TEXT,
+    explanation_json TEXT,
+    explanation_version TEXT,
+    evaluated_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

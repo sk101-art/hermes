@@ -364,11 +364,41 @@ class IntelligenceChange(BaseModel):
 # --- Session 7: Reference / Context Folder Personalization Models ---
 
 
+class EvidenceReference(BaseModel):
+    """A pointer to a concrete piece of evidence backing a statement.
+
+    Examples: a README line ("README.md:12"), a source URL, a claim id.
+    """
+    label: str  # human-readable pointer, e.g. "README.md:12" or "GitHub release v2.1"
+    kind: str = "file"  # file, url, claim, event, source, assessment
+    url: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class ProjectNarrative(BaseModel):
+    """Structured, evidence-grounded description of what a project does.
+
+    Extracted from README/documentation by the narrative analyzer. Persisted
+    independently from technology tags so the human-readable overview and the
+    machine-readable stack never drift into each other.
+    """
+    user_description: Optional[str] = None  # user-provided description if any
+    purpose_summary: Optional[str] = None  # what the project is for, from docs
+    capability_summaries: List[str] = Field(default_factory=list)  # what it can do
+    architecture_summary: Optional[str] = None  # how it is structured, if documented
+    primary_components: List[str] = Field(default_factory=list)  # main modules/parts
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    extraction_status: str = "unknown"  # extracted, partial, unavailable
+    extracted_at: Optional[datetime] = None
+    narrative_version: str = "1"
+
+
 class Project(BaseModel):
     id: str
     name: str
     path: str
     description: Optional[str] = None
+    narrative: Optional[ProjectNarrative] = None
     languages: List[str] = Field(default_factory=list)
     frameworks: List[str] = Field(default_factory=list)
     libraries: List[str] = Field(default_factory=list)
@@ -425,6 +455,64 @@ class ProjectTechnologyProfile(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class MatchDimension(BaseModel):
+    """One concrete dimension connecting a project to an intelligence item."""
+    dimension: str  # e.g. "storage engine", "language", "direct dependency"
+    project_value: str  # what the project uses
+    intelligence_value: str  # what the intelligence item references
+    connection: str  # how the two relate, in plain language
+    evidence_strength: str = "weak"  # strong, moderate, weak
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+
+
+class PotentialEffect(BaseModel):
+    """A possible effect of an intelligence item on the project."""
+    effect: str
+    likelihood: str = "possible"  # likely, possible, unlikely, unknown
+    severity: str = "low"  # high, medium, low
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+
+
+class RecommendedAction(BaseModel):
+    """Structured advisory replacing the old frontend formatAdvisory() lookup."""
+    action: str
+    rationale: str
+    urgency: str = "low"  # high, medium, low
+    conditions: List[str] = Field(default_factory=list)
+    validation_steps: List[str] = Field(default_factory=list)
+    caveats: List[str] = Field(default_factory=list)
+
+
+class ComparisonRow(BaseModel):
+    """One row of the project-vs-intelligence comparison table."""
+    dimension: str
+    project_value: str
+    intelligence_value: str
+    why_relevant: str
+
+
+class ProjectMatchExplanation(BaseModel):
+    """Versioned, evidence-grounded explanation of why an intelligence item
+    matched a project. Every surfaced match must carry one of these; rows
+    without one are treated as legacy_unexplained and must not be presented
+    as actionable.
+    """
+    subject_kind: str = "story"  # story, release, vulnerability, discussion, research, change
+    subject_name: str = ""
+    subject_description: Optional[str] = None
+    what_happened: Optional[str] = None
+    relevance_summary: Optional[str] = None
+    matched_dimensions: List[MatchDimension] = Field(default_factory=list)
+    potential_effects: List[PotentialEffect] = Field(default_factory=list)
+    recommended_action: Optional[RecommendedAction] = None
+    limitations: List[str] = Field(default_factory=list)
+    comparison_rows: List[ComparisonRow] = Field(default_factory=list)
+    evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    relationship_label: str = "insufficient_evidence"  # direct_match, architectural_similarity, potential_alternative, weak_contextual, insufficient_evidence
+    explanation_version: str = "1"
+    generated_at: Optional[datetime] = None
+
+
 class ProjectMatch(BaseModel):
     id: str
     project_id: str
@@ -435,6 +523,9 @@ class ProjectMatch(BaseModel):
     impact_score: Optional[float] = None
     recommendation: Optional[str] = None  # Genuine stored category or None (no fabricated default)
     reason_codes: List[str] = Field(default_factory=list)
+    explanation: Optional[ProjectMatchExplanation] = None
+    explanation_version: Optional[str] = None  # None/"legacy_unexplained" for pre-explanation rows
+    evaluated_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

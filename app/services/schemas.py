@@ -442,6 +442,7 @@ class ProjectIntelligence(BaseModel):
     project_id: str
     name: str
     description: Optional[str] = None
+    narrative: Optional[Dict[str, Any]] = None
     is_active: bool = True
     last_indexed_at: Optional[str] = None
     technology_profile: Dict[str, Any] = Field(default_factory=dict)
