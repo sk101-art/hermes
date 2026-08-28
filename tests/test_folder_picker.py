@@ -455,19 +455,20 @@ def test_revocation_stops_scan_keeps_history(env):
 # + built-in defaults) must never reject a safe picker selection; only an
 # explicit HERMES_ALLOWED_PROJECT_ROOTS policy can.
 
-ASCEL_PATH = Path(r"C:\Users\sujay\Downloads\ascel")
+def test_select_ascel_outside_default_roots_succeeds(env_open, monkeypatch):
+    """Selecting a folder outside every legacy/default allowed root
+    and with NO admin policy set — succeeds end to end."""
+    allowed_root = env_open["tmp_path"] / "allowed_root"
+    allowed_root.mkdir(exist_ok=True)
+    monkeypatch.setattr("app.context.scanner.get_allowed_project_roots", lambda: [allowed_root])
 
-
-def test_select_ascel_outside_default_roots_succeeds(env_open):
-    """Selecting C:\\Users\\sujay\\Downloads\\ascel — outside every legacy/
-    default allowed root and with NO admin policy set — succeeds end to end."""
-    if not ASCEL_PATH.is_dir():
-        pytest.skip("C:\\Users\\sujay\\Downloads\\ascel is not present on this machine.")
+    ascel_path = env_open["tmp_path"] / "ascel"
+    ascel_path.mkdir(exist_ok=True)
 
     client = env_open["client"]
     session = _session(client)
 
-    sel = _select_folder(client, session, _completed(0, _pick_stdout(ASCEL_PATH)))
+    sel = _select_folder(client, session, _completed(0, _pick_stdout(ascel_path)))
     assert sel.status_code == 200, sel.text
     token = sel.json()["selection_token"]
 
@@ -478,7 +479,7 @@ def test_select_ascel_outside_default_roots_succeeds(env_open):
     assert resp.status_code == 202, resp.text
     proj = resp.json()
     assert proj["id"] == "project:ascel"
-    assert Path(proj["path"]).resolve() == ASCEL_PATH.resolve()
+    assert Path(proj["path"]).resolve() == ascel_path.resolve()
 
     # The targeted scan was queued for exactly this project.
     rows = env_open["db"].conn.execute(
@@ -487,15 +488,19 @@ def test_select_ascel_outside_default_roots_succeeds(env_open):
     assert any(r[0] == "project_scan" and r[1] == "project:ascel" and r[2] == "queued" for r in rows)
 
 
-def test_only_exact_folder_approved_never_parent(env_open):
-    """Approving Downloads/ascel must NEVER approve all of Downloads."""
-    if not ASCEL_PATH.is_dir():
-        pytest.skip("C:\\Users\\sujay\\Downloads\\ascel is not present on this machine.")
+def test_only_exact_folder_approved_never_parent(env_open, monkeypatch):
+    """Approving a folder must NEVER approve its parent."""
+    allowed_root = env_open["tmp_path"] / "allowed_root"
+    allowed_root.mkdir(exist_ok=True)
+    monkeypatch.setattr("app.context.scanner.get_allowed_project_roots", lambda: [allowed_root])
+
+    ascel_path = env_open["tmp_path"] / "ascel_downloads" / "ascel"
+    ascel_path.mkdir(parents=True, exist_ok=True)
 
     client = env_open["client"]
     session = _session(client)
 
-    sel = _select_folder(client, session, _completed(0, _pick_stdout(ASCEL_PATH)))
+    sel = _select_folder(client, session, _completed(0, _pick_stdout(ascel_path)))
     assert sel.status_code == 200, sel.text
     resp = client.post(
         "/projects", headers=_headers(session),
@@ -506,11 +511,11 @@ def test_only_exact_folder_approved_never_parent(env_open):
     records = folder_access.get_approval_store().list_records()
     assert len(records) == 1
     approved = Path(records[0]["path"]).resolve()
-    assert approved == ASCEL_PATH.resolve()
+    assert approved == ascel_path.resolve()
 
     # The parent (Downloads) is NOT approved, and the approval does not
     # extend to sibling folders.
-    downloads = ASCEL_PATH.parent
+    downloads = ascel_path.parent
     assert approved != downloads.resolve()
     from app.context.scanner import is_subpath
     # A sibling directory is not covered by the exact-folder approval.
@@ -520,16 +525,20 @@ def test_only_exact_folder_approved_never_parent(env_open):
     assert all(Path(r["path"]).resolve() != downloads.resolve() for r in records)
 
 
-def test_manual_path_without_picker_token_fails(env_open):
+def test_manual_path_without_picker_token_fails(env_open, monkeypatch):
     """A manually typed path outside legacy roots must fail without a token —
     the picker approval flow can never be bypassed by typing a path."""
-    if not ASCEL_PATH.is_dir():
-        pytest.skip("C:\\Users\\sujay\\Downloads\\ascel is not present on this machine.")
+    allowed_root = env_open["tmp_path"] / "allowed_root"
+    allowed_root.mkdir(exist_ok=True)
+    monkeypatch.setattr("app.context.scanner.get_allowed_project_roots", lambda: [allowed_root])
+
+    ascel_path = env_open["tmp_path"] / "ascel_manual"
+    ascel_path.mkdir(exist_ok=True)
 
     client = env_open["client"]
     resp = client.post(
         "/projects", headers=CLIENT_HEADERS,
-        json={"name": "Sneaky Ascel", "path": str(ASCEL_PATH)},
+        json={"name": "Sneaky Ascel", "path": str(ascel_path)},
     )
     assert resp.status_code == 400, resp.text
     assert env_open["db"].get_project("project:sneaky_ascel") is None
