@@ -1,132 +1,156 @@
-﻿# HERMES
+# HERMES
 
-A local-first autonomous technology intelligence and verification engine.
+> A local-first technology intelligence and verification engine for discovering, clustering, and assessing developments across the software and research ecosystem.
 
----
+HERMES turns fragmented public signals into ranked technology stories. It ingests repositories, releases, papers, model registries, technical discussions, scholarly metadata, and RSS feeds; then normalizes, deduplicates, clusters, and evaluates them through an evidence-backed pipeline.
 
-## Architecture
+## What it provides
+
+- Configuration-driven monitoring across nine technical source ecosystems.
+- Event normalization, filtering, deduplication, and ranking.
+- Semantic story clustering using local sentence-transformer embeddings.
+- Structured claim extraction and evidence provenance.
+- Independence scoring and echo-penalty handling.
+- Transparent verification statuses.
+- Multidimensional technology maturity assessment.
+- Local SQLite and FTS5 persistence.
+
+## Pipeline
 
 ```text
-    GitHub Repos ──┐
-  GitHub Releases ─┤
-            arXiv ─┤
-      Hacker News ─┤
-     Hugging Face ─┼──→ SourceAdapter ──→ Event ──→ Normalize ──→ Dedup ──→ Filter ──→ Rank
-         OpenAlex ─┤                                                                     │
-         Crossref ─┤                                                                     ▼
-   Stack Exchange ─┤                                                              Accepted Events
-       RSS / Atom ─┘                                                                     │
-                                                                                         ▼
-               Cheap Candidate Selection ───→ Direct Identifier Linking (DOI / Repo / ArXiv / HF)
-                             │                               │
-                             ▼                               ▼
-                      Local Embeddings (CPU) ────→ Semantic Similarity (Cosine)
-                             │                               │
-                             ▼                               ▼
-                                     Story Clusters
-                                            │
-                                            ├──→ Claims Extraction & Fingerprinting
-                                            │          │
-                                            │          ▼
-                                            │    Evidence Classification & Provenance
-                                            │          │
-                                            │          ▼
-                                            │    Independence & Verification Scoring
-                                            │          │
-                                            │          ▼
-                                            │    Technology Maturity Assessment
-                                            │
-                                            ▼
-                                      SQLite + FTS5
-                                            │
-                                            ▼
-                               Top Intelligence Stories
+Source adapters
+      │
+      ▼
+Normalize → Deduplicate → Filter → Rank
+      │                              │
+      └──────────────► SQLite + FTS5 ◄┘
+                             │
+                             ▼
+                 Local embeddings + clustering
+                             │
+                             ▼
+             Claims → Evidence → Verification
+                             │
+                             ▼
+                 Technology maturity assessment
 ```
 
----
+## Supported sources
 
-## Ingested Source Ecosystems
+| Source | Signal |
+| --- | --- |
+| GitHub | Repositories and engineering activity |
+| GitHub Releases | Versioned releases from watched projects |
+| arXiv | Research papers and preprints |
+| Hacker News | Technical community discussion |
+| Hugging Face | Models and datasets |
+| OpenAlex | Scholarly metadata |
+| Crossref | DOI and publication metadata |
+| Stack Exchange | Developer questions and answers |
+| RSS / Atom | Configured technical publications |
 
-| Source | Adapter | Source Type | Default Trust | Popularity Metric |
-| :--- | :--- | :--- | :--- | :--- |
-| **GitHub** | `GitHubAdapter` | `code_repository` | 0.75 (+ stars) | Star count (logarithmic) |
-| **GitHub Releases**| `GitHubReleasesAdapter` | `code_repository` | 0.85 | Release tag, repo reference |
-| **arXiv** | `ArxivAdapter` | `research_paper` | 0.90 | Recency, DOI cross-reference |
-| **Hacker News** | `HackerNewsAdapter` | `discussion` | 0.65 | Score & comment count (log) |
-| **Hugging Face** | `HuggingFaceAdapter` | `model_registry` / `dataset_registry` | 0.70 | Downloads (70%) + Likes (30%) |
-| **OpenAlex** | `OpenAlexAdapter` | `scholarly_index` | 0.90 | Citation count (logarithmic) |
-| **Crossref** | `CrossrefAdapter` | `doi_registry` | 0.95 | References count (logarithmic) |
-| **Stack Exchange** | `StackExchangeAdapter` | `developer_community` | 0.65 | Score (60%) + Answers (40%) |
-| **RSS / Atom** | `RssAdapter` | `technical_publication` | 0.70 | Recency & publication feed |
+Configure sources in `config/sources.yaml`.
 
----
+## Verification model
 
-## Verification & Technology Maturity Engine (Session 5)
+HERMES distinguishes artifact facts from self-reported assertions. Claims are retained with supporting evidence and traced back to source events and URLs.
 
-1. **Deterministic Claim Model:**
-   - Extracts structured claims (`Claim`) with stable fingerprint hashes.
-   - Distinct claim types: `release`, `architecture`, `availability`, `scholarly_identity`, `research_result`, `performance`.
-   - Distinguishes artifact facts from self-reported assertions (`self_reported=True/False`).
-   - Strict rule: **Claims require $\ge 1$ supporting Evidence row to be saved**.
-2. **Evidence Graph & Provenance:**
-   - Classifies evidence into deterministic classes (`peer_reviewed_research`, `preprint`, `official_release`, `source_code`, `registry_metadata`, `community_discussion`, `developer_experience`, `technical_blog`, etc.).
-   - Full provenance tracking (`Claim` $\to$ `Evidence` $\to$ `Event` $\to$ Source URL).
-3. **Independence Scoring & Echo Penalty:**
-   - Detects correlated sources, shared authors, duplicate URLs, and syndicated announcements to prevent echo amplification.
-4. **Transparent Verification Scoring:**
-   - Computes transparent multi-factor score: Evidence Quality (35%), Independence (25%), Reproducibility (20%), Source Diversity (10%), Saturating Quantity (10%) minus Contradiction Penalties.
-   - Maps to conservative claim statuses: `unverified`, `weakly_supported`, `supported`, `strongly_supported`, `mixed`, `contradicted`.
-5. **Technology Maturity Model:**
-   - Multidimensional assessment across Implementation, Adoption, Research, Reproducibility, and Community signals.
-   - Maturity Stages: `concept`, `research`, `prototype`, `experimental`, `early_adoption`, `production_candidate`, `established`.
+Verification considers:
 
----
+- Evidence quality
+- Source independence
+- Reproducibility
+- Source diversity
+- Evidence quantity
+- Contradiction penalties
 
-## CLI Tools & Diagnostics
+Claims receive statuses such as `unverified`, `weakly_supported`, `supported`, `strongly_supported`, `mixed`, or `contradicted`.
+
+Technology maturity is assessed across implementation, adoption, research, reproducibility, and community signals.
+
+## Repository layout
+
+| Path | Responsibility |
+| --- | --- |
+| `app/main.py` | Main ingestion and intelligence workflow |
+| `app/adapters/` | Source-specific adapters |
+| `app/pipeline/` | Filtering, ranking, normalization, and deduplication |
+| `app/semantic/` | Embeddings, clustering, and diagnostics |
+| `app/evidence/` | Claims, evidence, verification, and maturity |
+| `app/storage/` | SQLite persistence |
+| `config/sources.yaml` | Source adapters, queries, feeds, and limits |
+| `config/interests.yaml` | Technical interest priorities |
+| `config/semantic.yaml` | Embedding and clustering settings |
+| `tests/` | Automated tests |
+
+## Requirements
+
+- Python 3.10+
+- Internet access for enabled adapters
+- Dependencies from `requirements.txt`
+- A GitHub token for GitHub-backed ingestion
+- CPU-compatible local sentence-transformer inference
+
+## Installation
 
 ```bash
-# 1. Main Ingestion & Intelligence Radar
+git clone https://github.com/sk101-art/hermes.git
+cd hermes
+
+python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\\Scripts\\activate
+pip install -r requirements.txt
+
+cp .env.example .env
+```
+
+Set the GitHub token in `.env`:
+
+```dotenv
+GITHUB_TOKEN=your_github_token
+```
+
+Review the YAML configuration before running a full ingestion session.
+
+## Run HERMES
+
+```bash
 python -m app.main
+```
 
-# 2. Claims & Evidence Graph Backfill
+The local database is written to `data/tech_intel.db`. A run prints source statistics, semantic summaries, and top intelligence stories when clustering succeeds.
+
+## Diagnostics
+
+```bash
 python -m app.claims_backfill [--rebuild]
-
-# 3. Claims, Evidence & Verification Audit
 python -m app.claims_audit
-
-# 4. Explain Claim & Trace Evidence Provenance
 python -m app.explain_claim <claim_id>
-
-# 5. Source Ingestion Status & Stored Event Matrix
 python -m app.source_status
-
-# 6. Semantic Embedding Backfill & Cluster Rebuilding
 python -m app.semantic_backfill
-
-# 7. Semantic Diagnostic & Similarity Recall Audit
 python -m app.semantic.audit
 ```
 
----
-
-## Configuration
-
-- **`config/sources.yaml`**: Enable/disable sources, query terms, watch repositories, feeds, max results.
-- **`config/interests.yaml`**: Technical interest tiers (high, medium, low).
-- **`config/semantic.yaml`**: Local embedding model, device (`cpu`), batch size, and clustering similarity threshold (`0.78`).
-
----
-
-## Setup & Running
-
-### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Run Full Test Suite
+## Testing
 
 ```bash
 pytest
 ```
+
+Use fixtures or mocks for network-dependent adapter tests to keep the suite deterministic.
+
+## Design principles
+
+- **Evidence before confidence:** repeated claims are not automatically verified.
+- **Traceability:** intelligence remains linked to its original sources.
+- **Graceful degradation:** one unavailable source should not stop the entire run.
+- **Local-first analysis:** persistence, search, embeddings, and scoring run locally.
+- **Configuration over code:** source coverage and interests are adjustable in YAML.
+
+## Project status
+
+HERMES is an evolving research and engineering prototype. Source schemas, scoring weights, and maturity heuristics may change as the verification model develops.
+
+## License
+
+No license file is currently included. Add a license before distributing HERMES publicly.
